@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Server } from "bun";
 import { listenHost, type InstanceConfig } from "../config.js";
+import { BACKUP_MAX_BYTES } from "../apps/backup.js";
 import type { EventBus, WsData } from "./ws.js";
 
 export interface ListenerOptions {
@@ -62,6 +63,9 @@ export class Listener {
       // normal client-side reconnect. The 30s websocket heartbeat keeps live
       // sockets active well inside this window.
       idleTimeout: 65,
+      // an app backup can be this large; every other route keeps a lower
+      // limit of its own (see buildApp)
+      maxRequestBodySize: BACKUP_MAX_BYTES + 1024 * 1024,
       websocket: bus.websocket,
       fetch: (req, srv) => {
         const url = new URL(req.url);

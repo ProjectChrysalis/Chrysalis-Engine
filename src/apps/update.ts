@@ -113,6 +113,9 @@ export function writeBaseline(upstreamRoot: string, appId: string, version: stri
 export interface InstallSource {
   git: string;
   ref: string;
+  /** Restored from a backup file: the code came from the file, not the
+   *  repository, so it is not official until an update makes it match. */
+  restored?: true;
 }
 
 function sourcePath(upstreamRoot: string, appId: string): string {
@@ -121,9 +124,9 @@ function sourcePath(upstreamRoot: string, appId: string): string {
 
 export function readInstallSource(upstreamRoot: string, appId: string): InstallSource | null {
   try {
-    const raw = JSON.parse(fs.readFileSync(sourcePath(upstreamRoot, appId), "utf8")) as { git?: unknown; ref?: unknown };
+    const raw = JSON.parse(fs.readFileSync(sourcePath(upstreamRoot, appId), "utf8")) as { git?: unknown; ref?: unknown; restored?: unknown };
     if (typeof raw.git !== "string") return null;
-    return { git: raw.git, ref: typeof raw.ref === "string" ? raw.ref : "HEAD" };
+    return { git: raw.git, ref: typeof raw.ref === "string" ? raw.ref : "HEAD", ...(raw.restored === true ? { restored: true as const } : {}) };
   } catch {
     return null;
   }

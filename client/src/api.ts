@@ -89,6 +89,10 @@ export async function api<T = any>(method: string, p: string, body?: unknown): P
   } catch {
     throw new Error(tr("Connection lost. Is the Chrysalis server running?"))
   }
+  return reply<T>(res)
+}
+
+async function reply<T>(res: Response): Promise<T> {
   const text = await res.text()
   let json: any = null
   try {
@@ -170,7 +174,8 @@ export const appPluginsApi = {
       "POST",
       `/v1/apps/${encodeURIComponent(appId)}/plugins/${encodeURIComponent(pid)}/${enabled ? "enable" : "disable"}`,
     ),
-  /** Phase 1: clone + inspect — nothing installed yet. */
+  /** Phase 1: clone + inspect — nothing installed yet. `installed` names the
+   *  plugin this repository already put in the app, which confirm updates. */
   importPreview: (appId: string, gitUrl: string) =>
     api<{
       staged: boolean
@@ -179,11 +184,12 @@ export const appPluginsApi = {
       manifest: { name: string; version: string | null; author: string | null; description: string | null }
       permissions: string[]
       networkHosts: string[]
+      installed: { id: string; version: string | null } | null
     }>("POST", `/v1/apps/${encodeURIComponent(appId)}/plugins/import`, { gitUrl }),
   /** Phase 2: install the staged copy into this app's plugins/. `head` pins
    *  the install to the commit the preview reviewed. */
   importConfirm: (appId: string, gitUrl: string, head: string) =>
-    api<{ ok: boolean; id: string; name: string }>("POST", `/v1/apps/${encodeURIComponent(appId)}/plugins/import`, {
+    api<{ ok: boolean; id: string; name: string; updated: boolean }>("POST", `/v1/apps/${encodeURIComponent(appId)}/plugins/import`, {
       gitUrl,
       confirm: true,
       head,
@@ -253,6 +259,27 @@ export async function installFromGit(gitUrl: string, ref?: string, id?: string):
   void api("POST", `/v1/apps/${encodeURIComponent(done.id)}/install`).catch(() => undefined)
   return done.id
 }
+
+/** What the import preview shows before anything is installed. */
+export interface AppImportPreview {
+  manifest: { name: string; version: string; author: string | null }
+  plugins: { id: string; name: string; version: string | null; description: string | null; permissions: string[]; networkHosts: string[] }[]
+}
+
+/** Upload a backup zip for review: the engine unpacks it and says what it
+ *  holds; nothing is installed until `confirmAppFile`. */
+export async function previewAppFile(file: File): Promise<AppImportPreview & { file: string; id: string; data: boolean; updatesFrom: string | null }> {
+  let res: Response
+  try {
+    res = await fetch("/v1/apps/import", { method: "POST", headers: { "content-type": "application/zip" }, body: file })
+  } catch {
+    throw new Error(tr("Connection lost. Is the Chrysalis server running?"))
+  }
+  return reply(res)
+}
+
+export const confirmAppFile = (file: string, name: string) =>
+  api<{ ok: boolean; id: string }>("POST", "/v1/apps/import", { file, name })
 
 /** Download an app as a zip (its files and live data) through the browser. */
 export async function exportApp(id: string): Promise<void> {

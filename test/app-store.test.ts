@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { execFile } from "node:child_process";
-import { unzipSync } from "fflate";
+import { strToU8, unzipSync, zipSync } from "fflate";
 import type { Hono } from "hono";
 import type { AppEnv } from "../src/server/app.js";
 import { buildApp } from "../src/server/app.js";
@@ -265,6 +265,131 @@ describe("installing from the store", () => {
     expect(names).toContain("data/notes.json");
     expect(names.some((n) => n.startsWith("node_modules/"))).toBe(false);
     expect(names).not.toContain("leak.txt");
+  }, 60_000);
+
+  /** Commit a change to a published repository and serve the new head. */
+  const republish = async (name: string, change: (work: string) => void, under = "owner") => {
+    const work = path.join(repoDir, `${name}-work`);
+    change(work);
+    await git(["add", "-A"], work);
+    await git(["commit", "-m", "next"], work);
+    const bare = path.join(repoDir, under, `${name}.git`);
+    fs.rmSync(bare, { recursive: true, force: true });
+    await git(["clone", "--bare", work, bare]);
+    await git(["update-server-info"], bare);
+  };
+  const uploadZip = (bytes: Uint8Array) =>
+    app.request("/v1/apps/import", { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/zip" }, body: bytes });
+  const grantsOf = () =>
+    (JSON.parse(fs.readFileSync(userPaths(dataDir, "alice").settings, "utf8")) as { pluginGrants?: Record<string, string[]> }).pluginGrants ?? {};
+
+  it("restores a backup as a new app that keeps updating, and is official again only once its code is the repository's", async () => {
+    const url = await publish("studio", { name: "Studio", version: "1.0.0", kind: "app" });
+    const id = await importApp(url);
+    const p = userPaths(dataDir, "alice");
+    fs.mkdirSync(path.join(p.apps, id, "data"), { recursive: true });
+    fs.writeFileSync(path.join(p.apps, id, "data", "notes.json"), "{\"hello\":1}");
+    const zip = new Uint8Array(await (await call(`/v1/apps/${id}/export`)).arrayBuffer());
+    const names = Object.keys(unzipSync(zip));
+    expect(names).toContain(".__backup/backup.json");
+    expect(names).toContain(".__backup/baseline/plugins/api/plugin.js");
+
+    const preview = (await (await uploadZip(zip)).json()) as { file: string; id: string; data: boolean; updatesFrom: string | null; plugins: { id: string; permissions: string[] }[] };
+    expect(preview).toMatchObject({ id: "studio-2", data: true, updatesFrom: url, plugins: [{ id: "api", permissions: ["routes"] }] });
+    // nothing is installed by the preview
+    expect(fs.existsSync(path.join(p.apps, "studio-2"))).toBe(false);
+
+    const done = (await (await call("/v1/apps/import", { method: "POST", body: JSON.stringify({ file: preview.file, name: "studio-backup.zip" }) })).json()) as { id: string };
+    expect(done.id).toBe("studio-2");
+    expect(fs.readFileSync(path.join(p.apps, "studio-2", "data", "notes.json"), "utf8")).toBe("{\"hello\":1}");
+    expect(fs.existsSync(path.join(p.apps, "studio-2", ".__backup"))).toBe(false);
+    expect(readInstallSource(p.appUpstream, "studio-2")).toEqual({ git: url, ref: "HEAD", restored: true });
+    expect(grantsOf()["studio-2__api"]).toEqual(["routes"]);
+    // the file's code is not the maintainers' release, whatever it says
+    expect((await launchApps()).find((a) => a.id === "studio-2")).toMatchObject({ official: false, repository: url });
+    // a token is used once
+    expect((await call("/v1/apps/import", { method: "POST", body: JSON.stringify({ file: preview.file }) })).status).toBe(409);
+
+    await republish("studio", (work) => fs.writeFileSync(path.join(work, "README.md"), "new\n"));
+    const updated = (await (await call("/v1/apps/studio-2/update", { method: "POST", body: "{}" })).json()) as { status: string };
+    expect(updated.status).toBe("applied");
+    expect(readInstallSource(p.appUpstream, "studio-2")).toEqual({ git: url, ref: "HEAD" });
+    expect((await launchApps()).find((a) => a.id === "studio-2")?.official).toBe(true);
+  }, 60_000);
+
+  it("imports an app zipped by hand, and refuses a zip that reaches outside its folder", async () => {
+    const manifest = strToU8(JSON.stringify({ name: "Hand Made", version: "0.1.0", kind: "app" }));
+    const p = userPaths(dataDir, "alice");
+
+    const wrapped = (await (await uploadZip(zipSync({ "hand-made/manifest.json": manifest, "hand-made/src/main.tsx": strToU8("export {}\n"), "__MACOSX/hand-made/._main.tsx": strToU8("x") }))).json()) as { file: string; id: string; updatesFrom: string | null };
+    expect(wrapped).toMatchObject({ id: "hand-made", updatesFrom: null });
+    const done = (await (await call("/v1/apps/import", { method: "POST", body: JSON.stringify({ file: wrapped.file, name: "hand.zip" }) })).json()) as { id: string };
+    expect(fs.readFileSync(path.join(p.apps, done.id, "src", "main.tsx"), "utf8")).toBe("export {}\n");
+    expect(readInstallSource(p.appUpstream, done.id)).toBeNull();
+
+    const escaping = await uploadZip(zipSync({ "manifest.json": manifest, "../../escaped.txt": strToU8("no") }));
+    expect(escaping.status).toBe(422);
+    expect(fs.existsSync(path.join(p.apps, "..", "escaped.txt"))).toBe(false);
+    expect((await uploadZip(strToU8("not a zip at all"))).status).toBe(400);
+    expect((await uploadZip(zipSync({ "readme.txt": strToU8("hi") }))).status).toBe(422);
+    expect((await call("/v1/apps/import", { method: "POST", body: JSON.stringify({ file: "../../etc" }) })).status).toBe(400);
+  }, 60_000);
+
+  it("asks before a community update gives a plugin a permission it never had", async () => {
+    const url = await publish("tool", { name: "Tool", version: "1.0.0", kind: "app" }, "someone");
+    const id = await importApp(url);
+    const manifestFile = (work: string) => path.join(work, "plugins", "api", "manifest.json");
+    await republish("tool", (work) => fs.writeFileSync(manifestFile(work), JSON.stringify({ name: "API", version: "1.1.0", permissions: ["routes", "network"] })), "someone");
+
+    const review = (await (await call(`/v1/apps/${id}/update`, { method: "POST", body: "{}" })).json()) as { needsDepConfirm?: boolean; head: string; permissions: unknown };
+    expect(review.needsDepConfirm).toBe(true);
+    expect(review.permissions).toEqual([{ id: "api", name: "API", added: ["network"] }]);
+    expect(grantsOf()[`${id}__api`]).toEqual(["routes"]);
+
+    const moved = await call(`/v1/apps/${id}/update`, { method: "POST", body: JSON.stringify({ confirmDeps: true, head: "0".repeat(40) }) });
+    expect(moved.status).toBe(409);
+    const applied = (await (await call(`/v1/apps/${id}/update`, { method: "POST", body: JSON.stringify({ confirmDeps: true, head: review.head }) })).json()) as { status: string };
+    expect(applied.status).toBe("applied");
+    expect(grantsOf()[`${id}__api`]).toEqual(["routes", "network"]);
+  }, 60_000);
+
+  it("importing a plugin's repository again updates that plugin in place", async () => {
+    const id = await importApp(await publish("studio", { name: "Studio", version: "1.0.0", kind: "app" }));
+    const work = path.join(repoDir, "extra-work");
+    fs.mkdirSync(work, { recursive: true });
+    fs.writeFileSync(path.join(work, "manifest.json"), JSON.stringify({ name: "Extra", version: "1.0.0", permissions: ["routes"] }));
+    fs.writeFileSync(path.join(work, "plugin.js"), "export function handleRoute() { return null; }");
+    await git(["init"], work);
+    await git(["add", "-A"], work);
+    await git(["commit", "-m", "init"], work);
+    const bare = path.join(repoDir, "owner", "extra.git");
+    await git(["clone", "--bare", work, bare]);
+    await git(["update-server-info"], bare);
+    const pluginUrl = `${owner}extra.git`;
+    const importPlugin = async () => {
+      const pv = (await (await call(`/v1/apps/${id}/plugins/import`, { method: "POST", body: JSON.stringify({ gitUrl: pluginUrl }) })).json()) as { head: string; installed: { id: string; version: string | null } | null };
+      const done = (await (await call(`/v1/apps/${id}/plugins/import`, { method: "POST", body: JSON.stringify({ gitUrl: pluginUrl, confirm: true, head: pv.head }) })).json()) as { id: string; updated: boolean };
+      return { pv, done };
+    };
+    const first = await importPlugin();
+    expect(first.pv.installed).toBeNull();
+    expect(first.done).toMatchObject({ id: "extra", updated: false });
+
+    fs.writeFileSync(path.join(work, "manifest.json"), JSON.stringify({ name: "Extra", version: "1.1.0", permissions: ["routes"] }));
+    await git(["commit", "-am", "next"], work);
+    fs.rmSync(bare, { recursive: true, force: true });
+    await git(["clone", "--bare", work, bare]);
+    await git(["update-server-info"], bare);
+    const second = await importPlugin();
+    expect(second.pv.installed).toEqual({ id: "extra", version: "1.0.0" });
+    expect(second.done).toMatchObject({ id: "extra", updated: true });
+    const pluginsDir = path.join(userPaths(dataDir, "alice").apps, id, "plugins");
+    expect(fs.readdirSync(pluginsDir).sort()).toEqual(["api", "extra"]);
+
+    const listed = ((await (await call(`/v1/apps/${id}/plugins`)).json()) as { plugins: { id: string; version: string; repository: string | null }[] }).plugins;
+    expect(listed.find((x) => x.id === "extra")).toMatchObject({ version: "1.1.0", repository: pluginUrl });
+    // the app's own plugin updates with the app
+    expect(listed.find((x) => x.id === "api")?.repository).toBeNull();
   }, 60_000);
 
   it("checks every app with a source at once, for the launcher badges", async () => {

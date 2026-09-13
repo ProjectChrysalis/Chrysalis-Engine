@@ -2,6 +2,7 @@
  * Hono app + routes (SPEC §6). Thin handlers over services.
  */
 import { Hono, type Context, type Next } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { compress } from "hono/compress";
 import fs from "node:fs";
 import os from "node:os";
@@ -14,7 +15,7 @@ import { listApps, readApp, createAppSkeleton, renameAppDir, appTree, validateAp
 import { UPDATE_STRATEGIES, applyWrites, forgetInstall, mergeTrees, moveInstall, readBaseline, readCodeTree, readInstallSource, recoverBaseline, satisfiesRange, seedDataTemplates, writeBaseline, writeInstallSource, type InstallSource } from "../apps/update.js";
 import { OFFICIAL_SOURCES, createCatalog, isOfficialSource, normalizeGitUrl } from "../apps/store.js";
 import { gitClone, gitRemoteHead, isValidGitUrl, stripVcs, swapAppContents } from "../apps/git.js";
-import { zip as zipFiles } from "fflate";
+import { BACKUP_MAX_BYTES, BACKUP_META_DIR, BackupError, buildBackup, extractBackup, locateBackup, type BackupMeta } from "../apps/backup.js";
 import { bootstrapUserDir } from "../paths.js";
 import type { UserService, UserRecord } from "../users.js";
 import type { SessionService } from "../sessions.js";
@@ -191,7 +192,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
    *  anything, since the agent, the app and a non-admin shell can all write it. */
   const officialApp = (p: UserPaths, app: AppInfo): boolean => {
     const source = readInstallSource(p.appUpstream, app.id);
-    return !!source && isOfficialSource(source.git, officialSources);
+    return !!source && !source.restored && isOfficialSource(source.git, officialSources);
   };
   let setupToken = deps.setupToken ?? null;
   const app = new Hono<AppEnv>();
@@ -242,6 +243,11 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     return next();
   };
   app.use("*", requestGuard);
+  // The socket accepts a body as large as an app backup. Everywhere else the
+  // limit stays where it was, so a request no route needs that much for
+  // (sign-in included) cannot make the engine hold one.
+  const everydayBodies = bodyLimit({ maxSize: 128 * 1024 * 1024, onError: (c) => c.json({ error: "request body too large" }, 413) });
+  app.use("*", (c, next) => (c.req.method === "POST" && c.req.path === "/v1/apps/import" ? next() : everydayBodies(c, next)));
   // Every response was going out uncompressed: the roleplay app's boot payload
   // alone is over a megabyte of JSON, and the built bundles are megabytes more
   // — all of it re-fetched over the LAN by every phone that opens the app.
@@ -2645,23 +2651,43 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     }
 
     const manifest = staged.manifest as { name?: string; version?: string; author?: string; description?: string; permissions?: string[]; networkHosts?: string[]; origin?: string; source?: Record<string, unknown> };
+    // the same repository imported again is an update of that plugin, in place
+    const pluginsDir = path.join(appDir, "plugins");
+    const installed = (() => {
+      try {
+        for (const pid of fs.readdirSync(pluginsDir)) {
+          try {
+            const m = JSON.parse(fs.readFileSync(path.join(pluginsDir, pid, "manifest.json"), "utf8")) as { version?: unknown; source?: { git?: unknown } };
+            if (typeof m.source?.git === "string" && normalizeGitUrl(m.source.git) === normalizeGitUrl(gitUrl)) {
+              return { id: pid, version: typeof m.version === "string" ? m.version : null };
+            }
+          } catch { /* not a plugin */ }
+        }
+      } catch { /* no plugins yet */ }
+      return null;
+    })();
     if (!body.confirm) {
       return c.json({
         staged: true, slug, head: staged.head,
         manifest: { name: manifest.name ?? slug, version: manifest.version ?? null, author: manifest.author ?? null, description: manifest.description ?? null },
-        permissions: manifest.permissions ?? [],
-        networkHosts: manifest.networkHosts ?? [],
+        permissions: declaredPermissions(manifest),
+        networkHosts: Array.isArray(manifest.networkHosts) ? manifest.networkHosts.filter((h): h is string => typeof h === "string") : [],
+        installed,
       });
     }
 
-    // install: unique folder under THIS app's plugins/
-    const baseId = (manifest.name ?? slug).toLowerCase().replace(/[^a-z0-9-]/g, "") || slug;
-    let id = baseId;
-    let n = 2;
-    const pluginsDir = path.join(appDir, "plugins");
-    while (fs.existsSync(path.join(pluginsDir, id))) id = `${baseId}-${n++}`;
+    // install: the plugin's own folder when updating, else a unique one
+    // under THIS app's plugins/
+    let id = installed?.id ?? "";
+    if (!installed) {
+      const baseId = (manifest.name ?? slug).toLowerCase().replace(/[^a-z0-9-]/g, "") || slug;
+      id = baseId;
+      let n = 2;
+      while (fs.existsSync(path.join(pluginsDir, id))) id = `${baseId}-${n++}`;
+    }
     fs.mkdirSync(pluginsDir, { recursive: true });
     fs.rmSync(stagedHeadFile, { force: true });
+    if (installed) fs.rmSync(path.join(pluginsDir, id), { recursive: true, force: true });
     fs.renameSync(staging, path.join(pluginsDir, id));
     // provenance + pre-grant exactly what the user just reviewed (app plugin
     // ids are namespaced <app>__<plugin> — grants key on the namespaced id)
@@ -2673,13 +2699,13 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         ? (JSON.parse(fs.readFileSync(p.settings, "utf8")) as { pluginGrants?: Record<string, string[]> })
         : {};
       settings.pluginGrants ??= {};
-      settings.pluginGrants[`${appId}__${id}`] = [...new Set((manifest.permissions ?? []).filter((x) => x !== "hooks"))];
+      settings.pluginGrants[`${appId}__${id}`] = declaredPermissions(manifest);
       fs.writeFileSync(p.settings, JSON.stringify(settings, null, 2) + "\n", "utf8");
     } catch { /* grants best-effort — the approve flow still works */ }
     invalidatePluginCache();
-    await git.commitAll(p.root, u.username, `app(${appId}): plugin ${id} imported from ${gitUrl}`);
+    await git.commitAll(p.root, u.username, `app(${appId}): plugin ${id} ${installed ? "updated" : "imported"} from ${gitUrl}`);
     bus.emit(u.username, "app_changed", { app: appId });
-    return c.json({ ok: true, id, name: manifest.name ?? id });
+    return c.json({ ok: true, id, name: manifest.name ?? id, updated: !!installed });
   });
 
 
@@ -2800,54 +2826,31 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   });
 
   // Export an app as a zip: every file and its live data, minus the derived
-  // dirs. Built from the engine's own copy. A symlink is skipped, never
-  // followed, so nothing an app plants can pull a file from outside its
-  // folder into the archive.
-  const EXPORT_MAX_BYTES = 512 * 1024 * 1024;
+  // dirs, plus where it updates from (see apps/backup.ts). Built from the
+  // engine's own copy.
   app.get("/v1/apps/:id/export", async (c) => {
     const p = c.get("paths");
     const id = c.req.param("id");
     const info = readApp(p.apps, id);
     if (!info) return c.json({ error: "app not found" }, 404);
-    let root: string;
-    try {
-      root = fs.realpathSync(safeResolve(p.apps, id));
-    } catch {
-      return c.json({ error: "app not found" }, 404);
-    }
-    const files: Record<string, Uint8Array> = {};
-    let total = 0;
-    let tooLarge = false;
-    const walk = (rel: string) => {
-      if (tooLarge) return;
-      const abs = rel ? path.join(root, rel) : root;
-      for (const entry of fs.readdirSync(abs, { withFileTypes: true })) {
-        const childRel = rel ? `${rel}/${entry.name}` : entry.name;
-        if (entry.name === "node_modules" || entry.name === "dist" || entry.name.startsWith(".__")) continue;
-        if (entry.isSymbolicLink()) continue;
-        if (entry.isDirectory()) {
-          walk(childRel);
-        } else if (entry.isFile()) {
-          const file = path.join(abs, entry.name);
-          total += fs.statSync(file).size;
-          if (total > EXPORT_MAX_BYTES) {
-            tooLarge = true;
-            return;
-          }
-          files[childRel] = fs.readFileSync(file);
-        }
-      }
+    const source = readInstallSource(p.appUpstream, id);
+    const baseline = source ? readBaseline(p.appUpstream, id) : null;
+    const meta: BackupMeta = {
+      format: 1,
+      id,
+      exportedAt: new Date().toISOString(),
+      engine: ENGINE_VERSION,
+      ...(source && baseline
+        ? { source: { git: source.git, ref: source.ref, baselineVersion: baseline.version, ...(info.manifest.source?.head ? { head: info.manifest.source.head } : {}) } }
+        : {}),
     };
+    let zip: Uint8Array;
     try {
-      walk("");
+      zip = await buildBackup(info.dir, meta, baseline?.files ?? null);
     } catch (e) {
-      return c.json({ error: `could not read the app: ${(e as Error).message}` }, 500);
+      if (e instanceof BackupError) return c.json({ error: e.message }, e.status);
+      return c.json({ error: `could not export the app: ${(e as Error).message}` }, 500);
     }
-    if (tooLarge) return c.json({ error: "this app is too large to export (over 512 MB)" }, 413);
-    const zip = await new Promise<Uint8Array | Error>((resolve) => {
-      zipFiles(files, { level: 3 }, (err, out) => resolve(err ?? out));
-    });
-    if (zip instanceof Error) return c.json({ error: `zip failed: ${zip.message}` }, 500);
     const day = new Date().toISOString().slice(0, 10);
     c.header("content-type", "application/zip");
     c.header("content-disposition", `attachment; filename="${id}-backup-${day}.zip"`);
@@ -2909,6 +2912,11 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   /** Pre-grant the permissions the repository's plugins declare, the grant
    *  the user gave by importing the app. */
   const grantBundledPlugins = (p: UserPaths, appId: string, dest: string, gitUrl: string) => {
+    grantPlugins(p, appId, dest, (m) => m.source?.git === gitUrl);
+  };
+
+  /** Add each chosen plugin's declared permissions to the app's grants. */
+  const grantPlugins = (p: UserPaths, appId: string, dest: string, chosen: (manifest: { source?: { git?: unknown } }) => boolean) => {
     const pluginsDir = path.join(dest, "plugins");
     let dirs: string[] = [];
     try { dirs = fs.readdirSync(pluginsDir); } catch { return; }
@@ -2921,10 +2929,10 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     let touched = false;
     for (const pid of dirs) {
       try {
-        const m = JSON.parse(fs.readFileSync(path.join(pluginsDir, pid, "manifest.json"), "utf8")) as { permissions?: string[]; source?: { git?: unknown } };
-        if (m.source?.git !== gitUrl) continue;
+        const m = JSON.parse(fs.readFileSync(path.join(pluginsDir, pid, "manifest.json"), "utf8")) as { permissions?: unknown; source?: { git?: unknown } };
+        if (!chosen(m)) continue;
         const key = `${appId}__${pid}`;
-        grants[key] = [...new Set([...(grants[key] ?? []), ...(m.permissions ?? []).filter((x) => x !== "hooks")])];
+        grants[key] = [...new Set([...(grants[key] ?? []), ...declaredPermissions(m)])];
         touched = true;
       } catch { /* not a plugin dir */ }
     }
@@ -2935,10 +2943,158 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     }
   };
 
+  /** The capabilities a plugin manifest asks for ("hooks" needs no grant). */
+  const declaredPermissions = (m: { permissions?: unknown }): string[] =>
+    Array.isArray(m.permissions) ? m.permissions.filter((x): x is string => typeof x === "string" && x !== "hooks") : [];
+
+  /** What the import preview shows for each bundled plugin. */
+  const previewPlugins = (dir: string, plugins: string[]) =>
+    plugins.map((pid) => {
+      try {
+        const m = JSON.parse(fs.readFileSync(path.join(dir, "plugins", pid, "manifest.json"), "utf8")) as {
+          name?: unknown; version?: unknown; description?: unknown; permissions?: unknown; networkHosts?: unknown;
+        };
+        return {
+          id: pid,
+          name: typeof m.name === "string" ? m.name : pid,
+          version: typeof m.version === "string" ? m.version : null,
+          description: typeof m.description === "string" ? m.description : null,
+          permissions: declaredPermissions(m),
+          networkHosts: Array.isArray(m.networkHosts) ? m.networkHosts.filter((h): h is string => typeof h === "string") : [],
+        };
+      } catch {
+        return { id: pid, name: pid, version: null, description: null, permissions: [], networkHosts: [] };
+      }
+    });
+
+  // Import an app from a backup zip (see apps/backup.ts), two phases like a
+  // git import: the upload is unpacked into a staging folder named by a
+  // random token and previewed; the confirm names that token. A file's code
+  // is nobody's official release, so the install is never official, and its
+  // plugins get exactly the permissions the preview listed. A backup that
+  // recorded where the app updates from keeps updating from there.
+  const FILE_TOKEN = /^[0-9a-f]{32}$/;
+  const fileStaging = (p: UserPaths, token: string) => path.join(p.apps, ".staging", `file-${token}`);
+
+  const fileImportId = (p: UserPaths, meta: BackupMeta | null, name: string): string => {
+    const fromName = name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^[-_]+|-+$/g, "").slice(0, 48);
+    const base = meta && /^[a-z0-9][a-z0-9_-]{0,47}$/.test(meta.id) ? meta.id : fromName || "app";
+    let id = base;
+    let n = 2;
+    while (fs.existsSync(path.join(p.apps, id))) id = `${base}-${n++}`;
+    return id;
+  };
+
+  const readStagedSafe = (dir: string) => {
+    try { return readStaged(dir); } catch { return null; }
+  };
+
+  const previewFileImport = async (c: Context<AppEnv>) => {
+    const p = c.get("paths");
+    if (Number(c.req.header("content-length") ?? "0") > BACKUP_MAX_BYTES) return c.json({ error: "the file is too large (over 512 MB)" }, 413);
+    // previews nobody confirmed go once they are an hour old
+    const stagingRoot = path.join(p.apps, ".staging");
+    try {
+      for (const entry of fs.readdirSync(stagingRoot)) {
+        const full = path.join(stagingRoot, entry);
+        if (entry.startsWith("file-") && Date.now() - fs.statSync(full).mtimeMs > 60 * 60 * 1000) fs.rmSync(full, { recursive: true, force: true });
+      }
+    } catch { /* nothing staged yet */ }
+    const token = nodeCrypto.randomBytes(16).toString("hex");
+    const dest = fileStaging(p, token);
+    let unpacked: ReturnType<typeof extractBackup>;
+    try {
+      unpacked = extractBackup(new Uint8Array(await c.req.arrayBuffer()), dest);
+    } catch (e) {
+      fs.rmSync(dest, { recursive: true, force: true });
+      if (e instanceof BackupError) return c.json({ error: e.message }, e.status);
+      return c.json({ error: `could not read the file: ${(e as Error).message}` }, 400);
+    }
+    const staged = readStagedSafe(unpacked.root);
+    if (!staged) {
+      fs.rmSync(dest, { recursive: true, force: true });
+      return c.json({ error: "not a Chrysalis app (missing or invalid manifest.json)" }, 422);
+    }
+    return c.json({
+      staged: true,
+      file: token,
+      id: fileImportId(p, unpacked.meta, staged.manifest.name),
+      manifest: { name: staged.manifest.name, version: staged.manifest.version, author: staged.manifest.author ?? null },
+      plugins: previewPlugins(unpacked.root, staged.plugins),
+      data: fs.existsSync(path.join(unpacked.root, "data")),
+      updatesFrom: unpacked.meta?.source && isValidGitUrl(unpacked.meta.source.git) ? unpacked.meta.source.git : null,
+    });
+  };
+
+  const confirmFileImport = async (c: Context<AppEnv>, token: string, name: string) => {
+    const u = c.get("user");
+    const p = c.get("paths");
+    if (!FILE_TOKEN.test(token)) return c.json({ error: "unknown upload: import the file again" }, 400);
+    const dest = fileStaging(p, token);
+    if (!fs.existsSync(dest)) return c.json({ error: "the upload expired: import the file again" }, 409);
+    let unpacked: ReturnType<typeof locateBackup>;
+    try {
+      unpacked = locateBackup(dest);
+    } catch (e) {
+      fs.rmSync(dest, { recursive: true, force: true });
+      return c.json({ error: (e as Error).message }, 422);
+    }
+    const { root, meta } = unpacked;
+    const staged = readStagedSafe(root);
+    if (!staged) {
+      fs.rmSync(dest, { recursive: true, force: true });
+      return c.json({ error: "not a Chrysalis app (missing or invalid manifest.json)" }, 422);
+    }
+    const source = meta?.source && isValidGitUrl(meta.source.git) ? meta.source : null;
+    const baselineDir = path.join(root, BACKUP_META_DIR, "baseline");
+    const baseline = source && fs.existsSync(baselineDir) ? readCodeTree(baselineDir) : null;
+    for (const entry of fs.readdirSync(root)) {
+      if (entry.startsWith(".__")) fs.rmSync(path.join(root, entry), { recursive: true, force: true });
+    }
+
+    const id = fileImportId(p, meta, staged.manifest.name);
+    const appDir = path.join(p.apps, id);
+    fs.renameSync(root, appDir);
+    fs.rmSync(dest, { recursive: true, force: true });
+
+    const manifest = staged.manifest;
+    manifest.origin = "imported";
+    delete manifest.source;
+    if (source && baseline) manifest.source = { git: source.git, ref: source.ref, ...(source.head ? { head: source.head } : {}) };
+    fs.writeFileSync(path.join(appDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
+    // every bundled plugin is the file's code; one the user once imported from
+    // its own repository keeps that trail
+    const label = name.replace(/[^\w.@ -]+/g, "_").slice(0, 120) || "backup.zip";
+    try {
+      for (const pid of fs.readdirSync(path.join(appDir, "plugins"))) {
+        const mf = path.join(appDir, "plugins", pid, "manifest.json");
+        try {
+          const m = JSON.parse(fs.readFileSync(mf, "utf8")) as { origin?: string; source?: { git?: unknown } };
+          if (m.origin === "imported" && typeof m.source?.git === "string" && isValidGitUrl(m.source.git)) continue;
+          m.origin = "imported";
+          m.source = { file: label } as never;
+          fs.writeFileSync(mf, JSON.stringify(m, null, 2) + "\n", "utf8");
+        } catch { /* no manifest: not a plugin the runtime loads */ }
+      }
+    } catch { /* no plugins */ }
+    grantPlugins(p, id, appDir, () => true);
+    forgetInstall(p.appUpstream, id);
+    if (source && baseline) {
+      writeBaseline(p.appUpstream, id, source.baselineVersion, baseline);
+      writeInstallSource(p.appUpstream, id, { git: source.git, ref: source.ref, restored: true });
+    }
+    invalidatePluginCache();
+    await git.commitAll(p.root, u.username, `app(${id}): imported from ${label}`);
+    bus.emit(u.username, "app_changed", { app: id });
+    return c.json({ ok: true, id });
+  };
+
   app.post("/v1/apps/import", async (c) => {
     const u = c.get("user");
     const p = c.get("paths");
-    const body = await c.req.json<{ gitUrl?: string; ref?: string; confirm?: string; head?: string; id?: string }>().catch(() => null) ?? ({} as never);
+    if (c.req.header("content-type")?.split(";")[0]?.trim() === "application/zip") return previewFileImport(c);
+    const body = await c.req.json<{ gitUrl?: string; ref?: string; confirm?: string; head?: string; id?: string; file?: string; name?: string }>().catch(() => null) ?? ({} as never);
+    if (typeof body.file === "string") return confirmFileImport(c, body.file, typeof body.name === "string" ? body.name : "");
     const gitUrl = typeof body.gitUrl === "string" ? body.gitUrl.trim() : "";
     const ref = typeof body.ref === "string" && body.ref.trim() ? body.ref.trim() : "HEAD";
     // the commit the preview showed: confirm installs THAT tree or nothing
@@ -2961,23 +3117,10 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         fs.writeFileSync(path.join(staging, ".staged-head"), head + "\n", "utf8");
         const staged = readStaged(staging);
         if (!staged) return c.json({ error: "not a Chrysalis app (missing or invalid manifest.json)" }, 422);
-        const pluginPreviews = staged.plugins.map((pid) => {
-          try {
-            const m = JSON.parse(fs.readFileSync(path.join(staging, "plugins", pid, "manifest.json"), "utf8")) as {
-              name?: string; version?: string; description?: string; permissions?: string[]; networkHosts?: string[];
-            };
-            return {
-              id: pid, name: m.name ?? pid, version: m.version ?? null, description: m.description ?? null,
-              permissions: m.permissions ?? [], networkHosts: m.networkHosts ?? [],
-            };
-          } catch {
-            return { id: pid, name: pid, version: null, description: null, permissions: [], networkHosts: [] };
-          }
-        });
         return c.json({
           staged: true, slug, head,
           manifest: { name: staged.manifest.name, version: staged.manifest.version, author: staged.manifest.author ?? null },
-          plugins: pluginPreviews,
+          plugins: previewPlugins(staging, staged.plugins),
         });
       } catch (e) {
         fs.rmSync(staging, { recursive: true, force: true });
@@ -3074,6 +3217,12 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     if (recorded) return recorded;
     const src = info.manifest.source;
     return src?.git ? { git: src.git, ref: src.ref ?? "HEAD" } : null;
+  };
+
+  const sameTree = (a: Map<string, Buffer>, b: Map<string, Buffer>): boolean => {
+    if (a.size !== b.size) return false;
+    for (const [rel, body] of a) if (!b.get(rel)?.equals(body)) return false;
+    return true;
   };
 
   /** Has the app's code changed since the version it was installed from?
@@ -3181,8 +3330,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     if (!info) return c.json({ error: "app not found" }, 404);
     const source = installSourceOf(p, info);
     if (!source) return c.json({ error: "this app has no update source: it was not installed from a repository" }, 400);
-    const official = isOfficialSource(source.git, officialSources);
-    const body = (await c.req.json().catch(() => ({}))) as { confirmDeps?: boolean; strategy?: unknown };
+    const official = !source.restored && isOfficialSource(source.git, officialSources);
+    const body = (await c.req.json().catch(() => ({}))) as { confirmDeps?: boolean; strategy?: unknown; head?: unknown };
     const strategy = UPDATE_STRATEGIES.find((x) => x === body.strategy) ?? "merge";
 
     const staging = path.join(p.apps, ".staging", `${id}-update`);
@@ -3210,13 +3359,39 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       return c.json({ error: `v${to} needs Chrysalis engine ${incomingManifest.engine}, and this engine is v${ENGINE_INFO.version}. Update the engine first.` }, 409);
     }
 
-    // Changed dependencies carry supply-chain weight for third-party apps:
-    // the first pass reports WHAT would be installed and changes nothing.
-    // Official apps come from the maintainers, who own that choice.
+    // What a third-party update would newly be able to do is reviewed before
+    // anything changes: changed packages (supply-chain weight) and permissions
+    // its plugins ask for that were never granted. The confirm must name the
+    // commit that review showed. Official apps come from the maintainers, who
+    // own that choice.
     const depFingerprint = (dir: string): string =>
       ["package.json", "package-lock.json", "bun.lock", "bun.lockb"].map((f) => { try { return fs.readFileSync(path.join(dir, f), "utf8"); } catch { return ""; } }).join("\u0000");
     const depsChanged = hasPackages(incoming) && depFingerprint(info.dir) !== depFingerprint(incoming);
-    if (!official && depsChanged && config.apps.packageDownloads && body.confirmDeps !== true) {
+    const reviewedHead = typeof body.head === "string" ? body.head : null;
+    if (body.confirmDeps === true && reviewedHead && reviewedHead !== head) {
+      dropStaging();
+      return c.json({ error: "the repository moved since you reviewed this update: check for updates again" }, 409);
+    }
+    const settingsNow = (() => {
+      try { return JSON.parse(fs.readFileSync(p.settings, "utf8")) as { pluginGrants?: Record<string, string[]> }; } catch { return {}; }
+    })();
+    const permissions: { id: string; name: string; added: string[] }[] = [];
+    try {
+      for (const pid of fs.readdirSync(path.join(incoming, "plugins"))) {
+        try {
+          const m = JSON.parse(fs.readFileSync(path.join(incoming, "plugins", pid, "manifest.json"), "utf8")) as { name?: unknown; permissions?: unknown };
+          const granted = settingsNow.pluginGrants?.[`${id}__${pid}`] ?? [];
+          const added = declaredPermissions(m).filter((x) => !granted.includes(x));
+          if (added.length) permissions.push({ id: pid, name: typeof m.name === "string" ? m.name : pid, added });
+        } catch { /* not a plugin */ }
+      }
+    } catch { /* no plugins */ }
+    const reviewDeps = depsChanged && config.apps.packageDownloads;
+    if (!official && (reviewDeps || permissions.length) && body.confirmDeps !== true) {
+      if (!reviewDeps) {
+        dropStaging();
+        return c.json({ needsDepConfirm: true, head, deps: { added: [], changed: [], removed: [], nonRegistry: [] }, permissions });
+      }
       const readDeps = (dir: string): Record<string, string> => {
         try {
           const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")) as Record<string, Record<string, string> | undefined>;
@@ -3260,7 +3435,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         }
       } catch { /* no bun lock */ }
       dropStaging();
-      return c.json({ needsDepConfirm: true, head, deps: { added, changed, removed, nonRegistry } });
+      return c.json({ needsDepConfirm: true, head, deps: { added, changed, removed, nonRegistry }, permissions });
     }
 
     const before = (await git.commitAll(p.root, u.username, `app(${id}): your version before the update to v${to}`)) ?? (await git.log(p.root, 1))[0]?.oid ?? null;
@@ -3295,6 +3470,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       if (config.apps.packageDownloads) await installApp(info.dir);
     }
     grantBundledPlugins(p, id, info.dir, source.git);
+    if (source.restored && sameTree(readCodeTree(info.dir), theirs)) writeInstallSource(p.appUpstream, id, { git: source.git, ref: source.ref });
     invalidatePluginCache();
     evictAgents(u.username);
     await runAppUpdateHooks(u, p, id, from, to);
@@ -3319,15 +3495,24 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const appDir = safeResolve(p.apps, id);
     if (!fs.existsSync(path.join(appDir, "manifest.json"))) return c.json({ error: "no such app" }, 404);
     const disabled = disabledAppPlugins(p.settings);
-    const plugins = discoverAppPlugins(p.apps, id).map((pl) => ({
-      id: pl.id.replace(/^.*__/, ""),
-      name: pl.manifest.name ?? pl.id,
-      version: pl.manifest.version ?? null,
-      description: pl.manifest.description ?? null,
-      permissions: pl.manifest.permissions ?? [],
-      networkHosts: pl.manifest.networkHosts ?? [],
-      disabled: disabled.has(pl.id),
-    }));
+    const info = readApp(p.apps, id);
+    const appSource = info ? installSourceOf(p, info)?.git : undefined;
+    const plugins = discoverAppPlugins(p.apps, id).map((pl) => {
+      // a plugin imported into the app on its own updates from its repository;
+      // the app's bundled ones update with the app
+      const git = (pl.manifest as { source?: { git?: unknown } }).source?.git;
+      const repository = typeof git === "string" && isValidGitUrl(git) && (!appSource || normalizeGitUrl(git) !== normalizeGitUrl(appSource)) ? git : null;
+      return {
+        id: pl.id.replace(/^.*__/, ""),
+        name: pl.manifest.name ?? pl.id,
+        version: pl.manifest.version ?? null,
+        description: pl.manifest.description ?? null,
+        permissions: pl.manifest.permissions ?? [],
+        networkHosts: pl.manifest.networkHosts ?? [],
+        disabled: disabled.has(pl.id),
+        repository,
+      };
+    });
     return c.json({ plugins });
   });
 

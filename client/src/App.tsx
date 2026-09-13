@@ -9,7 +9,7 @@ import { IconSmall } from "./ui/icon"
 import { Icon } from "./ui/icon"
 import { IconButton } from "./ui/button"
 import { Button } from "./ui/button"
-import { api, prefs, authApi, appPluginsApi, exportApp, updatesApi, type AuthUser } from "./api"
+import { api, prefs, authApi, appPluginsApi, confirmAppFile, exportApp, previewAppFile, updatesApi, type AppImportPreview, type AuthUser } from "./api"
 import { SettingsBody, type TabValue } from "./settings"
 import type { LaunchInfo, Me, StoreApp } from "./types"
 import { StoreDialog, WelcomeApps, useStore } from "./store"
@@ -1068,6 +1068,9 @@ type TreeDir = { name: string; path: string; type: "dir"; children: TreeNode[] }
 type TreeFile = { name: string; path: string; type: "file"; size?: number }
 type TreeNode = TreeDir | TreeFile
 
+/** The project's community server, linked from the launcher footer. */
+const COMMUNITY_URL = "https://discord.gg/maFVqyeD4Q"
+
 /** Which of the account's apps have newer commits upstream, for the launcher
  *  badges. One engine-side check per app with an install source, refreshed
  *  after an update lands. */
@@ -1240,7 +1243,7 @@ function LaunchPicker(props: {
               >
                 <IconSmall name="folder-add-left" size="normal" className="text-icon" />
                 <span className="text-13 font-medium text-ink">{tr("Import app")}</span>
-                <span className="text-11 leading-4 text-ink-muted">{tr("from a git repository")}</span>
+                <span className="text-11 leading-4 text-ink-muted">{tr("from git or a backup file")}</span>
               </button>
             </div>
           </div>
@@ -1283,6 +1286,18 @@ function LaunchPicker(props: {
                 </svg>
                 GitHub
               </a> : null}
+            <a
+              href={COMMUNITY_URL}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="flex items-center gap-1 text-ink-muted transition-colors hover:text-ink"
+              title={COMMUNITY_URL}
+            >
+              <svg viewBox="0 0 16 16" className="size-3.5 fill-current" aria-hidden="true">
+                <path d="M13.55 3.02A13.2 13.2 0 0 0 10.3 2a.05.05 0 0 0-.05.02c-.14.25-.3.58-.4.84a12.2 12.2 0 0 0-3.67 0 8.5 8.5 0 0 0-.41-.84.05.05 0 0 0-.05-.02c-1.14.2-2.23.54-3.25 1.02a.05.05 0 0 0-.02.02C.38 6.12-.18 9.13.1 12.1a.06.06 0 0 0 .02.04 13.3 13.3 0 0 0 4 2.02.05.05 0 0 0 .06-.02c.3-.42.58-.87.82-1.33a.05.05 0 0 0-.03-.07 8.7 8.7 0 0 1-1.25-.6.05.05 0 0 1 0-.08l.25-.2a.05.05 0 0 1 .05 0 9.5 9.5 0 0 0 8.06 0 .05.05 0 0 1 .05 0l.25.2a.05.05 0 0 1 0 .08c-.4.23-.82.43-1.25.6a.05.05 0 0 0-.03.07c.24.46.52.9.82 1.33a.05.05 0 0 0 .06.02 13.2 13.2 0 0 0 4-2.02.05.05 0 0 0 .03-.04c.33-3.43-.56-6.4-2.36-9.06a.04.04 0 0 0-.02-.02ZM5.35 10.3c-.79 0-1.44-.72-1.44-1.61 0-.89.64-1.61 1.44-1.61.8 0 1.45.73 1.44 1.61 0 .89-.64 1.61-1.44 1.61Zm5.3 0c-.79 0-1.44-.72-1.44-1.61 0-.89.64-1.61 1.44-1.61.8 0 1.45.73 1.44 1.61 0 .89-.63 1.61-1.44 1.61Z" />
+              </svg>
+              Discord
+            </a>
           </div>
         ) : null}
       {creating ? <NewAppDialog
@@ -1346,6 +1361,7 @@ type UpdateReply = {
   needsDepConfirm?: boolean
   head?: string
   deps?: { added: { name: string; spec: string }[]; changed: { name: string; spec: string; was: string }[]; removed: string[]; nonRegistry: string[] }
+  permissions?: { id: string; name: string; added: string[] }[]
 }
 
 function AppDetail(props: {
@@ -1395,6 +1411,7 @@ function AppDetail(props: {
         changed: { name: string; spec: string; was: string }[]
         removed: string[]
         nonRegistry: string[]
+        permissions: { id: string; name: string; added: string[] }[]
       }
     | { state: "error"; message: string }
   >({ state: "idle" })
@@ -1431,12 +1448,12 @@ function AppDetail(props: {
     }
   }
 
-  const runUpdate = async (strategy: UpdateStrategy = "merge", confirmDeps = false) => {
+  const runUpdate = async (strategy: UpdateStrategy = "merge", reviewed: { head: string | null } | null = null) => {
     setUpdates({ state: "updating" })
     try {
       const r = await api<UpdateReply>("POST", `/v1/apps/${encodeURIComponent(props.appId)}/update`, {
         strategy,
-        ...(confirmDeps ? { confirmDeps: true } : {}),
+        ...(reviewed ? { confirmDeps: true, ...(reviewed.head ? { head: reviewed.head } : {}) } : {}),
       })
       if (r.needsDepConfirm) {
         setUpdates({
@@ -1447,6 +1464,7 @@ function AppDetail(props: {
           changed: r.deps?.changed ?? [],
           removed: r.deps?.removed ?? [],
           nonRegistry: r.deps?.nonRegistry ?? [],
+          permissions: r.permissions ?? [],
         })
         return
       }
@@ -1613,22 +1631,31 @@ function AppDetail(props: {
         </div> : null}
       {updates.state === "dep-review" ? <div className="flex flex-col gap-2 border-b border-line bg-warning-soft/10 px-4 py-2.5 text-12">
           <p className="text-12 text-ink">
-            {tr("This update installs new packages. Nothing has changed yet.")}
+            {updates.added.length || updates.changed.length || updates.removed.length
+              ? tr("This update installs new packages. Nothing has changed yet.")
+              : tr("This update asks for new permissions. Nothing has changed yet.")}
           </p>
           <div className="flex flex-col gap-1 font-mono text-11">
-            {(updates.state === "dep-review" ? updates.added : []).map((d) => (<span key={d.name}><span className="text-success">+ {d.name}</span> <span className="text-ink-faint">{d.spec}</span></span>))}
-            {(updates.state === "dep-review" ? updates.changed : []).map((d) => (<span key={d.name}><span className="text-warning">~ {d.name}</span> <span className="text-ink-faint">{d.was} → {d.spec}</span></span>))}
-            {(updates.state === "dep-review" ? updates.removed : []).map((name) => (<span key={name} className="text-ink-faint">- {name}</span>))}
-            {(updates.state === "dep-review" ? updates.nonRegistry : []).map((entry) => (<span key={entry} className="text-danger">! {entry}</span>))}
+            {updates.added.map((d) => (<span key={d.name}><span className="text-success">+ {d.name}</span> <span className="text-ink-faint">{d.spec}</span></span>))}
+            {updates.changed.map((d) => (<span key={d.name}><span className="text-warning">~ {d.name}</span> <span className="text-ink-faint">{d.was} → {d.spec}</span></span>))}
+            {updates.removed.map((name) => (<span key={name} className="text-ink-faint">- {name}</span>))}
+            {updates.nonRegistry.map((entry) => (<span key={entry} className="text-danger">! {entry}</span>))}
           </div>
-          {updates.state === "dep-review" && updates.nonRegistry.length > 0 ? <p className="text-11 text-ink-muted">
+          {updates.nonRegistry.length > 0 ? <p className="text-11 text-ink-muted">
               {tr("Some packages come from outside the public npm registry. Review them before installing.")}
             </p> : null}
+          {updates.permissions.length > 0 ? <div className="flex flex-col gap-1">
+              {updates.permissions.map((pl) => (
+                <div key={pl.id} className="flex flex-wrap items-center gap-1">
+                  <span className="text-11 text-ink">{tr("{plugin} can now use:", { plugin: pl.name })}</span>
+                  {pl.added.map((perm) => (<span key={perm} className="rounded-full bg-warning-soft/20 px-1.5 py-0.5 text-10 text-ink-muted">{perm}</span>))}
+                </div>
+              ))}
+            </div> : null}
           <div className="flex justify-end gap-2">
             <Button
               variant="ghost-muted"
               size="small"
-             
               onClick={() => { setUpdates({ state: "idle" }); void checkUpdates() }}
             >
               {tr("Cancel")}
@@ -1636,10 +1663,9 @@ function AppDetail(props: {
             <Button
               variant="danger"
               size="small"
-             
-              onClick={() => void runUpdate(updates.state === "dep-review" ? updates.strategy : "merge", true)}
+              onClick={() => { if (updates.state === "dep-review") void runUpdate(updates.strategy, { head: updates.head }) }}
             >
-              {tr("Install and update")}
+              {tr("Allow and update")}
             </Button>
           </div>
         </div> : null}
@@ -1751,22 +1777,23 @@ function dataEgressWarning(permissions: string[], networkHosts: string[]): strin
   return tr("Can read this app's stored data (chats, characters, personas) and send it to {where}.", { where })
 }
 
-/** Import an app from a git repository: preview what's inside (bundled
- *  plugins and the permissions they ask for) and spell out the risk of
- *  running community code before anything is installed. */
+/** Import an app from a git repository or a backup file: preview what's
+ *  inside (bundled plugins and the permissions they ask for) and spell out
+ *  the risk of running community code before anything is installed. */
 function ImportAppDialog(props: { from: StoreApp | null; onClose: () => void; onImported: (id: string) => void | Promise<void> }) {
   const from = props.from
+  const [mode, setMode] = useState<"git" | "file">("git")
+  const filePicker = useRef<HTMLInputElement>(null)
   const [gitUrl, setGitUrl] = useState(from?.repository ?? "")
   const ref = from?.ref ? { ref: from.ref } : {}
   const appId = from ? { id: from.id } : {}
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState("")
-  const [preview, setPreview] = useState<{
-    slug: string
-    head: string
-    manifest: { name: string; version: string; author: string | null }
-    plugins: { id: string; name: string; version: string | null; description: string | null; permissions: string[]; networkHosts: string[] }[]
-  } | null>(null)
+  const [preview, setPreview] = useState<
+    | (AppImportPreview & { kind: "git"; slug: string; head: string })
+    | (AppImportPreview & { kind: "file"; file: string; name: string; id: string; data: boolean; updatesFrom: string | null })
+    | null
+  >(null)
 
   const inputClass =
     "w-full rounded-lg border border-line bg-panel px-3 py-2 text-13 text-ink outline-none placeholder:text-ink-muted focus:border-line-focus"
@@ -1776,8 +1803,23 @@ function ImportAppDialog(props: { from: StoreApp | null; onClose: () => void; on
     setErr("")
     setPreview(null)
     try {
-      const r = await api<NonNullable<typeof preview>>("POST", "/v1/apps/import", { gitUrl: gitUrl.trim(), ...ref, ...appId })
-      setPreview(r)
+      const r = await api<AppImportPreview & { slug: string; head: string }>("POST", "/v1/apps/import", { gitUrl: gitUrl.trim(), ...ref, ...appId })
+      setPreview({ ...r, kind: "git" })
+    } catch (e: any) {
+      setErr(e.message ?? String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const stageFile = async (picked: File | undefined) => {
+    if (!picked) return
+    setBusy(true)
+    setErr("")
+    setPreview(null)
+    try {
+      const r = await previewAppFile(picked)
+      setPreview({ ...r, kind: "file", name: picked.name })
     } catch (e: any) {
       setErr(e.message ?? String(e))
     } finally {
@@ -1791,8 +1833,10 @@ function ImportAppDialog(props: { from: StoreApp | null; onClose: () => void; on
     setBusy(true)
     setErr("")
     try {
-      // head pins the install to the commit this preview reviewed
-      const r = await api<{ ok: boolean; id: string }>("POST", "/v1/apps/import", { gitUrl: gitUrl.trim(), ...ref, ...appId, confirm: p.slug, head: p.head })
+      // a git confirm is pinned to the commit this preview reviewed
+      const r = p.kind === "file"
+        ? await confirmAppFile(p.file, p.name)
+        : await api<{ ok: boolean; id: string }>("POST", "/v1/apps/import", { gitUrl: gitUrl.trim(), ...ref, ...appId, confirm: p.slug, head: p.head })
       // dependencies + first build in the background, like New app
       void api("POST", `/v1/apps/${encodeURIComponent(r.id)}/install`).catch(() => undefined)
       await props.onImported(r.id)
@@ -1811,22 +1855,42 @@ function ImportAppDialog(props: { from: StoreApp | null; onClose: () => void; on
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once, for the Store app it opened with
   }, [from])
 
+  const switchMode = (next: "git" | "file") => {
+    setMode(next)
+    setPreview(null)
+    setErr("")
+  }
+
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4 max-md:items-end" onClick={props.onClose}>
       <div
         className="flex max-h-[85vh] w-full max-w-md flex-col gap-3 overflow-hidden rounded-xl border border-line bg-panel p-4"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 className="text-14 font-medium text-ink">{from ? tr("Install {name}", { name: from.name }) : tr("Import app from git")}</h3>
-        {from ? <p className="truncate font-mono text-11 text-ink-faint" title={from.repository}>{from.repository}</p> : <input
+        <h3 className="text-14 font-medium text-ink">{from ? tr("Install {name}", { name: from.name }) : tr("Import app")}</h3>
+        {!from && !preview ? <div className="flex gap-1 rounded-lg bg-pressed/50 p-0.5 text-12" role="tablist">
+            {(["git", "file"] as const).map((m) => (
+              <button
+                key={m}
+                role="tab"
+                aria-selected={mode === m}
+                className={cn("flex-1 cursor-pointer rounded-md px-2 py-1 transition-colors", mode === m ? "bg-panel text-ink shadow-[var(--s-raised)]" : "text-ink-muted hover:text-ink")}
+                onClick={() => switchMode(m)}
+              >
+                {m === "git" ? tr("Git repository") : tr("Backup file")}
+              </button>
+            ))}
+          </div> : null}
+        {from ? <p className="truncate font-mono text-11 text-ink-faint" title={from.repository}>{from.repository}</p> : null}
+        {!from && !preview && mode === "git" ? <input
           className={inputClass}
           placeholder="https://github.com/you/your-chrysalis-app"
           value={gitUrl}
           onChange={(e) => setGitUrl(e.currentTarget.value)}
-        />}
-        {err ? <><div className="text-12 leading-4 text-danger">{err}</div></>: null}
+        /> : null}
+        {err ? <div className="text-12 leading-4 text-danger">{err}</div> : null}
         {!preview && from && busy ? <p className="text-12 text-ink-faint">{tr("Inspecting…")}</p> : null}
-        {!preview && !from ? <><p className="text-12 leading-4 text-ink-muted">
+        {!preview && !from && mode === "git" ? <><p className="text-12 leading-4 text-ink-muted">
             {tr("The repository is cloned and inspected first, nothing runs until you review what it bundles and confirm.")}
           </p>
           <div className="flex justify-end gap-2">
@@ -1834,7 +1898,26 @@ function ImportAppDialog(props: { from: StoreApp | null; onClose: () => void; on
             <Button variant="neutral" size="small" disabled={busy || !gitUrl.trim()} onClick={() => void stage()}>
               {busy ? tr("Inspecting…") : tr("Inspect repository")}
             </Button>
-          </div></>: null}
+          </div></> : null}
+        {!preview && !from && mode === "file" ? <><p className="text-12 leading-4 text-ink-muted">
+            {tr("Pick an app's .zip, like one made with Export app. It is unpacked and inspected first, nothing runs until you confirm.")}
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost-muted" size="small" onClick={props.onClose}>{tr("Cancel")}</Button>
+            <Button variant="neutral" size="small" disabled={busy} onClick={() => filePicker.current?.click()}>
+              {busy ? tr("Inspecting…") : tr("Choose file")}
+            </Button>
+            <input
+              ref={filePicker}
+              type="file"
+              accept=".zip,application/zip"
+              className="hidden"
+              onChange={(e) => {
+                void stageFile(e.currentTarget.files?.[0])
+                e.currentTarget.value = ""
+              }}
+            />
+          </div></> : null}
         {preview ? (
             <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
               <div>
@@ -1844,6 +1927,13 @@ function ImportAppDialog(props: { from: StoreApp | null; onClose: () => void; on
                   {preview.manifest.author ? <>{tr("· by {author}", { author: preview.manifest.author })}</> : null}
                 </p>
               </div>
+              {preview.kind === "file" ? <ul className="flex flex-col gap-1 text-12 leading-4 text-ink-muted">
+                  <li>{tr("Installs as {id}.", { id: preview.id })}</li>
+                  <li>{preview.data ? tr("Includes the app's data.") : tr("Has no app data.")}</li>
+                  <li className="break-all">
+                    {preview.updatesFrom ? tr("Keeps updating from {repository}.", { repository: preview.updatesFrom }) : tr("Does not get updates.")}
+                  </li>
+                </ul> : null}
               <div className="rounded-lg border border-line p-3">
                 <p className="text-12 font-medium text-ink">
                   {tr("Bundled plugins ({n})", { n: preview.plugins.length })}
@@ -1875,6 +1965,8 @@ function ImportAppDialog(props: { from: StoreApp | null; onClose: () => void; on
               </div>
               {from?.official ? <p className="rounded-lg border border-line p-3 text-12 leading-4 text-ink-muted">
                   {tr("An official app, made by the Chrysalis maintainers. Its plugins get the permissions listed above. You can delete it any time.")}
+                </p> : preview.kind === "file" ? <p className="rounded-lg border border-warning/30 bg-warning-soft/10 p-3 text-12 leading-4 text-ink-muted">
+                  {tr("An app from a file runs real code on your Chrysalis server: plugins can read and write the app's data, call models, and reach the hosts listed above. Only import files you made or trust. Your existing apps and data are untouched.")}
                 </p> : <p className="rounded-lg border border-warning/30 bg-warning-soft/10 p-3 text-12 leading-4 text-ink-muted">
                 {tr("Community apps run real code on your Chrysalis server: plugins can read and write the app's data, call models, and reach the hosts listed above. Only import repositories you trust. Your existing apps and data are untouched; you can delete it any time.")}
               </p>}
@@ -1950,17 +2042,21 @@ export function AppPluginsDialog(props: { appId: string; open: boolean; onClose:
     manifest: { name: string; version: string | null; author: string | null; description: string | null }
     permissions: string[]
     networkHosts: string[]
+    installed: { id: string; version: string | null } | null
   } | null>(null)
 
   const inputClass =
     "w-full rounded-lg border border-line bg-panel px-2.5 py-1.5 text-13 text-ink outline-none placeholder:text-ink-muted focus:border-line-focus"
 
-  const stage = async () => {
+  // an imported plugin updates by inspecting its repository again: the same
+  // review, and the confirm replaces it in place
+  const stage = async (url = gitUrl) => {
     setBusy(true)
     setErr("")
     setPreview(null)
+    setGitUrl(url)
     try {
-      setPreview(await appPluginsApi.importPreview(props.appId, gitUrl.trim()))
+      setPreview(await appPluginsApi.importPreview(props.appId, url.trim()))
     } catch (e: any) {
       setErr(e.message ?? String(e))
     } finally {
@@ -2049,6 +2145,9 @@ export function AppPluginsDialog(props: { appId: string; open: boolean; onClose:
                           {preview!.manifest.author ? <>{tr("· by {author}", { author: preview!.manifest.author })}</> : null}
                         </p>
                         {preview!.manifest.description ? <p className="mt-0.5 text-12 leading-4 text-ink-muted">{preview!.manifest.description}</p> : null}
+                        {preview!.installed ? <p className="mt-0.5 text-12 leading-4 text-ink">
+                            {tr("Updates the installed copy{version}. Its permissions become the ones below.", { version: preview!.installed.version ? ` (v${preview!.installed.version})` : "" })}
+                          </p> : null}
                       </div>
                       <div className="flex flex-wrap gap-1">
                         {(preview!.permissions).map((perm) => (
@@ -2066,7 +2165,7 @@ export function AppPluginsDialog(props: { appId: string; open: boolean; onClose:
                       <div className="flex justify-end gap-2">
                         <Button variant="ghost-muted" size="small" onClick={() => setPreview(null)}>{tr("Back")}</Button>
                         <Button variant="neutral" size="small" disabled={busy} onClick={() => void confirmImport()}>
-                          {busy ? tr("Importing…") : tr("Import into this app")}
+                          {busy ? tr("Importing…") : preview!.installed ? tr("Update plugin") : tr("Import into this app")}
                         </Button>
                       </div>
                     </div>}
@@ -2077,6 +2176,9 @@ export function AppPluginsDialog(props: { appId: string; open: boolean; onClose:
                       <span className="flex-1 truncate font-medium">{pl.name}</span>
                       {pl.disabled && <span className="text-11 text-ink-faint">{tr("off")}</span>}
                       {pl.version && <span className="text-11 text-ink-faint">v{pl.version}</span>}
+                      {pl.repository ? <Button variant="ghost-muted" size="small" disabled={busy} title={pl.repository} onClick={() => void stage(pl.repository)}>
+                          {tr("Check for update")}
+                        </Button> : null}
                       <Button variant="ghost-muted" size="small" disabled={busy} onClick={() => void toggle(pl.id, !!pl.disabled)}>
                         {pl.disabled ? tr("Enable") : tr("Disable")}
                       </Button>
