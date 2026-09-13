@@ -26,7 +26,7 @@ export const OFFICIAL_SOURCES: readonly string[] = ["https://github.com/ProjectC
  *  repository each one lives in now. An install the engine seeded from its
  *  own copy keeps its official status and updates from there. */
 export const FORMERLY_SHIPPED: Readonly<Record<string, string>> = {
-  roleplay: "https://github.com/ProjectChrysalis/Roleplay",
+  roleplay: "https://github.com/ProjectChrysalis/Roleplay-Chrysalis",
 };
 
 /** Record where formerly shipped apps now come from, so an install an earlier

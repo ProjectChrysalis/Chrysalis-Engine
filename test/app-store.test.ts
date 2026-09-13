@@ -26,7 +26,7 @@ const entry = (over: Record<string, unknown> = {}) => ({
   name: "Roleplay",
   description: "A roleplay studio.",
   author: "Project Chrysalis",
-  repository: "https://github.com/ProjectChrysalis/Roleplay",
+  repository: "https://github.com/ProjectChrysalis/Roleplay-Chrysalis",
   tags: ["roleplay"],
   added: "2026-09-13",
   ...over,
@@ -55,7 +55,7 @@ describe("store list", () => {
   });
 
   it("official means a repository directly under a maintainers' owner", () => {
-    expect(isOfficialSource("https://github.com/ProjectChrysalis/Roleplay")).toBe(true);
+    expect(isOfficialSource("https://github.com/ProjectChrysalis/Roleplay-Chrysalis")).toBe(true);
     expect(isOfficialSource("https://GitHub.com/projectchrysalis/roleplay.git/")).toBe(true);
     for (const url of [
       "https://github.com/ProjectChrysalisX/app",
@@ -194,7 +194,7 @@ describe("installing from the store", () => {
     const p = userPaths(dataDir, "alice");
     fs.mkdirSync(path.join(p.apps, "my-roleplay"), { recursive: true });
     fs.writeFileSync(path.join(p.apps, "my-roleplay", "manifest.json"), JSON.stringify({ name: "Roleplay", version: "1", kind: "app" }));
-    writeInstallSource(p.appUpstream, "my-roleplay", { git: "https://github.com/projectchrysalis/roleplay.git", ref: "HEAD" });
+    writeInstallSource(p.appUpstream, "my-roleplay", { git: "https://github.com/projectchrysalis/roleplay-chrysalis.git", ref: "HEAD" });
     expect((await list()).apps.find((a) => a.id === "roleplay")?.installed).toBe("my-roleplay");
 
     const config = defaultInstanceConfig();
@@ -246,12 +246,12 @@ describe("installing from the store", () => {
     expect(adoptFormerlyShipped(p)).toEqual([]);
     // seeded by the engine (it wrote the baseline): adopted once
     writeBaseline(p.appUpstream, "roleplay", "4.16.1", readCodeTree(path.join(p.apps, "roleplay")));
-    expect(adoptFormerlyShipped(p)).toEqual([{ id: "roleplay", repository: "https://github.com/ProjectChrysalis/Roleplay" }]);
+    expect(adoptFormerlyShipped(p)).toEqual([{ id: "roleplay", repository: "https://github.com/ProjectChrysalis/Roleplay-Chrysalis" }]);
     expect(adoptFormerlyShipped(p)).toEqual([]);
-    expect(readInstallSource(p.appUpstream, "roleplay")).toEqual({ git: "https://github.com/ProjectChrysalis/Roleplay", ref: "HEAD" });
+    expect(readInstallSource(p.appUpstream, "roleplay")).toEqual({ git: "https://github.com/ProjectChrysalis/Roleplay-Chrysalis", ref: "HEAD" });
     const manifest = JSON.parse(fs.readFileSync(path.join(p.apps, "roleplay", "manifest.json"), "utf8")) as Record<string, unknown>;
     expect(manifest.official).toBeUndefined();
-    expect(manifest.source).toEqual({ git: "https://github.com/ProjectChrysalis/Roleplay", ref: "HEAD" });
+    expect(manifest.source).toEqual({ git: "https://github.com/ProjectChrysalis/Roleplay-Chrysalis", ref: "HEAD" });
   });
 
   it("remembers the day the Store was last looked at", async () => {
