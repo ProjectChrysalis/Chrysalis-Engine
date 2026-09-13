@@ -47,7 +47,7 @@ jobs:
         run: |
           mkdir -p out/dist/npm-pack
           cd out/dist/npm && npm pack --pack-destination ../npm-pack
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: downloads
           path: |
@@ -98,7 +98,7 @@ jobs:
           "$tools/aapt2" dump badging "$apk" | head -3
           "$tools/apksigner" verify --print-certs "$apk" | head -3
           rm -f "$RUNNER_TEMP/release.jks"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: apk
           path: out/dist/*.apk
