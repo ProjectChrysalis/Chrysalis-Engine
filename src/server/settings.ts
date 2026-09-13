@@ -9,6 +9,7 @@
 import { applySettings, saveConfigFile, type InstanceConfig, type LoadedConfig } from "../config.js";
 import { ENGINE_VERSION, INSTALL_KIND, IN_CONTAINER, isPortable, type InstallKind } from "../install.js";
 import { engineUrls } from "./listen.js";
+import { SELF_UPDATE } from "../self-update.js";
 
 export interface ServerInfo {
   version: string;
@@ -17,6 +18,8 @@ export interface ServerInfo {
   container: boolean;
   /** config.yaml and data/ live in the program's own folder */
   portable: boolean;
+  /** this copy downloads and installs its own updates */
+  selfUpdate: boolean;
   configPath: string;
   homeDir: string;
   dataDir: string;
@@ -58,6 +61,7 @@ export class ServerSettings {
       installKind: INSTALL_KIND,
       container: IN_CONTAINER,
       portable: isPortable(homeDir),
+      selfUpdate: SELF_UPDATE,
       configPath: loaded.path,
       homeDir,
       dataDir,

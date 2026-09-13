@@ -421,6 +421,9 @@ const dict = {
   "{plugin} can now use:": "{plugin}이(가) 새로 쓸 수 있는 권한:",
   "· by {author}": "· {author} 제작",
   "“{name}” created": "“{name}” 생성됨",
+  "Update to {version}": "{version}(으)로 업데이트",
+  "Downloading…": "다운로드 중…",
+  "Restarting…": "다시 시작하는 중…",
 }
 
 export default dict

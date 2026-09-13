@@ -421,6 +421,9 @@ const dict = {
   "{plugin} can now use:": "{plugin} が新たに使えるもの:",
   "· by {author}": "· {author} 作",
   "“{name}” created": "「{name}」を作成しました",
+  "Update to {version}": "{version} に更新",
+  "Downloading…": "ダウンロード中…",
+  "Restarting…": "再起動中…",
 }
 
 export default dict

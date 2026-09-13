@@ -8,11 +8,20 @@
  * any build other than this one is newer.
  */
 import { ENGINE_REPOSITORY, ENGINE_VERSION } from "./install.js";
+import { pickAsset, SELF_UPDATE } from "./self-update.js";
+
+export interface ReleaseAsset {
+  name: string;
+  url: string;
+  size: number;
+}
 
 export interface ReleaseInfo {
   version: string;
   url: string;
   newer: boolean;
+  /** this computer's download, when this copy can install it itself */
+  asset?: ReleaseAsset;
 }
 
 let cached: { at: number; value: ReleaseInfo | null } | null = null;
@@ -45,6 +54,11 @@ export function stagingVersionOf(release: { name?: unknown; assets?: unknown }):
   return null;
 }
 
+/** Forget the remembered answer (after this copy updated, or to ask again). */
+export function forgetRelease(): void {
+  cached = null;
+}
+
 export async function latestRelease(fetcher: typeof fetch = fetch, current: string = ENGINE_VERSION): Promise<ReleaseInfo | null> {
   if (cached && Date.now() - cached.at < TTL_MS) return cached.value;
   const slug = /^https:\/\/github\.com\/([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/.exec(ENGINE_REPOSITORY ?? "")?.[1];
@@ -66,6 +80,8 @@ export async function latestRelease(fetcher: typeof fetch = fetch, current: stri
           const version = body.tag_name.replace(/^v/, "");
           value = { version, url: body.html_url, newer: isNewer(version, current) };
         }
+        const asset = SELF_UPDATE ? pickAsset(body.assets) : null;
+        if (value && asset) value.asset = asset;
       }
     }
   } catch {

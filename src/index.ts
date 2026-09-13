@@ -33,6 +33,7 @@ import { log, logToFile } from "./logger.js";
 import { writeStdioApproval, type McpServerConfig } from "./mcp/registry.js";
 import { bindLegacyKeys } from "./connections.js";
 import { releaseLock, runningEngine, writeLock } from "./lock.js";
+import { cleanUpAfterUpdate, runReplacement } from "./self-update.js";
 
 // The engine runs unsupervised — an unhandled socket error must not take the
 // user's app dark. Network-grade errors (a client vanished mid-read, a
@@ -245,6 +246,9 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
   if (live) fail(`Chrysalis is already running with this data folder: ${live.url} (pid ${live.pid})`);
 
   log.info(`Chrysalis ${ENGINE_VERSION} (${INSTALL_KIND})`);
+  try {
+    cleanUpAfterUpdate();
+  } catch { /* best effort */ }
   for (const w of loaded.warnings) log.warn(w);
 
   const users = new UserService(dataDir);
@@ -280,7 +284,25 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
     },
     applyRuntime: (next) => Object.assign(sandbox.config, sandboxConfigOf(next)),
   });
-  const app = buildApp({ users, sessions, config, dataDir, bus, sandbox, instance, setupToken, settings });
+  // declared before the app so an installed update can stop serving first
+  let stopping = false;
+  const stopServing = async () => {
+    stopping = true;
+    // stop plugin schedules + look watchers so nothing fires mid-teardown
+    stopAllSchedules();
+    stopLookWatchers();
+    bus.dispose();
+    releaseLock(dataDir, instance);
+    await listener?.stop();
+  };
+  const restart = async () => {
+    // let the reply that started the update reach the browser
+    await new Promise((r) => setTimeout(r, 1500));
+    log.info("restarting into the new version");
+    await stopServing();
+    runReplacement();
+  };
+  const app = buildApp({ users, sessions, config, dataDir, bus, sandbox, instance, setupToken, settings, restart });
   bus.attach(users, sessions);
 
   listener = new Listener({ homeDir, bus, handle: (req, peerAddress) => app.fetch(req, { peerAddress }) });
@@ -302,7 +324,11 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
   log.info(`Log file:        ${logFile}`);
   if (setupLink) log.info("First run: open the link above to create your account.");
   log.info("----------------------------------------------------------");
-  if (config.openBrowser && (INSTALL_KIND === "binary" || INSTALL_KIND === "npm") && !process.env.container) {
+  // after an update the browser is already open, waiting for this start
+  const updated = process.env.CHRYSALIS_UPDATED === "1";
+  delete process.env.CHRYSALIS_UPDATED;
+  if (updated) log.info(`Updated to Chrysalis ${ENGINE_VERSION}`);
+  if (config.openBrowser && !updated && (INSTALL_KIND === "binary" || INSTALL_KIND === "npm") && !process.env.container) {
     openBrowser(setupLink ?? urls.local);
   }
 
@@ -338,17 +364,10 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
     }
   })();
 
-  let stopping = false;
   const shutdown = () => {
     if (stopping) return;
-    stopping = true;
     log.info("shutting down");
-    // stop plugin schedules + look watchers so nothing fires mid-teardown
-    stopAllSchedules();
-    stopLookWatchers();
-    bus.dispose();
-    releaseLock(dataDir, instance);
-    void listener?.stop().then(() => process.exit(0));
+    void stopServing().then(() => process.exit(0));
     setTimeout(() => process.exit(0), 2000).unref();
   };
   process.on("SIGINT", shutdown);

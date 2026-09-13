@@ -421,6 +421,9 @@ const dict = {
   "{plugin} can now use:": "{plugin} 新增可用权限：",
   "· by {author}": "· 由 {author}",
   "“{name}” created": "“{name}”已创建",
+  "Update to {version}": "更新到 {version}",
+  "Downloading…": "正在下载…",
+  "Restarting…": "正在重启…",
 }
 
 export default dict

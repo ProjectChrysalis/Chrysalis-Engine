@@ -421,6 +421,9 @@ const dict = {
   "{plugin} can now use:": "{plugin} artık şunları kullanabilir:",
   "· by {author}": "· {author} tarafından",
   "“{name}” created": "„{name}” oluşturuldu",
+  "Update to {version}": "{version} sürümüne güncelle",
+  "Downloading…": "İndiriliyor…",
+  "Restarting…": "Yeniden başlatılıyor…",
 }
 
 export default dict

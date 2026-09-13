@@ -9,7 +9,7 @@ export interface Me {
 }
 
 export interface LaunchInfo {
-  engine?: { version: string; repository: string | null }
+  engine?: { version: string; repository: string | null; admin?: boolean }
   apps: { id: string; name?: string; kind?: string; author?: string | null; official?: boolean; repository?: string | null }[]
   default?: string | null
 }

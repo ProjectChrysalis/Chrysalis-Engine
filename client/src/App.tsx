@@ -11,6 +11,7 @@ import { IconButton } from "./ui/button"
 import { Button } from "./ui/button"
 import { api, prefs, authApi, appPluginsApi, confirmAppFile, exportApp, previewAppFile, updatesApi, type AppImportPreview, type AuthUser } from "./api"
 import { SettingsBody, type TabValue } from "./settings"
+import { EngineUpdateButton } from "./server-settings"
 import type { LaunchInfo, Me, StoreApp } from "./types"
 import { StoreDialog, WelcomeApps, useStore } from "./store"
 import { tr, useLocale } from "./i18n/index"
@@ -1274,6 +1275,7 @@ function LaunchPicker(props: {
       {props.launch?.engine ? (
           <div className="flex items-center gap-2 px-1 pb-1 pt-0.5 text-11 text-ink-faint">
             <span>{tr("Chrysalis engine v{version}", { version: props.launch.engine.version })}</span>
+            {props.launch.engine.admin ? <EngineUpdateButton /> : null}
             {props.launch.engine.repository ? <a
                 href={props.launch.engine.repository}
                 target="_blank"

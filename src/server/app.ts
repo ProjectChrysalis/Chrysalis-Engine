@@ -22,6 +22,7 @@ import type { InstanceConfig } from "../config.js";
 import { ENGINE_REPOSITORY, ENGINE_VERSION, resourcesDir } from "../install.js";
 import type { ServerSettings } from "./settings.js";
 import { latestRelease } from "../updates.js";
+import { SELF_UPDATE, startUpdate, updateState } from "../self-update.js";
 import { userPaths, safeResolve, type UserPaths } from "../paths.js";
 import * as git from "../git.js";
 import { UserModelService, ModelNotConfiguredError, type ModelPricing } from "../models.js";
@@ -84,6 +85,8 @@ export interface AppDeps {
   officialSources?: readonly string[];
   /** How the Store list is fetched (tests substitute a stub). */
   storeFetch?: typeof fetch;
+  /** Stop serving and run the newly installed program in this one's place. */
+  restart?: () => Promise<void>;
 }
 
 const SESSION_COOKIE = "chrysalis_session";
@@ -1498,7 +1501,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         official: officialApp(p, a),
         repository: installSourceOf(p, a)?.git ?? null,
       })),
-      engine: ENGINE_INFO,
+      engine: { ...ENGINE_INFO, admin: c.get("user").role === "admin" },
       agent: true, // the agent tab is always available (kernel-level)
       default: def,
     });
@@ -4374,6 +4377,25 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
       return c.json({ error: (e as Error).message }, 403);
     }
     return c.json({ release: await latestRelease() });
+  });
+  app.get("/v1/admin/server/update", (c) => {
+    try {
+      requireAdmin(c);
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 403);
+    }
+    return c.json(updateState());
+  });
+  app.post("/v1/admin/server/update", async (c) => {
+    try {
+      requireAdmin(c);
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 403);
+    }
+    if (!SELF_UPDATE || !deps.restart) return c.json({ error: "this copy of Chrysalis cannot update itself" }, 400);
+    const release = await latestRelease();
+    if (!release?.newer || !release.asset) return c.json({ error: "no update to install" }, 409);
+    return c.json(startUpdate(release.version, release.asset, deps.restart));
   });
   app.put("/v1/admin/server", async (c) => {
     try {

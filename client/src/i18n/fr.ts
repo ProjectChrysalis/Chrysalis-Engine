@@ -421,6 +421,9 @@ const dict = {
   "{plugin} can now use:": "{plugin} peut désormais utiliser :",
   "· by {author}": "· par {author}",
   "“{name}” created": "« {name} » créée",
+  "Update to {version}": "Mettre à jour vers {version}",
+  "Downloading…": "Téléchargement…",
+  "Restarting…": "Redémarrage…",
 }
 
 export default dict

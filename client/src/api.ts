@@ -323,6 +323,7 @@ export interface ServerInfo {
   installKind: "source" | "binary" | "npm" | "android"
   container: boolean
   portable: boolean
+  selfUpdate: boolean
   configPath: string
   homeDir: string
   dataDir: string
@@ -333,9 +334,25 @@ export interface ServerInfo {
   urls: { local: string; lan: string[] }
 }
 
+export interface EngineRelease {
+  version: string
+  url: string
+  newer: boolean
+  /** present when this copy can install the release itself */
+  asset?: { name: string; url: string; size: number }
+}
+
+export interface EngineUpdateState {
+  phase: "idle" | "downloading" | "installing" | "restarting" | "failed"
+  version?: string
+  error?: string
+}
+
 export const serverApi = {
   get: () => api<ServerInfo>("GET", "/v1/admin/server"),
-  release: () => api<{ release: { version: string; url: string; newer: boolean } | null }>("GET", "/v1/admin/server/release").then((r) => r.release),
+  release: () => api<{ release: EngineRelease | null }>("GET", "/v1/admin/server/release").then((r) => r.release),
+  installUpdate: () => api<EngineUpdateState>("POST", "/v1/admin/server/update"),
+  updateState: () => api<EngineUpdateState>("GET", "/v1/admin/server/update"),
   update: (changes: Record<string, unknown>) => api<ServerInfo & { moved: boolean }>("PUT", "/v1/admin/server", { changes }),
 }
 

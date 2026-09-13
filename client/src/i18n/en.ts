@@ -423,6 +423,9 @@ const en = {
   "{plugin} can now use:": "",
   "· by {author}": "",
   "“{name}” created": "",
+  "Update to {version}": "",
+  "Downloading…": "",
+  "Restarting…": "",
 } as const
 
 export default en

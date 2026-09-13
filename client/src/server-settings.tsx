@@ -3,7 +3,7 @@
 // page follows the engine to its new address.
 import { useEffect, useState, type ReactNode } from "react"
 import { renderSVG } from "uqr"
-import { serverApi, type ServerInfo } from "./api"
+import { serverApi, type EngineRelease, type ServerInfo } from "./api"
 import { tr } from "./i18n/index"
 import { Pane, inputClass } from "./settings"
 import { Button, IconButton } from "./ui/button"
@@ -158,6 +158,73 @@ function updateHow(info: ServerInfo, staging: boolean): string {
   return tr("Download it from the release page and replace this copy. Your data stays in its own folder.")
 }
 
+/** Install a release this copy can update itself to, then wait for the
+ *  restarted engine and reload the page on the new version. */
+function useInstallUpdate(release: EngineRelease) {
+  const [phase, setPhase] = useState<"idle" | "downloading" | "installing" | "restarting">("idle")
+  const [err, setErr] = useState("")
+  const start = async () => {
+    setErr("")
+    try {
+      let state = await serverApi.installUpdate()
+      while (state.phase === "downloading" || state.phase === "installing") {
+        setPhase(state.phase)
+        await new Promise((r) => setTimeout(r, 1000))
+        state = await serverApi.updateState()
+      }
+      if (state.phase === "failed") throw new Error(state.error ?? "update failed")
+    } catch (e) {
+      // the engine going away mid-poll means it is already restarting
+      if (!(e instanceof TypeError)) {
+        setPhase("idle")
+        setErr((e as Error).message ?? String(e))
+        return
+      }
+    }
+    setPhase("restarting")
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 1500))
+      try {
+        const health = (await (await fetch("/v1/health")).json()) as { version?: string }
+        if (health.version === release.version) break
+      } catch { /* still restarting */ }
+    }
+    window.location.reload()
+  }
+  const label = phase === "downloading" ? tr("Downloading…") : phase === "installing" ? tr("Installing…") : phase === "restarting" ? tr("Restarting…") : tr("Update to {version}", { version: release.version })
+  return { start, busy: phase !== "idle", label, err }
+}
+
+/** The launcher footer's update button for admins: installs in place where
+ *  this copy can, and otherwise opens the release page. */
+export function EngineUpdateButton() {
+  const release = useResource(() => serverApi.release())
+  const r = release.data
+  if (!r?.newer) return null
+  return r.asset ? <InstallButton release={r} /> : (
+    <a className="rounded-full bg-accent/20 px-2 py-px font-medium text-11 text-ink transition-colors hover:bg-accent/30" href={r.url} target="_blank" rel="noreferrer noopener">
+      {tr("Chrysalis {version} is available", { version: r.version })}
+    </a>
+  )
+}
+
+function InstallButton(props: { release: EngineRelease }) {
+  const install = useInstallUpdate(props.release)
+  return (
+    <>
+      <button
+        type="button"
+        className="rounded-full bg-accent/20 px-2 py-px font-medium text-11 text-ink transition-colors hover:bg-accent/30 disabled:opacity-70"
+        disabled={install.busy}
+        onClick={() => void install.start()}
+      >
+        {install.label}
+      </button>
+      {install.err ? <span className="text-danger">{install.err}</span> : null}
+    </>
+  )
+}
+
 function ReleaseRow(props: { info: ServerInfo }) {
   const release = useResource(() => serverApi.release())
   const r = release.data
@@ -171,7 +238,19 @@ function ReleaseRow(props: { info: ServerInfo }) {
         <span className="min-w-0 flex-1 text-ink">{tr("Chrysalis {version} is available", { version: r.version })}</span>
         <a className="text-accent underline" href={r.url} target="_blank" rel="noreferrer">{tr("Release page")}</a>
       </div>
-      <p className="text-12 leading-4 text-ink-muted">{updateHow(props.info, props.info.version.includes("-staging"))}</p>
+      {r.asset ? <InstallRow release={r} /> : <p className="text-12 leading-4 text-ink-muted">{updateHow(props.info, props.info.version.includes("-staging"))}</p>}
+    </div>
+  )
+}
+
+function InstallRow(props: { release: EngineRelease }) {
+  const install = useInstallUpdate(props.release)
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div>
+        <Button variant="primary" size="small" disabled={install.busy} onClick={() => void install.start()}>{install.label}</Button>
+      </div>
+      {install.err ? <p className="text-12 leading-4 text-danger">{install.err}</p> : null}
     </div>
   )
 }
