@@ -2,7 +2,6 @@
  * Hono app + routes (SPEC §6). Thin handlers over services.
  */
 import { Hono, type Context, type Next } from "hono";
-import { bodyLimit } from "hono/body-limit";
 import { compress } from "hono/compress";
 import fs from "node:fs";
 import os from "node:os";
@@ -245,9 +244,30 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   app.use("*", requestGuard);
   // The socket accepts a body as large as an app backup. Everywhere else the
   // limit stays where it was, so a request no route needs that much for
-  // (sign-in included) cannot make the engine hold one.
-  const everydayBodies = bodyLimit({ maxSize: 128 * 1024 * 1024, onError: (c) => c.json({ error: "request body too large" }, 413) });
-  app.use("*", (c, next) => (c.req.method === "POST" && c.req.path === "/v1/apps/import" ? next() : everydayBodies(c, next)));
+  // (sign-in included) cannot make the engine hold one. A declared length is
+  // refused up front; a chunked body is counted as it is read, never buffered
+  // here, so a request that is refused later costs nothing.
+  const EVERYDAY_BODY_BYTES = 128 * 1024 * 1024;
+  app.use("*", async (c, next) => {
+    const body = c.req.raw.body;
+    if (!body || (c.req.method === "POST" && c.req.path === "/v1/apps/import")) return next();
+    const declared = c.req.header("content-length");
+    if (declared !== undefined && !c.req.header("transfer-encoding")) {
+      return Number(declared) > EVERYDAY_BODY_BYTES ? c.json({ error: "request body too large" }, 413) : next();
+    }
+    let read = 0;
+    const counted = body.pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          read += chunk.byteLength;
+          if (read > EVERYDAY_BODY_BYTES) controller.error(new Error("request body too large"));
+          else controller.enqueue(chunk);
+        },
+      }),
+    );
+    c.req.raw = new Request(c.req.raw, { body: counted, duplex: "half" } as RequestInit);
+    return next();
+  });
   // Every response was going out uncompressed: the roleplay app's boot payload
   // alone is over a megabyte of JSON, and the built bundles are megabytes more
   // — all of it re-fetched over the LAN by every phone that opens the app.
