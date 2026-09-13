@@ -3,6 +3,7 @@ dist/
 /data/
 *.log
 .env
+.env.*
 
 # local-only agent briefing — never push
 /AGENTS.md
@@ -10,3 +11,19 @@ dist/
 /certs/
 /out/
 /chrysalis-data/
+
+# signing keys and certificates (the APK keystore lives outside the repo)
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+
+# editors, OS and tools
+/.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.tsbuildinfo
+coverage/

@@ -4,10 +4,13 @@ plugins {
     id "com.android.application"
 }
 
-// version and repository come from the engine's package.json, so the APK
-// always matches the server it carries
+// version and repository come from the engine's package.json (or the
+// CHRYSALIS_VERSION a CI build sets), so the APK always matches the server it carries
 def engine = new JsonSlurper().parse(file("../../package.json"))
-def parts = engine.version.tokenize(".-").take(3).collect { it.isInteger() ? it.toInteger() : 0 }
+def engineVersion = System.getenv("CHRYSALIS_VERSION") ?: engine.version
+// staging builds are a separate app, so they install beside the stable one
+def staging = engineVersion.contains("-staging")
+def parts = engineVersion.tokenize(".-").take(3).collect { it.isInteger() ? it.toInteger() : 0 }
 def code = parts[0] * 10000 + parts[1] * 100 + parts[2]
 
 android {
@@ -16,11 +19,13 @@ android {
 
     defaultConfig {
         applicationId "org.projectchrysalis.chrysalis"
+        if (staging) applicationIdSuffix ".staging"
+        resValue "string", "app_name", staging ? "Chrysalis Staging" : "Chrysalis"
         // the compiled Bun server targets Android 9 (API 28) on ARM64
         minSdk 28
         targetSdk 35
         versionCode code
-        versionName engine.version
+        versionName engineVersion
         buildConfigField "String", "REPOSITORY", "\"${engine.repository ?: ""}\""
         ndk { abiFilters "arm64-v8a" }
     }
