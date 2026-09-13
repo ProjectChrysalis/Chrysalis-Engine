@@ -1,0 +1,10 @@
+.git
+**/node_modules
+**/dist
+out
+data
+android
+config.yaml
+certs
+chrysalis-data
+AGENTS.md

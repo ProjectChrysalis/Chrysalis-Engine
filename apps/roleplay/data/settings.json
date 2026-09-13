@@ -1,0 +1,22 @@
+{
+  "model": null,
+  "personaId": "you",
+  "ui": {
+    "translation": {
+      "provider": "llm",
+      "targetLanguage": "English",
+      "autoMode": "none"
+    },
+    "tts": {
+      "provider": "None",
+      "narratorVoice": "aria",
+      "autoPlay": false,
+      "speed": 1,
+      "onlyQuotes": true,
+      "skipAsterisks": true,
+      "skipCodeblocks": true,
+      "charVoices": {},
+      "model": "tts-1"
+    }
+  }
+}

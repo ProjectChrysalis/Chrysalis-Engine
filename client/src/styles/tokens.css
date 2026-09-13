@@ -1,0 +1,95 @@
+/* Shell design tokens. Every surface, text and border colour the client uses
+ * is named here once, in both schemes; App.tsx flips
+ * `data-color-scheme` on <html> and the whole shell follows.
+ * `@theme inline` keeps the utilities pointing at the variables (rather than
+ * baking values in), which is what makes the runtime toggle work. */
+
+:root,
+[data-color-scheme="dark"] {
+  --c-deep: #0b0b0d;
+  --c-base: #121214;
+  --c-panel: #17171a;
+  --c-contrast: #e8e8ea;
+  --c-ink: #e6e6e9;
+  --c-ink-muted: #a0a0a8;
+  --c-ink-faint: #6e6e78;
+  --c-ink-inverse: #0b0b0d;
+  --c-accent: #7aa2f7;
+  --c-line: #26262c;
+  --c-line-focus: #4d7fd6;
+  --c-danger: #f2777a;
+  --c-success: #7fd18b;
+  --c-warning: #e3b341;
+  --c-warning-soft: rgb(227 179 65 / 0.14);
+  --c-danger-soft: rgb(242 119 122 / 0.16);
+  --c-panel-raised: #1e1e22;
+  --c-hover: rgb(255 255 255 / 0.06);
+  --c-pressed: rgb(255 255 255 / 0.1);
+  --c-icon: #b8b8c0;
+  --c-icon-muted: #74747e;
+  --c-icon-contrast: #0b0b0d;
+  --s-raised: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.3);
+}
+
+[data-color-scheme="light"] {
+  --c-deep: #f4f4f6;
+  --c-base: #ffffff;
+  --c-panel: #fafafb;
+  --c-contrast: #17171a;
+  --c-ink: #17171a;
+  --c-ink-muted: #5a5a63;
+  --c-ink-faint: #8a8a94;
+  --c-ink-inverse: #ffffff;
+  --c-accent: #2f5fbf;
+  --c-line: #e2e2e7;
+  --c-line-focus: #2f5fbf;
+  --c-danger: #c4373a;
+  --c-success: #2f7d3f;
+  --c-warning: #9a6f0a;
+  --c-warning-soft: rgb(154 111 10 / 0.12);
+  --c-danger-soft: rgb(196 55 58 / 0.12);
+  --c-panel-raised: #ffffff;
+  --c-hover: rgb(0 0 0 / 0.05);
+  --c-pressed: rgb(0 0 0 / 0.09);
+  --c-icon: #4a4a53;
+  --c-icon-muted: #8a8a94;
+  --c-icon-contrast: #ffffff;
+  --s-raised: 0 1px 2px rgb(0 0 0 / 0.08), 0 8px 24px rgb(0 0 0 / 0.1);
+}
+
+@theme inline {
+  --color-deep: var(--c-deep);
+  --color-base: var(--c-base);
+  --color-panel: var(--c-panel);
+  --color-contrast: var(--c-contrast);
+  --color-ink: var(--c-ink);
+  --color-ink-muted: var(--c-ink-muted);
+  --color-ink-faint: var(--c-ink-faint);
+  --color-ink-inverse: var(--c-ink-inverse);
+  --color-accent: var(--c-accent);
+  --color-line: var(--c-line);
+  --color-line-focus: var(--c-line-focus);
+  --color-danger: var(--c-danger);
+  --color-success: var(--c-success);
+  --color-warning: var(--c-warning);
+  --color-warning-soft: var(--c-warning-soft);
+  --color-danger-soft: var(--c-danger-soft);
+  --color-panel-raised: var(--c-panel-raised);
+  --color-hover: var(--c-hover);
+  --color-pressed: var(--c-pressed);
+  --color-icon: var(--c-icon);
+  --color-icon-muted: var(--c-icon-muted);
+  --color-icon-contrast: var(--c-icon-contrast);
+
+  --shadow-raised: var(--s-raised);
+
+  --text-9: 9px;
+  --text-10: 10px;
+  --text-11: 11px;
+  --text-12: 12px;
+  --text-13: 13px;
+  --text-14: 14px;
+  --text-15: 15px;
+  --text-16: 16px;
+  --text-20: 20px;
+}

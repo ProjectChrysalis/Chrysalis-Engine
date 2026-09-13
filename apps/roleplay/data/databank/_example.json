@@ -1,0 +1,14 @@
+{
+  "id": "example-world-lore",
+  "name": "example — world lore.txt",
+  "scope": "global",
+  "scopeTargetId": null,
+  "enabled": true,
+  "addedAt": 0,
+  "size": 152,
+  "chunks": [
+    { "i": 0, "text": "The Sunken Reach is a flooded province east of the capital. Its people travel by skiff and pay tolls in salt-coin. The legion garrison at Fort Merrow keeps the drowned roads open." },
+    { "i": 1, "text": "Salt-coin is stamped with a heron and melts if boiled — forgery is trivially detected, so it is trusted across the coast. One coin buys a night's lodging or two loaves." }
+  ],
+  "_note": "AI-ONLY TEMPLATE — the underscore prefix keeps it OUT of the app UI. Copy this file to <your-name>.json (no underscore) to make a real document. The engine chunks uploaded text (1000 chars, 150 overlap); the top term-matching chunks are injected into the prompt as '[Data bank — retrieved reference material]' when you send a message. `enabled: false` pauses injection. Upload via the app (Tools → Data bank) or write this file directly — the UI live-syncs."
+}

@@ -1,0 +1,91 @@
+/* Shell stylesheet: tokens, then component look, then the app's own chrome. */
+@layer theme, base, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+
+@source "..";
+
+@import "./tokens.css";
+@import "../ui/ui.css";
+@import "tw-animate-css";
+
+@import "@fontsource-variable/inter/index.css";
+@import "@fontsource-variable/jetbrains-mono/index.css";
+
+:root {
+  --font-family-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-family-text: var(--font-family-sans);
+  --font-family-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+html,
+body {
+  height: 100%;
+  /* Mobile keyboard contract (same as the apps): html locks document
+     scrolling, body is pinned to the viewport, and the viewport meta's
+     interactive-widget=resizes-content makes the keyboard shrink this
+     viewport — app iframes size off it and resize with it instead of the
+     whole page getting shoved behind the keyboard. */
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--c-deep);
+  color: var(--c-ink);
+  font-family: var(--font-family-text);
+  font-size: 13px;
+  font-weight: 440;
+}
+
+body {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+}
+
+#root {
+  height: 100%;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* User turns: the message's meta/copy row only reveals on hover INSIDE the
+   message element; the action row below it is a sibling, so moving the mouse
+   there hid the meta row and showed the buttons alone. Reveal both together
+   from the whole turn block (class group/user lives on the turn wrapper). */
+.group\/user:hover [data-slot="user-message-copy-wrapper"],
+.group\/user:focus-within [data-slot="user-message-copy-wrapper"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Settings dialog on phones: stable full-screen height. Navigation is
+   drill-down (menu → section → back) rendered by SettingsBody, so the
+   tab rail never renders on mobile — no tab-row hacks needed. */
+@media (max-width: 767px) {
+  [data-component="dialog"][data-size="x-large"] [data-slot="dialog-container"] {
+    height: calc(100dvh - 24px);
+    max-height: none;
+  }
+
+  [data-component="dialog"][data-size="x-large"] [data-slot="dialog-content"] {
+    height: 100%;
+  }
+
+  [data-component="tabs"][data-variant="settings"] [data-slot="tabs-list"] {
+    flex-basis: 100%;
+    border-right: 0;
+  }
+}
+
+/* Accept mode: while shell commands wait for the user's approval, the
+   composer outline takes amber. Hex, not a named tailwind color: the theme
+   prunes the default palette. */
+.chrysalis-accept-mode [data-component="prompt-input"] {
+  border-color: #fbbf24;
+}

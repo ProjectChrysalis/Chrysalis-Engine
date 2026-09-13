@@ -1,0 +1,337 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import './shadcn-theme.css';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+  --text-base: 0.8125rem;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* ── Light: the same neutral ramp, inverted. True greys only. ── */
+:root {
+  /* Self-hosted via @fontsource-variable (main.tsx) — no network fetch. */
+  --font-inter: 'Inter Variable';
+  --font-jetbrains: 'JetBrains Mono Variable';
+  color-scheme: light;
+  --background: #fafafa;
+  --foreground: #161616;
+  --card: #ffffff;
+  --card-foreground: #161616;
+  --popover: #ffffff;
+  --popover-foreground: #161616;
+  --primary: #2eaf5a;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f1f2;
+  --secondary-foreground: #161616;
+  --muted: #f1f1f2;
+  --muted-foreground: #6b6b6b;
+  --accent: #ebebec;
+  --accent-foreground: #161616;
+  --destructive: #d92d20;
+  --destructive-foreground: #ffffff;
+  --border: rgb(0 0 0 / 11%);
+  --input: rgb(0 0 0 / 12%);
+  --ring: #2eaf5a;
+  --chart-1: #2eaf5a;
+  --chart-2: #6b6b6b;
+  --chart-3: #9a9a9a;
+  --chart-4: #c4c4c4;
+  --chart-5: #161616;
+  --radius: 0.5rem;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #161616;
+  --sidebar-primary: #2eaf5a;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #ebebec;
+  --sidebar-accent-foreground: #161616;
+  --sidebar-border: rgb(0 0 0 / 11%);
+  --sidebar-ring: #2eaf5a;
+}
+
+/* ── Dark: true-neutral, base surface at rgb(20,20,20). No blue/purple tint. ── */
+.dark {
+  color-scheme: dark;
+  --background: #141414;
+  --foreground: #e6e6e6;
+  --card: #191919;
+  --card-foreground: #e6e6e6;
+  --popover: #1b1b1b;
+  --popover-foreground: #e6e6e6;
+  --primary: #54d17d;
+  --primary-foreground: #0d1f14;
+  --secondary: #202020;
+  --secondary-foreground: #e6e6e6;
+  --muted: #1f1f1f;
+  --muted-foreground: #9d9d9d;
+  --accent: #242424;
+  --accent-foreground: #f2f2f2;
+  --destructive: #e5484d;
+  --destructive-foreground: #ffffff;
+  --border: #2b2b2b;
+  --input: #2b2b2b;
+  --ring: #54d17d;
+  --chart-1: #54d17d;
+  --chart-2: #9d9d9d;
+  --chart-3: #6f6f6f;
+  --chart-4: #4a4a4a;
+  --chart-5: #e6e6e6;
+  --sidebar: #171717;
+  --sidebar-foreground: #e6e6e6;
+  --sidebar-primary: #54d17d;
+  --sidebar-primary-foreground: #0d1f14;
+  --sidebar-accent: #242424;
+  --sidebar-accent-foreground: #f2f2f2;
+  --sidebar-border: #2b2b2b;
+  --sidebar-ring: #54d17d;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-size: 13px;
+  }
+  /* The app shell owns all scrolling. html locks the document, body is
+     PINNED to the viewport — no document scroll exists, so nothing can pan
+     when the keyboard opens; the viewport meta's resizes-content shrinks the
+     layout viewport and the --vvh-sized shell refits above the keyboard. */
+  html {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  body {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  /* Flat surfaces: no glow, no gradient. Elevation comes from border + shade. */
+  ::selection {
+    background: color-mix(in srgb, var(--primary) 28%, transparent);
+  }
+
+  /* Overlay-style scrollbars everywhere: the classic Linux/ Chromium scrollbar
+     (with its up/down arrow BUTTONS) reads as a stray widget — especially the
+     tiny horizontal strips under tab rows. Thin translucent thumb, no buttons,
+     no track; touch scroll is unaffected. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--foreground) 22%, transparent) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--foreground) 22%, transparent);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--foreground) 35%, transparent);
+  }
+  ::-webkit-scrollbar-corner,
+  ::-webkit-scrollbar-button {
+    display: none;
+  }
+  /* Dedicated hidden-scrollbar utility (tab strips and other always-scroll
+     rows keep their affordance from the cut-off tabs themselves). */
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
+   The chat column: the message log and the composer share ONE centred column so
+   the composer never ends up stranded against a screen corner when a
+   narrower width is chosen. `--chat-max` is set per chat-width setting.
+   ────────────────────────────────────────────────────────────── */
+.chat-column {
+  width: 100%;
+  max-width: var(--chat-max, 48rem);
+  margin-inline: auto;
+}
+
+/* Chat background layer — user-supplied image/video sits under the chat log. */
+.chat-bg-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+/* ──────────────────────────────────────────────────────────────
+   Roleplay prose. Named classes (rather than utility soup) so the
+   Custom CSS editor can target and restyle .mes_text q / em directly.
+   ────────────────────────────────────────────────────────────── */
+.mes_text {
+  color: var(--tap-main-text, inherit);
+  font-family: var(--prose-font, inherit);
+  /* Absolute, not 1em: the chat log already scales its own chrome by Font
+     Scale, and an em here multiplied the two (150% rendered at 225%). 15px is
+     the size roleplay prose is read at; --prose-scale applies once. */
+  font-size: calc(15px * var(--prose-scale, 1));
+  /* 1.36 is what `normal` computes to for the default face — the leading
+     roleplay prose is set in. Line Spacing overrides it. */
+  line-height: var(--prose-line-height, 1.36);
+}
+
+/* Paragraph rhythm lives on a var so Line Spacing's companion control, and
+   the Custom CSS editor, can retune it without restating the selector. */
+.mes_text p {
+  margin-top: 0;
+  margin-bottom: var(--prose-para-gap, 10px);
+}
+.mes_text p:last-child {
+  margin-bottom: 0;
+}
+
+/* Thinking blocks render through the same markdown pipeline as replies,
+   but keep their own muted, italic reasoning tone — not the chat's main
+   text colour, and not the dialogue/narration tints (a live stream and a
+   committed block must read identically). */
+.think-text .mes_text,
+.think-text .mes_text q,
+.think-text .mes_text .rp-quote,
+.think-text .mes_text em,
+.think-text .mes_text i {
+  color: inherit;
+}
+
+/* Find in chat: every hit, and the one the arrows are on. Fixed colours,
+   not theme tokens: they must read on any chat background or theme. */
+::highlight(chat-find) {
+  background-color: rgb(250 204 21 / 0.4);
+}
+::highlight(chat-find-current) {
+  background-color: rgb(249 115 22);
+  color: #000;
+}
+
+/* "Spoken dialogue" */
+.mes_text q,
+.mes_text .rp-quote {
+  color: var(--tap-quotes, inherit);
+  font-style: normal;
+  quotes: none;
+}
+.mes_text q::before,
+.mes_text q::after {
+  content: none;
+}
+
+/* *Narration and actions* */
+.mes_text em,
+.mes_text i {
+  color: var(--tap-italics, var(--muted-foreground));
+  font-style: italic;
+}
+/* ...but italics INSIDE quoted dialogue keeps the quote's colour (the em
+   rule above targets the element directly, so without this the quote tint
+   would lose to the italics grey on every nested em/i) */
+.mes_text q em,
+.mes_text q i,
+.mes_text .rp-quote em,
+.mes_text .rp-quote i {
+  color: inherit;
+}
+
+/* "Italic narration" (Chat settings): plain AI prose renders italic + grey;
+   quoted dialogue stays UPRIGHT with its quote colour (the italics-in-quote
+   rule above gives nested em the quote colour too, so italic + quote tint
+   combine without the whole quote going italic). */
+.narration-italic .mes_text {
+  font-style: italic;
+  color: var(--muted-foreground);
+}
+.narration-italic .mes_text q,
+.narration-italic .mes_text .rp-quote {
+  color: var(--tap-quotes, var(--foreground));
+}
+.narration-italic .mes_text code,
+.narration-italic .mes_text pre {
+  font-style: normal;
+}
+
+/* Quote emphasis variants, chosen in Appearance → Quote style. */
+.quotes-bold .mes_text q,
+.quotes-bold .mes_text .rp-quote {
+  font-weight: 600;
+}
+.quotes-glow .mes_text q,
+.quotes-glow .mes_text .rp-quote {
+  text-shadow: 0 0 6px color-mix(in srgb, var(--tap-quotes, currentColor) 55%, transparent);
+}
+.quotes-underline .mes_text q,
+.quotes-underline .mes_text .rp-quote {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--tap-quotes, currentColor) 45%, transparent);
+  text-underline-offset: 3px;
+}
+
+
+/* Swipe transitions: the whole message row (and every row below it) slides
+   fully off-screen — translate by the row's own width — then the content
+   swaps and slides back in from the opposite side. Two sequential phases
+   driven by the chat view's clock; the travel distance and duration arrive
+   as CSS variables on the chat column. Transform-only so the compositor
+   owns it and long chats stay smooth. */
+.swipe-out { animation: swipe-out var(--swipe-dur, 125ms) ease-in-out forwards; will-change: transform; }
+.swipe-in { animation: swipe-in var(--swipe-dur, 125ms) ease-in-out forwards; will-change: transform; }
+@keyframes swipe-out { from { transform: translateX(0); } to { transform: translateX(var(--swipe-out-x, -120%)); } }
+@keyframes swipe-in { from { transform: translateX(var(--swipe-in-x, 120%)); } to { transform: translateX(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .swipe-out, .swipe-in { animation: none; }
+}

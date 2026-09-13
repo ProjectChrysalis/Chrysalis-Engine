@@ -1,0 +1,154 @@
+<p align="center"><img src="client/public/chrysalis_logo.png" width="128" alt="Chrysalis" /></p>
+
+# Chrysalis
+
+**The AI frontend you can reshape just by asking.**
+
+Chrysalis runs on your own computer or phone and opens in your browser. It ships
+with a full roleplay studio, and every app in it, including that one, is files
+the built-in agent can change while you watch. Ask for a feature and it builds it.
+Your chats, characters and keys are stored on your device.
+
+## Install
+
+Pick the download for your system from the
+[releases page](https://github.com/ProjectChrysalis/Chrysalis-Engine/releases).
+Nothing else needs to be installed.
+
+| System | Download | Start it |
+| --- | --- | --- |
+| Windows | `Chrysalis-<version>-windows-x64.zip` | Unzip, double-click `chrysalis.exe` |
+| macOS (Apple silicon) | `Chrysalis-<version>-macos-arm64.tar.gz` | Unpack, run `./chrysalis` in Terminal |
+| macOS (Intel) | `Chrysalis-<version>-macos-x64.tar.gz` | Unpack, run `./chrysalis` in Terminal |
+| Linux | `Chrysalis-<version>-linux-x64.tar.gz` (or `-arm64`) | Unpack, run `./chrysalis` |
+| Android 9+ | `Chrysalis-<version>-android-arm64.apk` | Install, open the app |
+| Docker | this repository | `docker compose up -d` |
+
+Already have [Bun](https://bun.sh)? `bun install -g chrysalis-engine`, then run `chrysalis`.
+
+On macOS, a download from the internet may be blocked the first time. Run
+`xattr -dr com.apple.quarantine .` in the unpacked folder, or use the Bun install above.
+
+## First start
+
+Chrysalis opens your browser (or prints a link) with a one-time setup address.
+Open it, create your account, and add a model connection in
+**Settings > API connections**. The first account is the admin: it can add
+more people, each with their own workspace, agent and apps.
+
+Lost the link? It is in the window where Chrysalis started and in
+`data/logs/chrysalis.log`. Forgot a password? Stop Chrysalis and run
+`chrysalis reset-password <name>`.
+
+## Settings file
+
+Server settings live in `config.yaml`, created on first start with a note on
+every line. `chrysalis paths` prints where it is:
+
+| Install | config.yaml and data |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\Chrysalis` |
+| macOS | `~/Library/Application Support/Chrysalis` |
+| Linux | `~/.local/share/chrysalis` |
+| Docker | the `/chrysalis` volume (`./chrysalis-data`) |
+| From source | the repository folder |
+
+Put a `config.yaml` next to the program to keep everything in that folder instead
+(a portable copy, for example on a USB drive).
+
+```yaml
+port: 8788
+lan: false          # true: phones and other computers on your network can open it
+allowedHosts: []    # extra names, like chrysalis.home or a Tailscale name
+ssl:
+  enabled: false    # HTTPS: phones need it for the microphone and installing as an app
+```
+
+Admins can change the same settings in **Settings > Server**, which applies them
+right away, shows a QR code for your phone, and tells you when a new version is
+out. You can also ask the agent ("let my phone connect"); it shows you exactly
+what will change and waits for you to approve.
+
+Every setting also works for a single run as an environment variable or a flag:
+
+```sh
+CHRYSALIS_PORT=9000 chrysalis
+chrysalis --lan --port 9000 --no-open-browser
+chrysalis --help
+```
+
+## Using it from your phone
+
+- **Chrysalis on your computer, phone on the same Wi-Fi:** turn on
+  *Allow other devices on my network* in Settings > Server and scan the QR code.
+- **Chrysalis on the phone itself:** install the Android app. It runs the server
+  on the phone and opens it in your browser. Uninstalling the app deletes its
+  data, so export a backup from the roleplay app first.
+- **Away from home:** put both devices on [Tailscale](https://tailscale.com) and
+  use the computer's Tailscale address. `tailscale cert` gives you HTTPS files
+  for `ssl.certPath` and `ssl.keyPath`.
+
+## Updating
+
+Chrysalis keeps your data in its own folder, so an update never touches it.
+
+- Downloads: replace the program folder with the new version.
+- Android: install the new APK over the old one.
+- Bun: `bun install -g chrysalis-engine`.
+- Docker: `git pull && docker compose up -d --build`.
+- From source: `git pull && bun install`, then restart.
+
+Shipped apps you have changed are never overwritten: the launcher offers each
+update and merges it with your edits.
+
+## Running from source
+
+```sh
+git clone https://github.com/ProjectChrysalis/Chrysalis-Engine
+cd Chrysalis-Engine
+bun install
+bun run build:client
+bun start
+```
+
+`bun run dev` restarts on every change. `bun test` runs the suite and
+`bun run typecheck` checks every project.
+
+### Release builds
+
+```sh
+bun run dist                      # every platform, from any one machine
+bun run dist linux-x64 npm        # some of them
+ANDROID_HOME=~/android-sdk bun run dist android-apk   # the APK (JDK 17+)
+```
+
+Output lands in `out/dist/`. Set `CHRYSALIS_ANDROID_KEYSTORE`,
+`CHRYSALIS_ANDROID_KEYSTORE_PASSWORD`, `CHRYSALIS_ANDROID_KEY_ALIAS` and
+`CHRYSALIS_ANDROID_KEY_PASSWORD` to sign the APK for release; keep that keystore,
+since Android only updates an app signed with the same key.
+
+## License
+
+Licensed under the **GNU Affero General Public License v3.0 only** (AGPL-3.0-only).
+See [LICENSE](LICENSE) for the full text.
+
+## Built on
+
+| Project | Used for | License |
+| --- | --- | --- |
+| [Bun](https://bun.sh) | The runtime: HTTP and WebSocket server, bundler, package manager, test runner | MIT |
+| [pi-ai / pi-agent-core](https://github.com/earendil-works/pi/tree/main/packages/ai) | The LLM kernel — provider catalog, auth formats, generation, agent loop | MIT |
+| [Hono](https://hono.dev) | HTTP server and routing | MIT |
+| [Model Context Protocol SDK](https://github.com/modelcontextprotocol/typescript-sdk) | Connecting to external MCP servers for agent tools | MIT |
+| [QuickJS-ng](https://github.com/quickjs-ng/quickjs) via [quickjs-emscripten](https://github.com/justjake/quickjs-emscripten) | The app plugin sandbox | MIT |
+| [wasmsh](https://github.com/mayflower/wasmsh) with [Pyodide](https://pyodide.org) | The agent's in-browser sandbox: an actual shell and a Python runtime, both in wasm | Apache-2.0 |
+| [isomorphic-git](https://isomorphic-git.org) | Workspace version control, and installing apps from git without a git program | MIT |
+| [esbuild](https://esbuild.github.io) | Bundling app frontends and app builds (WASM inside the browser builder) | MIT |
+| [React](https://react.dev) | The web client shell and the agent chat UI | MIT |
+| [Base UI](https://base-ui.com) | Component behaviour in the client shell | MIT |
+| [assistant-ui](https://assistant-ui.com) | The agent chat UI | MIT |
+| [Tailwind CSS](https://tailwindcss.com) | Styling, including the in-browser compiler for apps | MIT |
+| [Phosphor Icons](https://phosphoricons.com) | Iconography in the client shell and agent UI | MIT |
+| [Zod](https://zod.dev) | Schema validation | MIT |
+
+Every other dependency is MIT, BSD, ISC, Apache-2.0, or OFL-1.1.

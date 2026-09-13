@@ -1,0 +1,61 @@
+import groovy.json.JsonSlurper
+
+plugins {
+    id "com.android.application"
+}
+
+// version and repository come from the engine's package.json, so the APK
+// always matches the server it carries
+def engine = new JsonSlurper().parse(file("../../package.json"))
+def parts = engine.version.tokenize(".-").take(3).collect { it.isInteger() ? it.toInteger() : 0 }
+def code = parts[0] * 10000 + parts[1] * 100 + parts[2]
+
+android {
+    namespace "org.projectchrysalis.chrysalis"
+    compileSdk 36
+
+    defaultConfig {
+        applicationId "org.projectchrysalis.chrysalis"
+        // the compiled Bun server targets Android 9 (API 28) on ARM64
+        minSdk 28
+        targetSdk 35
+        versionCode code
+        versionName engine.version
+        buildConfigField "String", "REPOSITORY", "\"${engine.repository ?: ""}\""
+        ndk { abiFilters "arm64-v8a" }
+    }
+
+    buildFeatures { buildConfig true }
+
+    // release signing comes from the environment; without it the release
+    // build is signed with the debug key (installable, but a later build
+    // signed differently cannot update it in place)
+    signingConfigs {
+        release {
+            def keystore = System.getenv("CHRYSALIS_ANDROID_KEYSTORE")
+            if (keystore) {
+                storeFile file(keystore)
+                storePassword System.getenv("CHRYSALIS_ANDROID_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("CHRYSALIS_ANDROID_KEY_ALIAS")
+                keyPassword System.getenv("CHRYSALIS_ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig System.getenv("CHRYSALIS_ANDROID_KEYSTORE") ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    // the server must be a real file Android can execute: keep it out of the
+    // APK's compressed library store so it lands in nativeLibraryDir
+    packaging { jniLibs { useLegacyPackaging true } }
+    androidResources { noCompress "zip" }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

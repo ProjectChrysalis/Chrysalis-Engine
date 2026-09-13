@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<!-- Same mobile-keyboard contract as the roleplay app: the keyboard must
+     shrink the layout viewport itself, and the page must never pan — the
+     app iframes size themselves off this viewport, so without this meta the
+     whole client page gets shoved up behind the keyboard on Android. -->
+<meta name="viewport" content="width=device-width, viewport-fit=cover, initial-scale=1, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content" />
+<link rel="icon" type="image/png" href="./public/chrysalis_logo.png" />
+<title>Chrysalis</title>
+</head>
+<body>
+<div id="root"></div>
+<!-- The shell's host scripts (bridge, builder, sandbox) are loaded by
+     src/index.tsx, so this page holds only the module entry: the build
+     pipeline and the dev server both bundle exactly this graph. -->
+<script type="module" src="./src/index.tsx"></script>
+</body>
+</html>

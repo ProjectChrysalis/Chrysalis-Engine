@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- the same dark palette as the Chrysalis shell -->
+    <color name="deep">#0B0B0D</color>
+    <color name="base">#121214</color>
+    <color name="panel">#17171A</color>
+    <color name="line">#26262C</color>
+    <color name="ink">#E6E6E9</color>
+    <color name="ink_muted">#A0A0A8</color>
+    <color name="accent">#7AA2F7</color>
+    <color name="danger">#F2777A</color>
+
+    <style name="Theme.Chrysalis" parent="android:Theme.Material.NoActionBar">
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:colorBackground">@color/deep</item>
+        <item name="android:windowBackground">@color/deep</item>
+        <item name="android:statusBarColor">@color/deep</item>
+        <item name="android:navigationBarColor">@color/deep</item>
+        <item name="android:textColorPrimary">@color/ink</item>
+        <item name="android:textColorSecondary">@color/ink_muted</item>
+    </style>
+</resources>

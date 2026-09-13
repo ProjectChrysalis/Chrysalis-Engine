@@ -1,0 +1,7 @@
+{
+  "name": "Malicious Stress Test",
+  "version": "1.0.0",
+  "description": "Declares every permission the plugin runtime has and does nothing but attack it. Test fixture only: never ships with an app. Driven by test/malicious-plugin.test.ts.",
+  "permissions": ["hooks", "routes", "tools", "network", "fs", "store", "llm", "zip"],
+  "origin": "local"
+}

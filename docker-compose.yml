@@ -1,0 +1,14 @@
+services:
+  chrysalis:
+    build: .
+    container_name: chrysalis
+    restart: unless-stopped
+    ports:
+      - "8788:8788"
+    volumes:
+      - ./chrysalis-data:/chrysalis
+    # The first start prints a setup link: `docker compose logs chrysalis`.
+    # Opening Chrysalis by a name rather than an IP address (a reverse proxy,
+    # a local DNS name) needs that name listed:
+    # environment:
+    #   CHRYSALIS_ALLOWED_HOSTS: chrysalis.home

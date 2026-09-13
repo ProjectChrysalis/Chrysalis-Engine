@@ -1,0 +1,18 @@
+# Bun runtime config.
+#
+# The installed app and its two frontends (client/, client-agent/) live in
+# this tree; tests only exist under test/. Pointing the runner at that dir
+# keeps a bare `bun test` from walking the frontends' node_modules trees.
+
+[test]
+root = "test"
+
+[install]
+# Engine dependencies are pinned deliberately (a provider or sandbox behavior
+# must not shift under a caret range). Keep new adds exact too.
+exact = true
+
+[serve.static]
+# The dev servers (scripts/dev/*) bundle CSS through the engine's own Tailwind
+# engine, so dev styles come from the same compiler as the production build.
+plugins = ["./scripts/dev/tailwind-plugin.ts"]

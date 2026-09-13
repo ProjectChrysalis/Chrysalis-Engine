@@ -1,0 +1,16 @@
+{
+  "name": "Agentic Tools",
+  "version": "1.1.1",
+  "description": "Gives the model callable tools during roleplay generation. Built-ins: dice rolls, character-drawn pictures, and local toy control (companion-app style); users and agents can add custom tools as JSON+JS in data/tools/. Remove this plugin and tool calling is gone.",
+  "origin": "local",
+  "permissions": [
+    "routes",
+    "tools",
+    "fs",
+    "network"
+  ],
+  "networkHosts": [
+    "127.0.0.1",
+    "localhost"
+  ]
+}

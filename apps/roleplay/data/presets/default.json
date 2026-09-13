@@ -1,0 +1,115 @@
+{
+  "id": "default",
+  "name": "Default",
+  "prompts": [
+    {
+      "identifier": "main",
+      "name": "Main Prompt",
+      "role": "system",
+      "marker": true,
+      "content": "Write {{char}}'s next reply in a fictional roleplay chat between {{char}} and {{user}}. Stay in character, describe actions and atmosphere, and never speak or act for {{user}}."
+    },
+    {
+      "identifier": "worldInfoBefore",
+      "name": "World Info (before)",
+      "role": "system",
+      "marker": true
+    },
+    {
+      "identifier": "charDescription",
+      "name": "Char Description",
+      "role": "system",
+      "marker": true
+    },
+    {
+      "identifier": "charPersonality",
+      "name": "Char Personality",
+      "role": "system",
+      "marker": true
+    },
+    {
+      "identifier": "scenario",
+      "name": "Scenario",
+      "role": "system",
+      "marker": true
+    },
+    {
+      "identifier": "personaDescription",
+      "name": "Persona Description",
+      "role": "system",
+      "marker": true
+    },
+    {
+      "identifier": "worldInfoAfter",
+      "name": "World Info (after)",
+      "role": "system",
+      "marker": true
+    },
+    {
+      "identifier": "dialogueExamples",
+      "name": "Chat Examples",
+      "role": "system",
+      "marker": true
+    },
+    {
+      "identifier": "chatHistory",
+      "name": "Chat History",
+      "role": "system",
+      "marker": true
+    },
+    {
+      "identifier": "postHistory",
+      "name": "Post-History Instructions",
+      "role": "system",
+      "content": ""
+    }
+  ],
+  "prompt_order": [
+    {
+      "identifier": "main",
+      "enabled": true
+    },
+    {
+      "identifier": "worldInfoBefore",
+      "enabled": true
+    },
+    {
+      "identifier": "charDescription",
+      "enabled": true
+    },
+    {
+      "identifier": "charPersonality",
+      "enabled": true
+    },
+    {
+      "identifier": "scenario",
+      "enabled": true
+    },
+    {
+      "identifier": "personaDescription",
+      "enabled": true
+    },
+    {
+      "identifier": "worldInfoAfter",
+      "enabled": true
+    },
+    {
+      "identifier": "dialogueExamples",
+      "enabled": true
+    },
+    {
+      "identifier": "chatHistory",
+      "enabled": true
+    },
+    {
+      "identifier": "postHistory",
+      "enabled": true
+    }
+  ],
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "openai_max_tokens": 4096,
+  "openai_max_context": 128000,
+  "frequency_penalty": 0,
+  "presence_penalty": 0
+}

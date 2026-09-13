@@ -1,0 +1,12 @@
+node_modules/
+dist/
+/data/
+*.log
+.env
+
+# local-only agent briefing — never push
+/AGENTS.md
+/config.yaml
+/certs/
+/out/
+/chrysalis-data/
