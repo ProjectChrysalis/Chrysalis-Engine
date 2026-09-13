@@ -35,6 +35,7 @@ public final class MainActivity extends Activity implements EngineService.Listen
     private Button open;
     private Button toggle;
     private Button update;
+    private AlertDialog logDialog;
     private boolean openWhenReady;
 
     @Override
@@ -214,8 +215,16 @@ public final class MainActivity extends Activity implements EngineService.Listen
             // Copy keeps the dialog open: the log stays readable while it is shared
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> copyLog());
         });
+        logDialog = dialog;
         dialog.show();
         tail[0].run();
+    }
+
+    @Override
+    protected void onDestroy() {
+        // the tail runnable must not outlive the activity behind the dialog
+        if (logDialog != null && logDialog.isShowing()) logDialog.dismiss();
+        super.onDestroy();
     }
 
     private boolean atBottom(ScrollView scroll) {
