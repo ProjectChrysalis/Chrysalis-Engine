@@ -119,7 +119,8 @@ bun start
 ```
 
 `bun run dev` restarts on every change. `bun test` runs the suite and
-`bun run typecheck` checks every project.
+`bun run typecheck` checks every project (run `bun install` in `client-agent`
+and `apps/roleplay` first).
 
 ### Release builds
 

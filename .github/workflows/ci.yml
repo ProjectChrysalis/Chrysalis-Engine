@@ -22,13 +22,16 @@ jobs:
     name: Typecheck, lint, test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
       - run: bun install --frozen-lockfile
         working-directory: client-agent
+      # typecheck covers the shipped roleplay app, which has its own packages
+      - run: bun install --frozen-lockfile
+        working-directory: apps/roleplay
       - run: bun run typecheck
       - run: bun run lint
       - run: bun run test
@@ -39,7 +42,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - id: v
         run: |
           base=$(jq -r .version package.json)
@@ -70,8 +73,8 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: assets
           merge-multiple: true
@@ -86,14 +89,14 @@ jobs:
 
           The Android app installs as **Chrysalis Staging**, next to the stable app, with its own data." \
             assets/*.zip assets/*.tar.gz assets/*.apk
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
       - name: Push the staging image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true

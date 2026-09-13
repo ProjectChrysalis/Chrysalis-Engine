@@ -35,7 +35,7 @@ jobs:
     name: Build downloads
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
@@ -47,7 +47,7 @@ jobs:
         run: |
           mkdir -p out/dist/npm-pack
           cd out/dist/npm && npm pack --pack-destination ../npm-pack
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: downloads
           path: |
@@ -63,15 +63,15 @@ jobs:
     if: inputs.apk
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - run: bun install --frozen-lockfile
       - run: bun install --frozen-lockfile
         working-directory: client-agent
@@ -98,7 +98,7 @@ jobs:
           "$tools/aapt2" dump badging "$apk" | head -3
           "$tools/apksigner" verify --print-certs "$apk" | head -3
           rm -f "$RUNNER_TEMP/release.jks"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: apk
           path: out/dist/*.apk
@@ -123,7 +123,7 @@ jobs:
     steps:
       # only the smoke script and package.json: no node_modules, so the
       # download has to stand on its own
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: |
             scripts/smoke.ts
@@ -132,7 +132,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: downloads
           path: ${{ runner.temp }}/downloads
@@ -154,9 +154,9 @@ jobs:
     name: Docker image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
         with:
           context: .
           load: true

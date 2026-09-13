@@ -1,0 +1,39 @@
+name: Bug report
+description: Something in Chrysalis does not work
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`chrysalis --version`, or Settings > Server"
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you run it
+      options:
+        - Windows download
+        - macOS download
+        - Linux download
+        - Android app
+        - Docker
+        - npm / Bun
+        - From source
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: The end of data/logs/chrysalis.log, if it shows an error. Remove anything private first.
+      render: text
