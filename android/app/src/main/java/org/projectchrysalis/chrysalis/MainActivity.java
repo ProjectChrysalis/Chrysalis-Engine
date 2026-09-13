@@ -2,18 +2,24 @@ package org.projectchrysalis.chrysalis;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -55,7 +61,7 @@ public final class MainActivity extends Activity implements EngineService.Listen
             if (phase == EngineService.Phase.STOPPED || phase == EngineService.Phase.FAILED) start();
             else startService(new Intent(this, EngineService.class).setAction(EngineService.ACTION_STOP));
         });
-        findViewById(R.id.copy_log).setOnClickListener(v -> copyLog());
+        findViewById(R.id.logs).setOnClickListener(v -> showLogs());
         findViewById(R.id.battery).setOnClickListener(v -> askBatteryExemption());
 
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -152,13 +158,71 @@ public final class MainActivity extends Activity implements EngineService.Listen
         }, "chrysalis-open").start();
     }
 
-    private void copyLog() {
+    /** The end of the engine log, or the service output when the engine never
+     *  got far enough to write one. */
+    private String logText() {
         File engineLog = new File(EngineService.homeDir(this), "data/logs/chrysalis.log");
         String text = EngineService.lastLines(engineLog, 400);
         String output = EngineService.lastLines(EngineService.outputFile(this), 60);
-        String body = "Chrysalis " + BuildConfig.VERSION_NAME + " (Android " + Build.VERSION.RELEASE + ")\n\n" + (text.isEmpty() ? output : text);
-        getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Chrysalis log", body));
+        return "Chrysalis " + BuildConfig.VERSION_NAME + " (Android " + Build.VERSION.RELEASE + ")\n\n" + (text.isEmpty() ? output : text);
+    }
+
+    private void copyLog() {
+        getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Chrysalis log", logText()));
         Toast.makeText(this, R.string.log_copied, Toast.LENGTH_SHORT).show();
+    }
+
+    /** The log on screen, tailed every couple of seconds while the dialog is
+     *  open. Scrolling up pauses the auto-scroll so reading is not fought. */
+    private void showLogs() {
+        TextView view = new TextView(this);
+        int pad = Math.round(getResources().getDisplayMetrics().density * 14);
+        view.setPadding(pad, pad, pad, pad);
+        view.setTypeface(Typeface.MONOSPACE);
+        view.setTextSize(11);
+        view.setTextColor(getColor(R.color.ink));
+        view.setTextIsSelectable(true);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(getColor(R.color.base));
+        scroll.addView(view, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        scroll.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Math.round(getResources().getDisplayMetrics().heightPixels * 0.55f)));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+            .setTitle(R.string.logs_title)
+            .setView(scroll)
+            .setPositiveButton(R.string.logs_close, null)
+            .setNeutralButton(R.string.logs_copy, null)
+            .create();
+
+        Handler handler = new Handler(Looper.getMainLooper());
+        Runnable[] tail = new Runnable[1];
+        tail[0] = () -> {
+            new Thread(() -> {
+                String text = logText();
+                runOnUiThread(() -> {
+                    if (!dialog.isShowing()) return;
+                    boolean atBottom = atBottom(scroll);
+                    view.setText(text.isEmpty() ? getString(R.string.logs_empty) : text);
+                    if (atBottom) scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+                });
+            }, "chrysalis-log").start();
+            handler.postDelayed(tail[0], 2000);
+        };
+        dialog.setOnDismissListener(d -> handler.removeCallbacks(tail[0]));
+        dialog.setOnShowListener(d -> {
+            // Copy keeps the dialog open: the log stays readable while it is shared
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> copyLog());
+        });
+        dialog.show();
+        tail[0].run();
+    }
+
+    private boolean atBottom(ScrollView scroll) {
+        View child = scroll.getChildAt(0);
+        if (child == null) return true;
+        int slack = Math.round(getResources().getDisplayMetrics().density * 24);
+        return child.getBottom() - (scroll.getHeight() + scroll.getScrollY()) <= slack;
     }
 
     @SuppressWarnings("BatteryLife")

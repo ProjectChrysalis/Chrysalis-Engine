@@ -122,12 +122,12 @@
             android:textSize="12sp" />
 
         <Button
-            android:id="@+id/copy_log"
+            android:id="@+id/logs"
             style="?android:attr/borderlessButtonStyle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="@string/action_copy_log"
+            android:text="@string/action_logs"
             android:textAllCaps="false"
             android:textColor="@color/ink_muted" />
 

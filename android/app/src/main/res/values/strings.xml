@@ -11,12 +11,16 @@
     <string name="action_start">Start</string>
     <string name="action_stop">Stop</string>
     <string name="action_open">Open Chrysalis</string>
-    <string name="action_copy_log">Copy log</string>
+    <string name="action_logs">Logs</string>
     <string name="action_battery">Keep running in the background</string>
     <string name="action_update">Get version %1$s</string>
 
     <string name="battery_hint">Android may pause Chrysalis while you use the browser. Allow it to run in the background.</string>
     <string name="data_hint">Your chats and settings stay on this phone. Uninstalling the app deletes them, so export a backup first.</string>
+    <string name="logs_title">Chrysalis logs</string>
+    <string name="logs_empty">Nothing logged yet.</string>
+    <string name="logs_copy">Copy</string>
+    <string name="logs_close">Close</string>
     <string name="log_copied">Log copied</string>
     <string name="no_browser">No browser found to open %1$s</string>
 
