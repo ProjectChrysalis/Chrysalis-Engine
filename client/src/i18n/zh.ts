@@ -132,6 +132,8 @@ const dict = {
   "Environment (KEY=value per line)\nAPI_TOKEN=abc": "环境变量（每行 KEY=value）\nAPI_TOKEN=abc",
   "Every setting here is in the config file, with notes. Edit it with any text editor while Chrysalis is stopped.": "这里的每项设置都附带说明写在配置文件中。请在 Chrysalis 停止时用任意文本编辑器修改。",
   "Exa API key": "Exa API 密钥",
+  "Export app": "导出应用",
+  "Export failed: {message}": "导出失败：{message}",
   "Files": "文件",
   "Forgot password?": "忘记密码？",
   "Fullscreen": "全屏",

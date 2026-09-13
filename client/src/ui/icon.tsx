@@ -3,7 +3,7 @@
 import type { ComponentPropsWithoutRef } from "react"
 import {
   ArrowClockwise, ArrowLeft, ArrowSquareOut, ArrowUUpLeft, Brain, CaretDown, CaretLeft, CaretRight,
-  Chat, ChatCircle, CheckCircle, CloudArrowUp, Code, Columns, Copy, FolderPlus, GearSix, HardDrives, Info,
+  Chat, ChatCircle, CheckCircle, CloudArrowUp, Code, Columns, Copy, DownloadSimple, FolderPlus, GearSix, HardDrives, Info,
   Lock, PencilSimpleLine, Plus, PlusSquare, Prohibit, SignOut, SlidersHorizontal,
   SpeakerHigh, SquaresFour, Storefront, TerminalWindow, X,
 } from "@phosphor-icons/react"
@@ -18,6 +18,7 @@ const glyphs = {
   "cloud-upload": CloudArrowUp,
   code: Code,
   copy: Copy,
+  download: DownloadSimple,
   info: Info,
   lock: Lock,
   logout: SignOut,

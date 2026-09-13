@@ -1,5 +1,4 @@
 import { tr } from "./i18n/index"
-import { prefs } from "./prefs"
 import type { AppUpdate, StoreList } from "./types"
 // Chrysalis engine HTTP client for the launcher shell (auth, settings,
 // connections, apps). The agent chat lives in its own app (client-agent/).
@@ -253,6 +252,29 @@ export async function installFromGit(gitUrl: string, ref?: string, id?: string):
   const done = await api<{ id: string }>("POST", "/v1/apps/import", { ...target, confirm: preview.slug, head: preview.head })
   void api("POST", `/v1/apps/${encodeURIComponent(done.id)}/install`).catch(() => undefined)
   return done.id
+}
+
+/** Download an app as a zip (its files and live data) through the browser. */
+export async function exportApp(id: string): Promise<void> {
+  const res = await fetch(`/v1/apps/${encodeURIComponent(id)}/export`)
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`
+    try {
+      const body = (await res.json()) as { error?: string }
+      if (body?.error) message = body.error
+    } catch {
+      // not a JSON body; the status is all we know
+    }
+    throw new Error(message)
+  }
+  const url = URL.createObjectURL(await res.blob())
+  const a = document.createElement("a")
+  a.href = url
+  a.download = `${id}-backup-${new Date().toISOString().slice(0, 10)}.zip`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
 }
 
 /** Server settings (config.yaml) as the engine reports them. */

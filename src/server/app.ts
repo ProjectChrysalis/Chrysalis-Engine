@@ -14,6 +14,7 @@ import { listApps, readApp, createAppSkeleton, renameAppDir, appTree, validateAp
 import { UPDATE_STRATEGIES, applyWrites, forgetInstall, mergeTrees, moveInstall, readBaseline, readCodeTree, readInstallSource, recoverBaseline, satisfiesRange, seedDataTemplates, writeBaseline, writeInstallSource, type InstallSource } from "../apps/update.js";
 import { OFFICIAL_SOURCES, createCatalog, isOfficialSource, normalizeGitUrl } from "../apps/store.js";
 import { gitClone, gitRemoteHead, isValidGitUrl, stripVcs, swapAppContents } from "../apps/git.js";
+import { zip as zipFiles } from "fflate";
 import { bootstrapUserDir } from "../paths.js";
 import type { UserService, UserRecord } from "../users.js";
 import type { SessionService } from "../sessions.js";
@@ -2796,6 +2797,62 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const tree = appTree(p.apps, id);
     if (!tree) return c.json({ error: "app not found" }, 404);
     return c.json({ app: id, tree, manifest: info.manifest });
+  });
+
+  // Export an app as a zip: every file and its live data, minus the derived
+  // dirs. Built from the engine's own copy. A symlink is skipped, never
+  // followed, so nothing an app plants can pull a file from outside its
+  // folder into the archive.
+  const EXPORT_MAX_BYTES = 512 * 1024 * 1024;
+  app.get("/v1/apps/:id/export", async (c) => {
+    const p = c.get("paths");
+    const id = c.req.param("id");
+    const info = readApp(p.apps, id);
+    if (!info) return c.json({ error: "app not found" }, 404);
+    let root: string;
+    try {
+      root = fs.realpathSync(safeResolve(p.apps, id));
+    } catch {
+      return c.json({ error: "app not found" }, 404);
+    }
+    const files: Record<string, Uint8Array> = {};
+    let total = 0;
+    let tooLarge = false;
+    const walk = (rel: string) => {
+      if (tooLarge) return;
+      const abs = rel ? path.join(root, rel) : root;
+      for (const entry of fs.readdirSync(abs, { withFileTypes: true })) {
+        const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+        if (entry.name === "node_modules" || entry.name === "dist" || entry.name.startsWith(".__")) continue;
+        if (entry.isSymbolicLink()) continue;
+        if (entry.isDirectory()) {
+          walk(childRel);
+        } else if (entry.isFile()) {
+          const file = path.join(abs, entry.name);
+          total += fs.statSync(file).size;
+          if (total > EXPORT_MAX_BYTES) {
+            tooLarge = true;
+            return;
+          }
+          files[childRel] = fs.readFileSync(file);
+        }
+      }
+    };
+    try {
+      walk("");
+    } catch (e) {
+      return c.json({ error: `could not read the app: ${(e as Error).message}` }, 500);
+    }
+    if (tooLarge) return c.json({ error: "this app is too large to export (over 512 MB)" }, 413);
+    const zip = await new Promise<Uint8Array | Error>((resolve) => {
+      zipFiles(files, { level: 3 }, (err, out) => resolve(err ?? out));
+    });
+    if (zip instanceof Error) return c.json({ error: `zip failed: ${zip.message}` }, 500);
+    const day = new Date().toISOString().slice(0, 10);
+    c.header("content-type", "application/zip");
+    c.header("content-disposition", `attachment; filename="${id}-backup-${day}.zip"`);
+    c.header("x-content-type-options", "nosniff");
+    return c.body(new Uint8Array(zip));
   });
 
   // ---------- git app distribution ----------

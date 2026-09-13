@@ -132,6 +132,8 @@ const dict = {
   "Environment (KEY=value per line)\nAPI_TOKEN=abc": "Ortam (satır başına KEY=value)\nAPI_TOKEN=abc",
   "Every setting here is in the config file, with notes. Edit it with any text editor while Chrysalis is stopped.": "Buradaki her ayar, açıklamalarıyla yapılandırma dosyasında. Chrysalis durdurulmuşken herhangi bir metin düzenleyiciyle düzenleyin.",
   "Exa API key": "Exa API anahtarı",
+  "Export app": "Uygulamayı dışa aktar",
+  "Export failed: {message}": "Dışa aktarma başarısız: {message}",
   "Files": "Dosyalar",
   "Forgot password?": "Parolanı mı unuttun?",
   "Fullscreen": "Tam ekran",

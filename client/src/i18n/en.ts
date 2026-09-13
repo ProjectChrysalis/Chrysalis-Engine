@@ -134,6 +134,8 @@ const en = {
   "Environment (KEY=value per line)\nAPI_TOKEN=abc": "",
   "Every setting here is in the config file, with notes. Edit it with any text editor while Chrysalis is stopped.": "",
   "Exa API key": "",
+  "Export app": "",
+  "Export failed: {message}": "",
   "Files": "",
   "Forgot password?": "",
   "Fullscreen": "",

@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { execFile } from "node:child_process";
+import { unzipSync } from "fflate";
 import type { Hono } from "hono";
 import type { AppEnv } from "../src/server/app.js";
 import { buildApp } from "../src/server/app.js";
@@ -242,6 +243,28 @@ describe("installing from the store", () => {
     // a bad id is refused before anything is staged
     const bad = await call("/v1/apps/import", { method: "POST", body: JSON.stringify({ gitUrl: url, id: "../evil" }) });
     expect(bad.status).toBe(400);
+  }, 60_000);
+
+  it("exports an app as a zip with its data, and never follows a link out", async () => {
+    const url = await publish("studio", { name: "Studio", version: "1.0.0", kind: "app" });
+    const id = await importApp(url);
+    const dir = path.join(userPaths(dataDir, "alice").apps, id);
+    fs.mkdirSync(path.join(dir, "data"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "data", "notes.json"), JSON.stringify({ hello: 1 }));
+    fs.mkdirSync(path.join(dir, "node_modules", "dep"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "node_modules", "dep", "index.js"), "x");
+    const secret = path.join(dataDir, "outside.txt");
+    fs.writeFileSync(secret, "not the app's");
+    fs.symlinkSync(secret, path.join(dir, "leak.txt"));
+
+    const res = await call(`/v1/apps/${id}/export`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/zip");
+    const names = Object.keys(unzipSync(new Uint8Array(await res.arrayBuffer())));
+    expect(names).toContain("manifest.json");
+    expect(names).toContain("data/notes.json");
+    expect(names.some((n) => n.startsWith("node_modules/"))).toBe(false);
+    expect(names).not.toContain("leak.txt");
   }, 60_000);
 
   it("checks every app with a source at once, for the launcher badges", async () => {

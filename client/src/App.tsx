@@ -9,7 +9,7 @@ import { IconSmall } from "./ui/icon"
 import { Icon } from "./ui/icon"
 import { IconButton } from "./ui/button"
 import { Button } from "./ui/button"
-import { api, prefs, authApi, appPluginsApi, updatesApi, type AuthUser } from "./api"
+import { api, prefs, authApi, appPluginsApi, exportApp, updatesApi, type AuthUser } from "./api"
 import { SettingsBody, type TabValue } from "./settings"
 import type { LaunchInfo, Me, StoreApp } from "./types"
 import { StoreDialog, WelcomeApps, useStore } from "./store"
@@ -1366,6 +1366,19 @@ function AppDetail(props: {
     [props.appId],
   )
   const [open, setOpen] = useState<Set<string>>(new Set())
+  const [exporting, setExporting] = useState(false)
+  const [exportErr, setExportErr] = useState("")
+  const exportZip = async () => {
+    setExporting(true)
+    setExportErr("")
+    try {
+      await exportApp(props.appId)
+    } catch (e: any) {
+      setExportErr(e.message ?? String(e))
+    } finally {
+      setExporting(false)
+    }
+  }
   const [updates, setUpdates] = useState<
     | { state: "idle" }
     | { state: "checking" }
@@ -1514,6 +1527,15 @@ function AppDetail(props: {
             >
               {tr("Repository ↗")}
             </a> : null}
+          <button
+            className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md text-ink-faint hover:bg-hover hover:text-ink disabled:opacity-50"
+            title={tr("Export app")}
+            aria-label={tr("Export app")}
+            disabled={exporting}
+            onClick={() => void exportZip()}
+          >
+            <IconSmall name="download" className={cn({ "animate-pulse": exporting })} />
+          </button>
           {canUpdate ? <Button
               variant="ghost-muted"
               size="small"
@@ -1536,6 +1558,7 @@ function AppDetail(props: {
           </Button>
         </div>
       </div>
+      {exportErr ? <div className="border-b border-line px-4 py-1.5 text-11 text-danger">{tr("Export failed: {message}", { message: exportErr })}</div> : null}
       {updates.state === "available" ? <div className="flex flex-col gap-1.5 border-b border-line bg-warning-soft/10 px-4 py-2 text-12">
           <div className="flex items-center gap-2">
             <span className="flex-1 text-ink">
