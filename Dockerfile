@@ -5,14 +5,19 @@
 # Settings and data live in the /chrysalis volume: config.yaml, data/.
 # Every setting can also be passed as a CHRYSALIS_* environment variable.
 
-FROM oven/bun:1.4.0 AS build
+# The engine is compiled on the build machine's own architecture for the
+# image's target (Bun cross-compiles), so multi-arch images need no emulation.
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.0 AS build
+ARG TARGETARCH
+ARG CHRYSALIS_VERSION=
 WORKDIR /src
 COPY package.json bun.lock bunfig.toml ./
 COPY client-agent/package.json client-agent/bun.lock client-agent/
 RUN bun install --frozen-lockfile && cd client-agent && bun install --frozen-lockfile
 COPY . .
-RUN bun run dist host --no-archive \
- && mkdir /out && mv out/dist/Chrysalis-*-linux-*/* /out/
+RUN arch=$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo x64) \
+ && CHRYSALIS_VERSION="$CHRYSALIS_VERSION" bun run dist "linux-$arch" --no-archive \
+ && mkdir /out && mv out/dist/Chrysalis-*-linux-$arch/* /out/
 
 FROM debian:bookworm-slim
 # ca-certificates for model providers over HTTPS; git lets apps come from SSH remotes

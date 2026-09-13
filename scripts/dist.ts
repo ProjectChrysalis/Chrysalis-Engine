@@ -8,6 +8,10 @@
  *   bun run dist ... --no-archive        leave folders, skip .zip/.tar.gz
  *   bun run dist ... --skip-frontends    reuse client/dist and client-agent/dist
  *
+ * CHRYSALIS_VERSION overrides package.json's version (CI labels staging
+ * builds 1.0.0-staging.<date>.<commit>; the APK then installs as its own
+ * "Chrysalis Staging" app beside the stable one).
+ *
  * Output in out/dist/:
  *   Chrysalis-<version>-<target>/        chrysalis[.exe] + resources/
  *   Chrysalis-<version>-<target>.tar.gz  (.zip for Windows)
@@ -31,7 +35,11 @@ import { buildSandboxForRelease } from "../src/sandbox/assets.js";
 
 const repo = path.resolve(import.meta.dir, "..");
 const pkg = JSON.parse(fs.readFileSync(path.join(repo, "package.json"), "utf8")) as { version: string; repository?: string };
-const version = pkg.version;
+const version = process.env.CHRYSALIS_VERSION || pkg.version;
+if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/.test(version)) {
+  console.error(`CHRYSALIS_VERSION "${version}" is not a version like 1.2.3 or 1.2.3-staging.4`);
+  process.exit(1);
+}
 const outRoot = path.join(repo, "out", "dist");
 
 /** Download name → Bun compile target. x64 builds use Bun's baseline

@@ -1,10 +1,16 @@
 .git
+.github
+.claude
 **/node_modules
 **/dist
 out
 data
 android
+test
 config.yaml
 certs
 chrysalis-data
 AGENTS.md
+.env*
+*.jks
+*.keystore

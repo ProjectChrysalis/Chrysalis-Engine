@@ -22,7 +22,13 @@ Nothing else needs to be installed.
 | macOS (Intel) | `Chrysalis-<version>-macos-x64.tar.gz` | Unpack, run `./chrysalis` in Terminal |
 | Linux | `Chrysalis-<version>-linux-x64.tar.gz` (or `-arm64`) | Unpack, run `./chrysalis` |
 | Android 9+ | `Chrysalis-<version>-android-arm64.apk` | Install, open the app |
-| Docker | this repository | `docker compose up -d` |
+| Docker | `ghcr.io/projectchrysalis/chrysalis-engine` | `docker compose up -d` (see below) |
+
+Want new features before they are stable? The
+[staging pre-release](https://github.com/ProjectChrysalis/Chrysalis-Engine/releases/tag/staging-latest)
+is rebuilt from the `staging` branch on every change. It can break. On Android it
+installs as a separate *Chrysalis Staging* app with its own data, so your stable
+app is untouched.
 
 Already have [Bun](https://bun.sh)? `bun install -g chrysalis-engine`, then run `chrysalis`.
 
@@ -95,7 +101,8 @@ Chrysalis keeps your data in its own folder, so an update never touches it.
 - Downloads: replace the program folder with the new version.
 - Android: install the new APK over the old one.
 - Bun: `bun install -g chrysalis-engine`.
-- Docker: `git pull && docker compose up -d --build`.
+- Docker: `git pull && docker compose up -d --build`, or pull
+  `ghcr.io/projectchrysalis/chrysalis-engine:latest` (`:staging` for staging).
 - From source: `git pull && bun install`, then restart.
 
 Shipped apps you have changed are never overwritten: the launcher offers each
@@ -126,6 +133,16 @@ Output lands in `out/dist/`. Set `CHRYSALIS_ANDROID_KEYSTORE`,
 `CHRYSALIS_ANDROID_KEYSTORE_PASSWORD`, `CHRYSALIS_ANDROID_KEY_ALIAS` and
 `CHRYSALIS_ANDROID_KEY_PASSWORD` to sign the APK for release; keep that keystore,
 since Android only updates an app signed with the same key.
+
+## Branches and contributing
+
+- `main` is stable. Releases are tagged here.
+- `staging` is where new work lands first. Open pull requests against `staging`.
+
+Every push and pull request runs the tests and builds every download, then
+starts each one on Windows, macOS, Linux and in Docker. To release, merge
+`staging` into `main`, set the version in `package.json`, and push a tag:
+`git tag v1.2.3 && git push origin v1.2.3`.
 
 ## License
 

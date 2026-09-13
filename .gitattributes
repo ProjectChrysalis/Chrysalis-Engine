@@ -1,0 +1,11 @@
+* text=auto eol=lf
+*.bat -text
+*.png binary
+*.jpg binary
+*.jar binary
+*.woff2 binary
+*.wasm binary
+
+# keep lockfiles out of diffs and language stats
+bun.lock linguist-generated
+**/bun.lock linguist-generated
