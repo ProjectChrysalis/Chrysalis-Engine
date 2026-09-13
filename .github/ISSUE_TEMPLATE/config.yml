@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
+  - name: Questions and help
+    url: https://discord.gg/maFVqyeD4Q
+    about: Ask on the Project Chrysalis Discord.
   - name: Security vulnerability
     url: https://github.com/ProjectChrysalis/Chrysalis-Engine/security/advisories/new
     about: Report it privately, not as an issue.

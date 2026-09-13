@@ -106,7 +106,10 @@ Chrysalis keeps your data in its own folder, so an update never touches it.
 - From source: `git pull && bun install`, then restart.
 
 Apps you have changed are never overwritten: the launcher offers each update
-and merges it with your edits.
+and merges it with your edits. To move an app to another device, or keep a copy
+before uninstalling, use **Export app** in its info pane, then **Import app >
+Backup file** on the other side. The backup carries the app's data and keeps
+updating from where it came from.
 
 ## Running from source
 
@@ -134,6 +137,12 @@ Output lands in `out/dist/`. Set `CHRYSALIS_ANDROID_KEYSTORE`,
 `CHRYSALIS_ANDROID_KEYSTORE_PASSWORD`, `CHRYSALIS_ANDROID_KEY_ALIAS` and
 `CHRYSALIS_ANDROID_KEY_PASSWORD` to sign the APK for release; keep that keystore,
 since Android only updates an app signed with the same key.
+
+## Community
+
+Questions, ideas and apps you have built: join the
+[Project Chrysalis Discord](https://discord.gg/maFVqyeD4Q). Bugs go in
+[GitHub issues](https://github.com/ProjectChrysalis/Chrysalis-Engine/issues).
 
 ## Branches and contributing
 
