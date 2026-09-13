@@ -11,7 +11,7 @@
   "scripts": {
     "dev": "bun --watch src/index.ts",
     "start": "bun run src/index.ts",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.builder.json && tsc --noEmit -p tsconfig.look.json && tsc --noEmit -p client/tsconfig.json && cd client-agent && bun run typecheck",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.builder.json && tsc --noEmit -p client/tsconfig.json && cd client-agent && bun run typecheck",
     "test": "bun test test/ --parallel",
     "lint": "biome lint --max-diagnostics=none .",
     "build:client": "bun run scripts/build-frontends.ts",

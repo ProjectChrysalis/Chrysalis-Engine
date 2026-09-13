@@ -16,7 +16,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { UPDATE_KEEP, fileHistory, mergeFile, readDirAt, showFile } from "./git.js";
-import { seedApp } from "./manager.js";
 
 export type UpdateStrategy = "merge" | "mine" | "theirs" | "agent";
 
@@ -107,16 +106,53 @@ export function writeBaseline(upstreamRoot: string, appId: string, version: stri
   fs.renameSync(next, dir);
 }
 
-/** Install an app this engine ships, with its baseline. An install from
- *  before baselines existed that is still at the shipped version gets the
- *  shipped copy as its baseline. True only when the app was installed now. */
-export function seedShippedApp(p: { apps: string; appUpstream: string }, builtinAppsDir: string, appId: string): boolean {
-  const shipped = path.join(builtinAppsDir, appId);
-  const seeded = seedApp(p.apps, shipped, appId);
-  const installed = path.join(p.apps, appId);
-  const recordable = seeded || (fs.existsSync(installed) && !readBaseline(p.appUpstream, appId) && manifestVersion(installed) === manifestVersion(shipped));
-  if (recordable) writeBaseline(p.appUpstream, appId, manifestVersion(shipped), readCodeTree(shipped));
-  return seeded;
+/** Where an app was installed from, as this engine recorded it. Kept beside
+ *  the baseline, outside the workspace: it decides where updates come from
+ *  and whether the app is official, so nothing inside the workspace may be
+ *  able to change it. */
+export interface InstallSource {
+  git: string;
+  ref: string;
+}
+
+function sourcePath(upstreamRoot: string, appId: string): string {
+  return `${baselinePath(upstreamRoot, appId)}.source.json`;
+}
+
+export function readInstallSource(upstreamRoot: string, appId: string): InstallSource | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(sourcePath(upstreamRoot, appId), "utf8")) as { git?: unknown; ref?: unknown };
+    if (typeof raw.git !== "string") return null;
+    return { git: raw.git, ref: typeof raw.ref === "string" ? raw.ref : "HEAD" };
+  } catch {
+    return null;
+  }
+}
+
+export function writeInstallSource(upstreamRoot: string, appId: string, source: InstallSource): void {
+  fs.mkdirSync(upstreamRoot, { recursive: true });
+  fs.writeFileSync(sourcePath(upstreamRoot, appId), JSON.stringify(source) + "\n", "utf8");
+}
+
+/** An app was deleted: its baseline and install source go with it, so a new
+ *  app under the same id starts with neither. */
+export function forgetInstall(upstreamRoot: string, appId: string): void {
+  const dir = baselinePath(upstreamRoot, appId);
+  for (const target of [dir, `${dir}.next`, sourcePath(upstreamRoot, appId)]) {
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+}
+
+/** An app was renamed: its baseline and install source follow it. */
+export function moveInstall(upstreamRoot: string, fromId: string, toId: string): void {
+  forgetInstall(upstreamRoot, toId);
+  const pairs: [string, string][] = [
+    [baselinePath(upstreamRoot, fromId), baselinePath(upstreamRoot, toId)],
+    [sourcePath(upstreamRoot, fromId), sourcePath(upstreamRoot, toId)],
+  ];
+  for (const [from, to] of pairs) {
+    if (fs.existsSync(from)) fs.renameSync(from, to);
+  }
 }
 
 export function manifestVersion(dir: string): string {

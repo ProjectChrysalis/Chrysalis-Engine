@@ -14,14 +14,14 @@ import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { hasPackages, installApp } from "./apps/packages.js";
 import { ConfigError, dataDirOf, envNameOf, flagNameOf, loadConfig, parseFlags, sandboxConfigOf, SETTINGS, type LoadedConfig } from "./config.js";
-import { ENGINE_VERSION, INSTALL_KIND, resolveHomeDir, resourcesDir } from "./install.js";
+import { ENGINE_VERSION, INSTALL_KIND, resolveHomeDir } from "./install.js";
 import { UserService } from "./users.js";
 import { SessionService } from "./sessions.js";
 import { bootstrapUserDir, ensureGitignoreEntries, ensureWorkspaceAgentsMd, migrateConnectionsIntoDataRoot, migrateCredentialsIntoDataRoot, migrateMcpIntoDataRoot, migrateSpeechIntoDataRoot, migrateWebSearchPreset, userPaths } from "./paths.js";
 import { initRepo, untrackBoundary, commitAll as gitCommitAll } from "./git.js";
-import { readApp, renameAppDir } from "./apps/manager.js";
+import { renameAppDir } from "./apps/manager.js";
 import { gcRepoIfChunky } from "./apps/git.js";
-import { seedShippedApp } from "./apps/update.js";
+import { adoptFormerlyShipped } from "./apps/store.js";
 import { buildApp } from "./server/app.js";
 import { EventBus } from "./server/ws.js";
 import { engineUrls, Listener, selfUrl } from "./server/listen.js";
@@ -146,10 +146,8 @@ function openBrowser(url: string): void {
   }
 }
 
-/** Per-account boot work: directory shape, one-time migrations, git, the
- *  shipped app. */
+/** Per-account boot work: directory shape, one-time migrations, git. */
 async function prepareAccounts(users: UserService, dataDir: string): Promise<void> {
-  const builtinAppsDir = path.join(resourcesDir(), "apps");
   for (const u of users.list()) {
     const p = bootstrapUserDir(dataDir, u.username);
     // credentials move OUT of the workspace (data-root credentials dir):
@@ -217,14 +215,10 @@ async function prepareAccounts(users: UserService, dataDir: string): Promise<voi
       await gitCommitAll(p.root, u.username, "app: rp → roleplay (builtin app renamed)");
       log.info(`renamed app rp → roleplay for ${u.username}`);
     }
-    // a newer shipped version is offered in the launcher, never applied here:
-    // updating merges with the user's own edits and they choose when
-    const seeded = seedShippedApp(p, builtinAppsDir, "roleplay");
-    if (seeded) await initRepo(p.root);
-    const settings = JSON.parse(fs.readFileSync(p.settings, "utf8")) as { activeApp?: string | null };
-    if (!settings.activeApp && readApp(p.apps, "roleplay")) {
-      settings.activeApp = "roleplay";
-      fs.writeFileSync(p.settings, JSON.stringify(settings, null, 2) + "\n", "utf8");
+    // apps an earlier engine shipped now live in their own repositories
+    for (const { id, repository } of adoptFormerlyShipped(p)) {
+      await gitCommitAll(p.root, u.username, `app(${id}): updates now come from ${repository}`);
+      log.info(`${u.username}/${id} now updates from ${repository}`);
     }
     // abandoned import previews: a cancelled two-phase import leaves its
     // staging clone on disk forever. Drop any older than a week (a live

@@ -192,7 +192,7 @@ describe("app HTTP surface (integration)", () => {
 });
 
 describe("home flow contract (SPEC-v2 §12.5)", () => {
-  // users created through the REAL journey (admin route) get rp seeded+active
+  // users created through the REAL journey (admin route)
   let flowToken: string;
   beforeEach(async () => {
     const adminToken = dbgUsers!.create("boss", "admin", { password: "test-pass-1" }).token;
@@ -205,16 +205,21 @@ describe("home flow contract (SPEC-v2 §12.5)", () => {
   });
   const fh = () => ({ authorization: `Bearer ${flowToken}`, "content-type": "application/json" });
 
-  it("first boot: the single shipped app → launch defaults straight into it", async () => {
+  it("a new account starts with no apps, so launch opens the picker (the welcome screen)", async () => {
     const res = await app.request("/v1/launch", { headers: fh() });
     expect(res.status).toBe(200);
     const j = (await res.json()) as { apps: { id: string }[]; agent: boolean; default: string | null };
-    expect(j.apps.map((a) => a.id)).toEqual(["roleplay"]);
+    expect(j.apps).toEqual([]);
     expect(j.agent).toBe(true);
-    expect(j.default).toBe("roleplay"); // only one app → auto-enter, no picker
+    expect(j.default).toBeNull();
+    // one app → launch goes straight into it
+    await app.request("/v1/apps", { method: "POST", headers: fh(), body: JSON.stringify({ id: "first", name: "First" }) });
+    const one = (await (await app.request("/v1/launch", { headers: fh() })).json()) as { default: string | null };
+    expect(one.default).toBe("first");
   });
 
   it("more apps → default becomes null (picker), launchDefault pins a choice", async () => {
+    await app.request("/v1/apps", { method: "POST", headers: fh(), body: JSON.stringify({ id: "first", name: "First" }) });
     await app.request("/v1/apps", { method: "POST", headers: fh(), body: JSON.stringify({ id: "vn", name: "My VN" }) });
     let j = (await (await app.request("/v1/launch", { headers: fh() })).json()) as { default: string | null };
     expect(j.default).toBeNull(); // picker time
@@ -270,17 +275,6 @@ describe("home flow contract (SPEC-v2 §12.5)", () => {
     }
     // radius still needs its gateway sign-in, not a bare key
     expect(j.providers.find((x) => x.id === "radius")!.kind).toBe("needs-setup");
-  });
-
-  it("example bot + agent docs ship with the seeded rp app", async () => {
-    const p = userPaths(dataDir, "flow");
-    expect(fs.existsSync(path.join(p.root, "apps/roleplay/data/characters/example-bot/card.json"))).toBe(true);
-    expect(fs.existsSync(path.join(p.root, "apps/roleplay/AGENTS.md"))).toBe(true);
-    // the bot is reachable through the app's own route (new studio engine list)
-    const res = await app.request("/v1/apps/roleplay/characters", { headers: fh() });
-    expect(res.status).toBe(200);
-    const j = (await res.json()) as { characters: { id: string }[] };
-    expect(j.characters.map((x) => x.id)).toContain("example-bot");
   });
 });
 

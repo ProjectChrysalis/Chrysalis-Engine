@@ -1,5 +1,6 @@
 import { tr } from "./i18n/index"
 import { prefs } from "./prefs"
+import type { StoreList } from "./types"
 // Chrysalis engine HTTP client for the launcher shell (auth, settings,
 // connections, apps). The agent chat lives in its own app (client-agent/).
 export interface EngineConnection {
@@ -232,6 +233,22 @@ export const authApi = {
     api<{ ok: boolean; hasPassword: boolean }>("PUT", "/v1/auth/password", { ...(current !== undefined ? { current } : {}), next }),
 }
 
+export const storeApi = {
+  list: (fresh = false) => api<StoreList>("GET", `/v1/store${fresh ? "?fresh=1" : ""}`),
+  seen: () => api<{ storeSeen: string | null }>("GET", "/v1/settings").then((r) => r.storeSeen ?? null),
+  markSeen: (day: string) => api("PUT", "/v1/settings", { storeSeen: day }),
+}
+
+/** Install an app from a git repository: the preview step, then the confirm
+ *  pinned to the commit the preview saw, then its packages in the background. */
+export async function installFromGit(gitUrl: string, ref?: string): Promise<string> {
+  const target = { gitUrl, ...(ref ? { ref } : {}) }
+  const preview = await api<{ slug: string; head: string }>("POST", "/v1/apps/import", target)
+  const done = await api<{ id: string }>("POST", "/v1/apps/import", { ...target, confirm: preview.slug, head: preview.head })
+  void api("POST", `/v1/apps/${encodeURIComponent(done.id)}/install`).catch(() => undefined)
+  return done.id
+}
+
 /** Server settings (config.yaml) as the engine reports them. */
 export interface ServerConfig {
   port: number
@@ -240,7 +257,7 @@ export interface ServerConfig {
   allowedHosts: string[]
   ssl: { enabled: boolean; certPath: string; keyPath: string }
   openBrowser: boolean
-  apps: { packageDownloads: boolean }
+  apps: { packageDownloads: boolean; store: string | null }
   agent: { shell: boolean; shellTimeoutSeconds: number }
   defaultModel: string | null
   dataRoot: string

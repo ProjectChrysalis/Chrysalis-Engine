@@ -20,8 +20,8 @@
  *   Chrysalis-<version>-android-arm64.apk (target android-apk; needs JAVA_HOME
  *                                        with JDK 17+ and ANDROID_HOME)
  *
- * resources/ holds what the engine serves and seeds but cannot compile in:
- * the two built frontends, the shipped apps, the builder and sandbox browser
+ * resources/ holds what the engine serves but cannot compile in:
+ * the two built frontends, the builder and sandbox browser
  * bundles (prebuilt, since there is no bundler at runtime), and the
  * sandbox's Python runtime files.
  */
@@ -77,33 +77,6 @@ for (const t of targets) {
 const step = (label: string) => console.log(`\n== ${label}`);
 const run = (cmd: string, argv: string[], cwd = repo) => execFileSync(cmd, argv, { cwd, stdio: "inherit" });
 
-/** Copy the git-tracked files under `rel` (a clean copy: no local data,
- *  node_modules or builds). Without a git checkout (a container build
- *  context), everything but node_modules and dist. */
-function copyTracked(rel: string, dest: string): number {
-  let files: string[];
-  try {
-    files = execFileSync("git", ["ls-files", "-z", "--", rel], { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split("\0").filter(Boolean);
-  } catch {
-    files = [];
-    const walk = (dir: string) => {
-      for (const e of fs.readdirSync(path.join(repo, dir), { withFileTypes: true })) {
-        if (e.name === "node_modules" || e.name === "dist") continue;
-        const child = `${dir}/${e.name}`;
-        if (e.isDirectory()) walk(child);
-        else files.push(child);
-      }
-    };
-    walk(rel);
-  }
-  for (const f of files) {
-    const to = path.join(dest, path.relative(rel, f));
-    fs.mkdirSync(path.dirname(to), { recursive: true });
-    fs.copyFileSync(path.join(repo, f), to);
-  }
-  return files.length;
-}
-
 // ---------- resources (shared by every target) ----------
 
 const resources = path.join(outRoot, ".resources");
@@ -118,10 +91,6 @@ fs.rmSync(resources, { recursive: true, force: true });
 for (const dir of ["client/dist", "client-agent/dist"]) {
   if (!fs.existsSync(path.join(repo, dir, "index.html"))) throw new Error(`${dir} is missing: run without --skip-frontends`);
   fs.cpSync(path.join(repo, dir), path.join(resources, dir), { recursive: true });
-}
-for (const app of fs.readdirSync(path.join(repo, "apps"))) {
-  const n = copyTracked(`apps/${app}`, path.join(resources, "apps", app));
-  console.log(`apps/${app}: ${n} files`);
 }
 const builder = await buildBuilderForRelease();
 writePrebuilt(path.join(resources, "prebuilt", "builder"), builder);

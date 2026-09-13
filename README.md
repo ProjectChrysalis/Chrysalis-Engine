@@ -4,9 +4,9 @@
 
 **The AI frontend you can reshape just by asking.**
 
-Chrysalis runs on your own computer or phone and opens in your browser. It ships
-with a full roleplay studio, and every app in it, including that one, is files
-the built-in agent can change while you watch. Ask for a feature and it builds it.
+Chrysalis runs on your own computer or phone and opens in your browser. Pick the
+apps you want from the built-in Store, and every one of them is files the
+built-in agent can change while you watch. Ask for a feature and it builds it.
 Your chats, characters and keys are stored on your device.
 
 ## Install
@@ -89,7 +89,7 @@ chrysalis --help
   *Allow other devices on my network* in Settings > Server and scan the QR code.
 - **Chrysalis on the phone itself:** install the Android app. It runs the server
   on the phone and opens it in your browser. Uninstalling the app deletes its
-  data, so export a backup from the roleplay app first.
+  data, so export backups from your apps first.
 - **Away from home:** put both devices on [Tailscale](https://tailscale.com) and
   use the computer's Tailscale address. `tailscale cert` gives you HTTPS files
   for `ssl.certPath` and `ssl.keyPath`.
@@ -105,8 +105,8 @@ Chrysalis keeps your data in its own folder, so an update never touches it.
   `ghcr.io/projectchrysalis/chrysalis-engine:latest` (`:staging` for staging).
 - From source: `git pull && bun install`, then restart.
 
-Shipped apps you have changed are never overwritten: the launcher offers each
-update and merges it with your edits.
+Apps you have changed are never overwritten: the launcher offers each update
+and merges it with your edits.
 
 ## Running from source
 
@@ -120,7 +120,7 @@ bun start
 
 `bun run dev` restarts on every change. `bun test` runs the suite and
 `bun run typecheck` checks every project (run `bun install` in `client-agent`
-and `apps/roleplay` first).
+first).
 
 ### Release builds
 
@@ -149,6 +149,12 @@ starts each one on Windows, macOS, Linux and in Docker. To release, merge
 
 Licensed under the **GNU Affero General Public License v3.0 only** (AGPL-3.0-only).
 See [LICENSE](LICENSE) for the full text.
+
+## Inspiration
+
+Chrysalis was inspired by [pi](https://pi.dev), the minimal coding agent you
+adapt by asking it to build what you need. Chrysalis brings that idea to an AI
+frontend, and its agent runs on pi's own libraries.
 
 ## Built on
 

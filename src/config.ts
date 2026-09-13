@@ -32,6 +32,8 @@ export interface InstanceConfig {
   apps: {
     /** Apps may download their npm packages (install scripts never run). */
     packageDownloads: boolean;
+    /** Where the Store's list of apps comes from; null turns the Store off. */
+    store: string | null;
   };
   agent: {
     /** The agent's wasm shell in the user's browser tab. */
@@ -41,6 +43,9 @@ export interface InstanceConfig {
   /** Model the agent uses when a user has not picked one ("provider/model"). */
   defaultModel: string | null;
 }
+
+/** Where the Store's list of apps comes from unless config.yaml says otherwise. */
+export const DEFAULT_STORE_URL = "https://raw.githubusercontent.com/ProjectChrysalis/app-store/main/apps.json";
 
 export function defaultInstanceConfig(): InstanceConfig {
   const sandbox = defaultSandboxConfig();
@@ -52,7 +57,7 @@ export function defaultInstanceConfig(): InstanceConfig {
     allowedHosts: [],
     ssl: { enabled: false, certPath: "./certs/cert.pem", keyPath: "./certs/key.pem" },
     openBrowser: true,
-    apps: { packageDownloads: true },
+    apps: { packageDownloads: true, store: DEFAULT_STORE_URL },
     agent: { shell: sandbox.provider !== "off", shellTimeoutSeconds: sandbox.timeoutMs / 1000 },
     defaultModel: null,
   };
@@ -70,7 +75,7 @@ export function sandboxConfigOf(cfg: InstanceConfig): SandboxConfig {
 
 // ---------- schema ----------
 
-type Kind = "string" | "path" | "port" | "bool" | "hosts" | "seconds" | "model" | "address";
+type Kind = "string" | "path" | "port" | "bool" | "hosts" | "seconds" | "model" | "address" | "feed";
 
 interface Setting {
   key: string;
@@ -89,6 +94,7 @@ export const SETTINGS: readonly Setting[] = [
   { key: "ssl.keyPath", kind: "path" },
   { key: "openBrowser", kind: "bool" },
   { key: "apps.packageDownloads", kind: "bool" },
+  { key: "apps.store", kind: "feed" },
   { key: "agent.shell", kind: "bool" },
   { key: "agent.shellTimeoutSeconds", kind: "seconds" },
   { key: "defaultModel", kind: "model" },
@@ -159,6 +165,10 @@ function coerce(kind: Kind, raw: unknown, textual: boolean): { value: unknown } 
     case "address":
       if (typeof text === "string" && (text === "auto" || /^[0-9a-f.:]+$/i.test(text))) return { value: text };
       return { error: 'must be "auto" or an IP address' };
+    case "feed":
+      if (text === false || text === null || (textual && typeof text === "string" && /^(false|off|no)$/i.test(text))) return { value: null };
+      if (typeof text === "string" && /^https?:\/\/[^\s/]+\/\S*$/.test(text)) return { value: text };
+      return { error: "must be an http(s) address or false" };
     case "model":
       if (text === null || text === "" || (textual && text === "null")) return { value: null };
       if (typeof text === "string" && MODEL_RE.test(text)) return { value: text };
@@ -268,6 +278,8 @@ openBrowser: ${c.openBrowser}
 apps:
   # Let apps download their npm packages. Package install scripts never run.
   packageDownloads: ${c.apps.packageDownloads}
+  # Where the Store's list of apps comes from. false turns the Store off.
+  store: ${c.apps.store === null ? "false" : yamlString(c.apps.store)}
 
 agent:
   # The agent's command shell. It runs inside your browser tab, never on

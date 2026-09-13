@@ -15,7 +15,7 @@ import { SessionService } from "../src/sessions.js";
 import { UserService } from "../src/users.js";
 import { defaultInstanceConfig } from "../src/config.js";
 import { bootstrapUserDir } from "../src/paths.js";
-import { seedApp } from "../src/apps/manager.js";
+import { installNotesApp } from "./fixtures/notes-app.js";
 import { resolveMcpEnv } from "../src/mcp/registry.js";
 
 
@@ -41,8 +41,7 @@ describe("app foundation over HTTP", () => {
     users.create("admin", "admin", { password: "admin-pass-1" });
     token = users.create("alice", "user", { password: "test-pass-1" }).token;
     bootstrapUserDir(dataDir, "alice");
-    const builtinRp = path.join(new URL("../apps", import.meta.url).pathname, "roleplay");
-    seedApp(path.join(dataDir, "users", "alice", "apps"), builtinRp, "roleplay");
+    installNotesApp(path.join(dataDir, "users", "alice", "apps"));
     bus = new EventBus();
     app = buildApp({ users, sessions: new SessionService(dataDir), config: defaultInstanceConfig(), dataDir, bus });
   });
@@ -55,11 +54,11 @@ afterEach(() => {
 
   it("app frames are cookieless and sandboxed: fallback page, bridge, PWA manifest, opaque CSP", async () => {
     // legacy path redirects to the user-scoped frame surface
-    const legacy = await app.request("/app/roleplay/", { headers: h() });
+    const legacy = await app.request("/app/notes/", { headers: h() });
     expect(legacy.status).toBe(302);
-    expect(legacy.headers.get("location")).toBe("/app/alice/roleplay/");
+    expect(legacy.headers.get("location")).toBe("/app/alice/notes/");
     // the frame surface needs NO auth (the sandboxed frame sends no cookies)
-    const res = await app.request("/app/alice/roleplay/");
+    const res = await app.request("/app/alice/notes/");
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("has not been built yet");
@@ -78,11 +77,11 @@ afterEach(() => {
     expect(res.headers.get("connection-allowlist")).toContain("response-origin");
     expect(res.headers.get("access-control-allow-origin")).toBe("*");
     // a frame path for another user is just as public, but unknown apps 404
-    expect((await app.request("/app/bob/roleplay/")).status).toBe(404);
-    const wm = await app.request("/app/alice/roleplay/manifest.webmanifest", { headers: h() });
+    expect((await app.request("/app/bob/notes/")).status).toBe(404);
+    const wm = await app.request("/app/alice/notes/manifest.webmanifest", { headers: h() });
     expect(wm.status).toBe(200);
     const manifest = (await wm.json()) as { start_url: string; display: string };
-    expect(manifest.start_url).toBe("/app/alice/roleplay/");
+    expect(manifest.start_url).toBe("/app/alice/notes/");
     expect(manifest.display).toBe("standalone");
   });
 
@@ -124,23 +123,29 @@ afterEach(() => {
     }
   });
 
-  it("first-party status comes from the engine's shipped apps, not the workspace manifest", async () => {
-    const { isOfficialApp, readApp } = await import("../src/apps/manager.js");
-    const builtin = path.resolve(process.cwd(), "apps");
-    const appsDir = path.join(dataDir, "users", "alice", "apps");
+  it("official status comes from the engine's install record, never from the workspace manifest", async () => {
+    const { userPaths } = await import("../src/paths.js");
+    const { writeInstallSource } = await import("../src/apps/update.js");
+    const p = userPaths(dataDir, "alice");
+    const official = async (id: string) =>
+      ((await (await app.request("/v1/launch", { headers: h() })).json()) as { apps: { id: string; official: boolean }[] }).apps.find((a) => a.id === id)?.official;
     const mk = (id: string, manifest: Record<string, unknown>) => {
-      const dir = path.join(appsDir, id);
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify(manifest));
-      return readApp(appsDir, id)!;
+      fs.mkdirSync(path.join(p.apps, id), { recursive: true });
+      fs.writeFileSync(path.join(p.apps, id, "manifest.json"), JSON.stringify(manifest));
     };
-    // the shipped app under its own id
-    expect(isOfficialApp(builtin, mk("roleplay", { name: "R", version: "1", kind: "app", official: true }))).toBe(true);
-    // a workspace manifest claiming it (agent shell, non-admin shell, repo)
-    expect(isOfficialApp(builtin, mk("mine", { name: "L", version: "1", kind: "web", official: true }))).toBe(false);
-    // git provenance outvotes the flag, including a source the url regex drops
-    expect(isOfficialApp(builtin, mk("roleplay", { name: "I", version: "1", kind: "web", official: true, source: { git: "https://example.com/author/app" } }))).toBe(false);
-    expect(isOfficialApp(builtin, mk("roleplay", { name: "I", version: "1", kind: "web", official: true, source: { git: "git@evil.example:app" } }))).toBe(false);
+    // a manifest claiming it (agent shell, non-admin shell, repo), with or
+    // without a source that looks official
+    mk("claims", { name: "C", version: "1", kind: "web", official: true, source: { git: "https://github.com/ProjectChrysalis/Roleplay" } });
+    expect(await official("claims")).toBe(false);
+    // installed by the engine from a maintainers' repository
+    mk("real", { name: "R", version: "1", kind: "web" });
+    writeInstallSource(p.appUpstream, "real", { git: "https://github.com/projectchrysalis/Roleplay.git", ref: "HEAD" });
+    expect(await official("real")).toBe(true);
+    // installed from anywhere else, including look-alike owners and paths
+    for (const git of ["https://github.com/ProjectChrysalisX/app", "https://github.com/someone/ProjectChrysalis", "https://github.com/ProjectChrysalis/a/b", "https://evil.example/ProjectChrysalis/app"]) {
+      writeInstallSource(p.appUpstream, "real", { git, ref: "HEAD" });
+      expect(await official("real"), git).toBe(false);
+    }
   });
 
   it("app page arms the source watcher: a source edit becomes build_needed with its path", async () => {
@@ -150,18 +155,18 @@ afterEach(() => {
       seen.push({ type, payload });
       return origEmit(username, type, payload);
     };
-    const page = await app.request("/app/alice/roleplay/");
+    const page = await app.request("/app/alice/notes/");
     expect(page.status).toBe(200);
     // touching src/ goes to the in-browser builder as build_needed (the
     // engine builds nothing itself), never as a data look_changed
-    const src = path.join(dataDir, "users", "alice", "apps", "roleplay", "src", "main.tsx");
+    const src = path.join(dataDir, "users", "alice", "apps", "notes", "src", "main.tsx");
     fs.writeFileSync(src, fs.readFileSync(src, "utf8") + "\n/* probe */\n");
     await new Promise((r) => setTimeout(r, 1200));
     bus.emit = origEmit;
     expect(seen.filter((e) => e.type === "look_changed")).toHaveLength(0);
     const needed = seen.filter((e) => e.type === "build_needed");
     expect(needed.length).toBeGreaterThan(0);
-    expect(needed[0]!.payload).toMatchObject({ app: "roleplay", paths: ["src/main.tsx"] });
+    expect(needed[0]!.payload).toMatchObject({ app: "notes", paths: ["src/main.tsx"] });
   });
 
   it("isBuildSource: whatever a build reads, never data, plugins, output or deps", async () => {
@@ -169,7 +174,7 @@ afterEach(() => {
     for (const yes of ["demo/src/main.tsx", "demo/index.html", "demo/package.json", "demo/tsconfig.json", "demo/public/logo.svg", "demo/lib/util.ts", "demo/.env", "demo/.env.production"]) {
       expect(isBuildSource(yes), yes).toBe(true);
     }
-    for (const no of ["demo/node_modules/preact/package.json", "demo/dist/index.html", "demo/data/chats/a.json", "roleplay/plugins/x.js", "demo/.git/HEAD", "demo/.dist-next-1/index.html", "demo"]) {
+    for (const no of ["demo/node_modules/preact/package.json", "demo/dist/index.html", "demo/data/chats/a.json", "notes/plugins/x.js", "demo/.git/HEAD", "demo/.dist-next-1/index.html", "demo"]) {
       expect(isBuildSource(no), no).toBe(false);
     }
   });
@@ -223,33 +228,37 @@ afterEach(() => {
       { preconnect: (): void => {} },
     ) as typeof fetch;
     try {
-      // studio-import (shipped with roleplay) allowlists avatars.charhub.io
-      const ok = await app.request(`/v1/apps/roleplay/img?url=${encodeURIComponent("https://avatars.charhub.io/avatars/u/b/avatar.webp")}`, { headers: h() });
+      // a plugin in the app allowlists the image host
+      const plugin = path.join(dataDir, "users", "alice", "apps", "notes", "plugins", "art");
+      fs.mkdirSync(plugin, { recursive: true });
+      fs.writeFileSync(path.join(plugin, "manifest.json"), JSON.stringify({ name: "Art", version: "1.0.0", permissions: ["routes", "network"], networkHosts: ["avatars.charhub.io"] }));
+      fs.writeFileSync(path.join(plugin, "plugin.js"), "export function handleRoute() { return null; }");
+      const ok = await app.request(`/v1/apps/notes/img?url=${encodeURIComponent("https://avatars.charhub.io/avatars/u/b/avatar.webp")}`, { headers: h() });
       expect(ok.status).toBe(200);
       expect(ok.headers.get("content-type")).toBe("image/webp");
       expect(new Uint8Array(await ok.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
       // allowlisted hop → redirects are followed onto a still-allowlisted host
-      const via = await app.request(`/v1/apps/roleplay/img?url=${encodeURIComponent("https://avatars.charhub.io/hop1")}`, { headers: h() });
+      const via = await app.request(`/v1/apps/notes/img?url=${encodeURIComponent("https://avatars.charhub.io/hop1")}`, { headers: h() });
       expect(via.status).toBe(200);
       expect(hops.at(-1)).toBe("https://avatars.charhub.io/final.webp");
       // host no plugin declared → refused; plain http too
-      const denied = await app.request(`/v1/apps/roleplay/img?url=${encodeURIComponent("https://evil.example.com/x.png")}`, { headers: h() });
+      const denied = await app.request(`/v1/apps/notes/img?url=${encodeURIComponent("https://evil.example.com/x.png")}`, { headers: h() });
       expect(denied.status).toBe(403);
-      const http = await app.request(`/v1/apps/roleplay/img?url=${encodeURIComponent("http://avatars.charhub.io/x.png")}`, { headers: h() });
+      const http = await app.request(`/v1/apps/notes/img?url=${encodeURIComponent("http://avatars.charhub.io/x.png")}`, { headers: h() });
       expect(http.status).toBe(400);
       // non-image content-type is refused even from an allowlisted host
       globalThis.fetch = Object.assign(async () => new Response("nope", { status: 200, headers: { "content-type": "text/html" } }), { preconnect: (): void => {} }) as typeof fetch;
-      const html = await app.request(`/v1/apps/roleplay/img?url=${encodeURIComponent("https://avatars.charhub.io/x")}`, { headers: h() });
+      const html = await app.request(`/v1/apps/notes/img?url=${encodeURIComponent("https://avatars.charhub.io/x")}`, { headers: h() });
       expect(html.status).toBe(415);
     } finally {
       globalThis.fetch = realFetch;
     }
   });
 
-  it("built dist takes the app frame; install refuses apps without a package.json", async () => {    const dist = path.join(dataDir, "users", "alice", "apps", "roleplay", "dist");
+  it("built dist takes the app frame; install refuses apps without a package.json", async () => {    const dist = path.join(dataDir, "users", "alice", "apps", "notes", "dist");
     fs.mkdirSync(dist, { recursive: true });
     fs.writeFileSync(path.join(dist, "index.html"), "<!doctype html><title>BUILT</title>");
-    const page = await app.request("/app/alice/roleplay/");
+    const page = await app.request("/app/alice/notes/");
     expect(page.status).toBe(200);
     const built = await page.text();
     expect(built).toContain("<title>BUILT</title>");
@@ -257,7 +266,7 @@ afterEach(() => {
     expect(built).toContain("app-bridge.js");
     fs.rmSync(dist, { recursive: true, force: true });
     // the placeholder is back once dist is gone
-    const page2 = await app.request("/app/alice/roleplay/");
+    const page2 = await app.request("/app/alice/notes/");
     expect(await page2.text()).toContain("has not been built yet");
     // install refuses an app with no package.json (bare dir app)
     fs.mkdirSync(path.join(dataDir, "users", "alice", "apps", "bare", "data"), { recursive: true });
@@ -270,7 +279,7 @@ afterEach(() => {
   });
 
   it("build routes: status, one lease holder, output lands in dist and is announced", async () => {
-    const base = "/v1/apps/roleplay/build";
+    const base = "/v1/apps/notes/build";
     const json = { ...h(), "content-type": "application/json" };
     const st = (await (await app.request(base, { headers: h() })).json()) as { buildable: boolean; needsBuild: boolean; rev: string };
     expect(st).toMatchObject({ buildable: true, needsBuild: true });
@@ -302,26 +311,26 @@ afterEach(() => {
     } finally {
       bus.emit = origEmit;
     }
-    expect(seen.find((e) => e.type === "app_built")?.payload).toMatchObject({ app: "roleplay", kind: "full", ok: true });
-    expect(await (await app.request("/app/alice/roleplay/")).text()).toContain("FROM-BUILDER");
+    expect(seen.find((e) => e.type === "app_built")?.payload).toMatchObject({ app: "notes", kind: "full", ok: true });
+    expect(await (await app.request("/app/alice/notes/")).text()).toContain("FROM-BUILDER");
     const after = (await (await app.request(base, { headers: h() })).json()) as { needsBuild: boolean; status: { ok: boolean } };
     expect(after.needsBuild).toBe(false);
     // the builder's bookkeeping is not served
-    expect((await app.request("/app/alice/roleplay/.chrysalis-build.json")).status).toBe(404);
+    expect((await app.request("/app/alice/notes/.chrysalis-build.json")).status).toBe(404);
     // a failed build keeps dist and records why
     const failed = { ...output, ok: false, files: [], errors: [{ text: "Expected \";\"", file: "src/app.tsx", line: 3 }] };
     expect((await put("tabaaaaaaaa1", failed)).status).toBe(200);
-    expect(await (await app.request("/app/alice/roleplay/")).text()).toContain("FROM-BUILDER");
+    expect(await (await app.request("/app/alice/notes/")).text()).toContain("FROM-BUILDER");
     const bad = (await (await app.request(base, { headers: h() })).json()) as { status: { ok: boolean; errors: Array<{ file: string }> } };
     expect(bad.status.ok).toBe(false);
     expect(bad.status.errors[0]!.file).toBe("src/app.tsx");
-    fs.rmSync(path.join(dataDir, "users", "alice", "apps", "roleplay", "dist"), { recursive: true, force: true });
+    fs.rmSync(path.join(dataDir, "users", "alice", "apps", "notes", "dist"), { recursive: true, force: true });
     await lease("tabaaaaaaaa1");
     await app.request(`${base}/lease`, { method: "POST", headers: json, body: JSON.stringify({ holder: "tabaaaaaaaa1", release: true }) });
   });
 
   it("a dev dist whose snapshot is gone reports unbuilt instead of adopting dead meta", async () => {
-    const base = "/v1/apps/roleplay/build";
+    const base = "/v1/apps/notes/build";
     const json = { ...h(), "content-type": "application/json" };
     const holder = "tabdev0000001";
     const st = (await (await app.request(base, { headers: h() })).json()) as { rev: string };
@@ -349,7 +358,7 @@ afterEach(() => {
     expect(ok.dev).not.toBeNull();
     // the snapshot vanishes: the meta must not be adopted, and a full build
     // has to replace it rather than a later hot update referencing the hole
-    fs.rmSync(path.join(dataDir, "users", "alice", "apps", "roleplay", "dist", "dev", "app-test.js"));
+    fs.rmSync(path.join(dataDir, "users", "alice", "apps", "notes", "dist", "dev", "app-test.js"));
     const lost = (await (await app.request(base, { headers: h() })).json()) as { needsBuild: boolean; dev: unknown };
     expect(lost.dev).toBeNull();
     expect(lost.needsBuild).toBe(true);
@@ -406,20 +415,20 @@ afterEach(() => {
     // only pending edit below is the out-of-band one
     await commitAll(root, "alice", "base: seeded workspace");
     // an out-of-band edit (agent/shell) pending BEFORE any route fires
-    fs.writeFileSync(path.join(root, "notes.md"), "left pending by the agent\n");
-    expect(await changedPaths(root)).toContain("notes.md");
-    // a route that writes its own file: the generic entity PUT
-    const put = await app.request("/v1/apps/roleplay/personas/p1", {
+    fs.writeFileSync(path.join(root, "todo.md"), "left pending by the agent\n");
+    expect(await changedPaths(root)).toContain("todo.md");
+    // a route that writes its own file
+    const put = await app.request("/v1/apps/notes/notes/p1", {
       method: "PUT",
       headers: { ...h(), "content-type": "application/json" },
-      body: JSON.stringify({ name: "P1", description: "sweep test" }),
+      body: JSON.stringify({ text: "sweep test" }),
     });
     expect(put.status).toBe(200);
     expect(await changedPaths(root)).toEqual([]); // everything committed
     const commits = await log(root, 5);
-    expect(commits[0]!.message).toBe("app(roleplay): PUT /personas/p1");
+    expect(commits[0]!.message).toBe("app(notes): PUT /notes/p1");
     const oob = commits[1]!;
-    expect(oob.message).toBe("out-of-band: notes.md");
+    expect(oob.message).toBe("out-of-band: todo.md");
     // file membership: the route commit must NOT contain the out-of-band file
     const isomorphicGit = (await import("isomorphic-git")).default;
     const filesOf = async (oid: string): Promise<string[]> => {
@@ -438,10 +447,10 @@ afterEach(() => {
     const routeFiles = await filesOf(commits[0]!.oid);
     const oobFiles = await filesOf(commits[1]!.oid);
     // trees are full snapshots — the commit's actual content is the diff
-    // against its parent. The out-of-band commit adds exactly notes.md; the
+    // against its parent. The out-of-band commit adds exactly todo.md; the
     // route commit adds exactly its own write.
     const addedByRoute = routeFiles.filter((f) => !oobFiles.includes(f));
-    expect(addedByRoute).toEqual(["apps/roleplay/data/personas/p1.json"]);
-    expect(oobFiles).toContain("notes.md");
+    expect(addedByRoute).toEqual(["apps/notes/data/notes/p1.json"]);
+    expect(oobFiles).toContain("todo.md");
   });
 });

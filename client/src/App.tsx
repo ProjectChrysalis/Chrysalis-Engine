@@ -11,7 +11,8 @@ import { IconButton } from "./ui/button"
 import { Button } from "./ui/button"
 import { api, prefs, authApi, appPluginsApi, type AuthUser } from "./api"
 import { SettingsBody, type TabValue } from "./settings"
-import type { LaunchInfo, Me } from "./types"
+import type { LaunchInfo, Me, StoreApp } from "./types"
+import { StoreDialog, WelcomeApps, useStore } from "./store"
 import { tr, useLocale } from "./i18n/index"
 
 type Tab = { id: string; kind: "agent" | "app" | "new"; name: string }
@@ -1076,14 +1077,19 @@ function LaunchPicker(props: {
   onCloseTab: (id: string) => void
 }) {
   const [creating, setCreating] = useState(false)
-  const [importing, setImporting] = useState(false)
+  const [importing, setImporting] = useState<{ from: StoreApp | null } | null>(null)
   const [deleting, setDeleting] = useState<{ id: string; name: string } | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
+  const [browsing, setBrowsing] = useState(false)
+  const [welcomeSkipped, setWelcomeSkipped] = useState(false)
+  const store = useStore()
+  const apps = props.launch?.apps ?? []
+  const welcome = !!props.launch && apps.length === 0 && !welcomeSkipped
 
   const slugOf = (name: string) =>
     name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "app"
 
-  const selApp = (props.launch?.apps ?? []).find((a) => a.id === selected) ?? null
+  const selApp = apps.find((a) => a.id === selected) ?? null
 
   const sectionLabel = "px-1 pb-1 pt-3 text-11 font-medium uppercase tracking-wider text-ink-faint first:pt-0"
 
@@ -1092,14 +1098,27 @@ function LaunchPicker(props: {
       <div className="mx-auto flex w-full max-w-[960px] min-h-0 flex-1 flex-col px-6 py-8 max-md:px-4">
         <div className="flex items-center gap-3 pb-4">
           <Logo size={32} />
-          <h1 className="text-20 font-medium text-ink">{tr("Where to?")}</h1>
+          <h1 className="text-20 font-medium text-ink">{welcome ? tr("Welcome to Chrysalis") : tr("Where to?")}</h1>
         </div>
+        {welcome ? <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+            <WelcomeApps
+              store={store}
+              onBrowse={() => setBrowsing(true)}
+              onSkip={() => setWelcomeSkipped(true)}
+              onDone={async (ids) => {
+                setWelcomeSkipped(true)
+                await props.onRefresh()
+                void store.reload()
+                if (ids[0]) props.onApp(ids[0])
+              }}
+            />
+          </div> : null}
         {/* @container: the launcher splits into list + detail only when the
             PANE has room. In a split screen the pane is under half the window
             while the viewport is wide, so viewport breakpoints lie; the
             side-by-side layout is meant for a widescreen pane and switches to
             the stacked one below ~960px of pane width. */}
-        <div className="@container flex min-h-0 flex-1 gap-4">
+        <div className={cn("@container flex min-h-0 flex-1 gap-4", { hidden: welcome })}>
           {/* App list — scrollable (many apps), and in a narrow pane it yields
               the whole pane to the detail view. Sectioned: system, your apps,
               then ways to add more. */}
@@ -1119,7 +1138,8 @@ function LaunchPicker(props: {
             </button>
 
             <p className={sectionLabel}>{tr("Your apps")}</p>
-            {(props.launch?.apps ?? []).map((a) => (
+            {props.launch && !apps.length ? <p className="px-1 text-12 text-ink-faint">{tr("No apps yet.")}</p> : null}
+            {apps.map((a) => (
                 <div key={a.id}
                   className={cn("group/app relative flex items-center gap-3 rounded-lg border pl-4 pr-2 text-left transition-colors hover:bg-hover", {
                     "border-line-focus bg-hover": selected === a.id,
@@ -1142,12 +1162,6 @@ function LaunchPicker(props: {
                             title={tr("Built and maintained by the Chrysalis maintainers")}
                           >
                             {tr("Official App")}
-                          </span> : null}
-                        {a.update ? <span
-                            className="shrink-0 rounded-full bg-warning-soft/30 px-1.5 py-px text-9 font-medium tracking-wide text-ink"
-                            title={`v${a.update} is available`}
-                          >
-                            {tr("Update")}
                           </span> : null}
                       </span>
                       <span className="block truncate text-12 text-ink-muted">
@@ -1175,6 +1189,19 @@ function LaunchPicker(props: {
               ))}
 
             <p className={sectionLabel}>{tr("Add")}</p>
+            {store.list?.enabled !== false ? <button
+                className="flex items-center gap-3 rounded-lg border border-dashed border-line px-4 py-3 text-left transition-colors hover:bg-hover"
+                onClick={() => setBrowsing(true)}
+              >
+                <IconSmall name="store" size="normal" className="text-icon" />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-13 font-medium text-ink">{tr("Store")}</span>
+                  <span className="block text-11 leading-4 text-ink-muted">{tr("apps from the Chrysalis team and the community")}</span>
+                </span>
+                {store.newCount ? <span className="shrink-0 rounded-full bg-accent/20 px-1.5 py-px text-10 font-medium text-ink">
+                    {store.newCount === 1 ? tr("1 new") : tr("{n} new", { n: store.newCount })}
+                  </span> : null}
+              </button> : null}
             <div className="grid grid-cols-2 gap-1.5">
               <button
                 className="flex flex-col gap-1.5 rounded-lg border border-dashed border-line px-3 py-3 text-left transition-colors hover:bg-hover"
@@ -1186,7 +1213,7 @@ function LaunchPicker(props: {
               </button>
               <button
                 className="flex flex-col gap-1.5 rounded-lg border border-dashed border-line px-3 py-3 text-left transition-colors hover:bg-hover"
-                onClick={() => setImporting(true)}
+                onClick={() => setImporting({ from: null })}
               >
                 <IconSmall name="folder-add-left" size="normal" className="text-icon" />
                 <span className="text-13 font-medium text-ink">{tr("Import app")}</span>
@@ -1241,11 +1268,24 @@ function LaunchPicker(props: {
             props.onApp(id)
           }}
         /> : null}
+      {browsing ? <StoreDialog
+          store={store}
+          onClose={() => setBrowsing(false)}
+          onInstall={(from) => setImporting({ from })}
+          onOpen={(id) => {
+            setBrowsing(false)
+            props.onApp(id)
+          }}
+        /> : null}
       {importing ? <ImportAppDialog
-          onClose={() => setImporting(false)}
+          from={importing.from}
+          onClose={() => setImporting(null)}
           onImported={async (id) => {
-            setImporting(false)
+            setImporting(null)
+            setBrowsing(false)
+            setWelcomeSkipped(true)
             await props.onRefresh()
+            void store.reload()
             setSelected(id)
           }}
         /> : null}
@@ -1665,8 +1705,10 @@ function dataEgressWarning(permissions: string[], networkHosts: string[]): strin
 /** Import an app from a git repository: preview what's inside (bundled
  *  plugins and the permissions they ask for) and spell out the risk of
  *  running community code before anything is installed. */
-function ImportAppDialog(props: { onClose: () => void; onImported: (id: string) => void | Promise<void> }) {
-  const [gitUrl, setGitUrl] = useState("")
+function ImportAppDialog(props: { from: StoreApp | null; onClose: () => void; onImported: (id: string) => void | Promise<void> }) {
+  const from = props.from
+  const [gitUrl, setGitUrl] = useState(from?.repository ?? "")
+  const ref = from?.ref ? { ref: from.ref } : {}
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState("")
   const [preview, setPreview] = useState<{
@@ -1684,7 +1726,7 @@ function ImportAppDialog(props: { onClose: () => void; onImported: (id: string) 
     setErr("")
     setPreview(null)
     try {
-      const r = await api<NonNullable<typeof preview>>("POST", "/v1/apps/import", { gitUrl: gitUrl.trim() })
+      const r = await api<NonNullable<typeof preview>>("POST", "/v1/apps/import", { gitUrl: gitUrl.trim(), ...ref })
       setPreview(r)
     } catch (e: any) {
       setErr(e.message ?? String(e))
@@ -1700,7 +1742,7 @@ function ImportAppDialog(props: { onClose: () => void; onImported: (id: string) 
     setErr("")
     try {
       // head pins the install to the commit this preview reviewed
-      const r = await api<{ ok: boolean; id: string }>("POST", "/v1/apps/import", { gitUrl: gitUrl.trim(), confirm: p.slug, head: p.head })
+      const r = await api<{ ok: boolean; id: string }>("POST", "/v1/apps/import", { gitUrl: gitUrl.trim(), ...ref, confirm: p.slug, head: p.head })
       // dependencies + first build in the background, like New app
       void api("POST", `/v1/apps/${encodeURIComponent(r.id)}/install`).catch(() => undefined)
       await props.onImported(r.id)
@@ -1710,21 +1752,31 @@ function ImportAppDialog(props: { onClose: () => void; onImported: (id: string) 
     }
   }
 
+  // a Store app is inspected straight away: the address is already known
+  const inspectedFrom = useRef(false)
+  useEffect(() => {
+    if (!from || inspectedFrom.current) return
+    inspectedFrom.current = true
+    void stage()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, for the Store app it opened with
+  }, [from])
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 max-md:items-end" onClick={props.onClose}>
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4 max-md:items-end" onClick={props.onClose}>
       <div
         className="flex max-h-[85vh] w-full max-w-md flex-col gap-3 overflow-hidden rounded-xl border border-line bg-panel p-4"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 className="text-14 font-medium text-ink">{tr("Import app from git")}</h3>
-        <input
+        <h3 className="text-14 font-medium text-ink">{from ? tr("Install {name}", { name: from.name }) : tr("Import app from git")}</h3>
+        {from ? <p className="truncate font-mono text-11 text-ink-faint" title={from.repository}>{from.repository}</p> : <input
           className={inputClass}
           placeholder="https://github.com/you/your-chrysalis-app"
           value={gitUrl}
           onChange={(e) => setGitUrl(e.currentTarget.value)}
-        />
+        />}
         {err ? <><div className="text-12 leading-4 text-danger">{err}</div></>: null}
-        {!preview ? <><p className="text-12 leading-4 text-ink-muted">
+        {!preview && from && busy ? <p className="text-12 text-ink-faint">{tr("Inspecting…")}</p> : null}
+        {!preview && !from ? <><p className="text-12 leading-4 text-ink-muted">
             {tr("The repository is cloned and inspected first, nothing runs until you review what it bundles and confirm.")}
           </p>
           <div className="flex justify-end gap-2">
@@ -1771,13 +1823,15 @@ function ImportAppDialog(props: { onClose: () => void; onImported: (id: string) 
                       ))}
                   </ul> : <p className="mt-1 text-12 text-ink-muted">{tr("No plugins, plain UI app.")}</p>}
               </div>
-              <p className="rounded-lg border border-warning/30 bg-warning-soft/10 p-3 text-12 leading-4 text-ink-muted">
+              {from?.official ? <p className="rounded-lg border border-line p-3 text-12 leading-4 text-ink-muted">
+                  {tr("An official app, made by the Chrysalis maintainers. Its plugins get the permissions listed above. You can delete it any time.")}
+                </p> : <p className="rounded-lg border border-warning/30 bg-warning-soft/10 p-3 text-12 leading-4 text-ink-muted">
                 {tr("Community apps run real code on your Chrysalis server: plugins can read and write the app's data, call models, and reach the hosts listed above. Only import repositories you trust. Your existing apps and data are untouched; you can delete it any time.")}
-              </p>
+              </p>}
               <div className="flex justify-end gap-2">
                 <Button variant="ghost-muted" size="small" onClick={props.onClose}>{tr("Cancel")}</Button>
                 <Button variant="neutral" size="small" disabled={busy} onClick={() => void confirmImport()}>
-                  {busy ? tr("Importing…") : tr("Import this app")}
+                  {busy ? (from ? tr("Installing…") : tr("Importing…")) : from ? tr("Install") : tr("Import this app")}
                 </Button>
               </div>
             </div>

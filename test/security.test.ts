@@ -422,30 +422,6 @@ describe("S5 zip hardening", () => {
     expect(r.ok).toBe(true);
     expect((r.out as { names: string[] }).names).toEqual(["ok.txt"]);
   });
-
-  it("an imported backup cannot write outside the collection its entry names", async () => {
-    const { zipSync, strToU8: toU8 } = await import("fflate");
-    const appData = path.join(dir, "app-data");
-    fs.mkdirSync(path.join(appData, "tools"), { recursive: true });
-    const pluginsRoot = path.join(dir, "plugins");
-    const target = path.join(pluginsRoot, "studio-import");
-    fs.mkdirSync(target, { recursive: true });
-    fs.cpSync(path.resolve(process.cwd(), "apps/roleplay/plugins/studio-import"), target, { recursive: true });
-    // zip-slip is caught on ENTRY names; this rides an entry the importer
-    // accepts and hides the traversal in the id it writes into the path
-    const zip = Buffer.from(zipSync({
-      "groups/innocent.json": toU8(JSON.stringify({ id: "../tools/pwned", name: "normal group", memberIds: [] })),
-    })).toString("base64");
-    const plugin = discoverPlugins(pluginsRoot).find((x) => x.id === "studio-import")!;
-    plugin.fsRoot = appData;
-    const res = await runPluginRoute(
-      plugin,
-      { method: "POST", path: "/import/zip", query: {}, body: {}, zipBase64: zip },
-      { ...deps(), grantsFor: () => ["routes", "fs", "zip", "network"] },
-    );
-    expect(fs.existsSync(path.join(appData, "tools", "pwned.json")), `wrote outside groups/: ${JSON.stringify(res)}`).toBe(false);
-    expect(fs.existsSync(path.join(appData, "groups", "tools-pwned.json"))).toBe(true);
-  }, 30_000);
 });
 
 describe("S5 http body caps (streamed, pre-buffer)", () => {
@@ -926,12 +902,14 @@ describe("A2 the bridge's second lock (server side)", () => {
     }
   });
 
-  it("an app sees only the assets it stored (the shipped app also sees older unowned ones)", async () => {
+  it("an app sees only the assets it stored (an official app also sees older unowned ones)", async () => {
     const { app, token, p } = await auditApp(dir);
+    const { writeInstallSource } = await import("../src/apps/update.js");
     for (const id of ["one", "two", "roleplay"]) {
       fs.mkdirSync(path.join(p.apps, id), { recursive: true });
-      fs.writeFileSync(path.join(p.apps, id, "manifest.json"), JSON.stringify({ name: id, version: "1", kind: "app", ...(id === "roleplay" ? { official: true } : {}) }));
+      fs.writeFileSync(path.join(p.apps, id, "manifest.json"), JSON.stringify({ name: id, version: "1", kind: "app" }));
     }
+    writeInstallSource(p.appUpstream, "roleplay", { git: "https://github.com/ProjectChrysalis/Roleplay", ref: "HEAD" });
     const put = async (appId: string | null, body: string) => {
       const res = await app.request("/v1/assets?name=x.png", { method: "PUT", headers: { authorization: `Bearer ${token}`, "content-type": "image/png", ...(appId ? { "x-chrysalis-app": appId } : {}) }, body });
       return ((await res.json()) as { id: string }).id;

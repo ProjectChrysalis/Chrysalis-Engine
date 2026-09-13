@@ -33,8 +33,6 @@ export interface AppManifest {
   /** Display byline shown on the launch picker ("by <author>"). */
   author?: string;
   origin?: "local" | "imported";
-  /** First-party apps shipped by the engine distributor. */
-  official?: boolean;
   /** Where an imported app came from and what it tracks — powers update
    *  checks. `head` is the remote commit the current copy was taken from;
    *  `contentHash` is the code-tree hash at install/update time (a mismatch
@@ -79,28 +77,10 @@ export function validateAppManifest(raw: unknown): AppManifest | null {
     ...(m.description ? { description: m.description } : {}),
     ...(typeof m.author === "string" && m.author.trim() ? { author: m.author.trim() } : {}),
     ...(m.origin === "imported" ? { origin: "imported" } : { origin: "local" }),
-    // a git-sourced app is someone else's code — it cannot claim first-party
-    // status, however its manifest reads (any git string counts, even one
-    // the source regex above drops)
-    ...(m.official === true && !source && !(m.source && typeof m.source === "object" && typeof (m.source as { git?: unknown }).git === "string") ? { official: true } : {}),
     ...(source ? { source } : {}),
     ...(typeof m.repository === "string" && /^https:\/\/[^\s]+$/.test(m.repository) ? { repository: m.repository } : {}),
     ...(typeof m.engine === "string" && m.engine.trim() && m.engine.length <= 64 ? { engine: m.engine.trim() } : {}),
   };
-}
-
-/** First-party = the engine itself ships an app under this id and marks it
- *  official. The manifest in the workspace is not enough on its own: the
- *  agent's shell, a non-admin account's shell or an imported repo can write
- *  `official: true` into any app. */
-export function isOfficialApp(builtinAppsDir: string, app: AppInfo): boolean {
-  if (app.manifest.official !== true) return false;
-  try {
-    const shipped = validateAppManifest(JSON.parse(fs.readFileSync(path.join(builtinAppsDir, app.id, "manifest.json"), "utf8")));
-    return shipped?.official === true;
-  } catch {
-    return false;
-  }
 }
 
 export function listApps(appsDir: string): AppInfo[] {
@@ -347,24 +327,6 @@ export function renameAppDir(appsDir: string, oldId: string, newId: string): boo
   if (!fs.existsSync(path.join(appsDir, oldId))) return false;
   if (fs.existsSync(path.join(appsDir, newId))) return false;
   fs.renameSync(path.join(appsDir, oldId), path.join(appsDir, newId));
-  return true;
-}
-
-/** Seed a shipped app (e.g. apps/roleplay) into a user's apps/ dir. Idempotent. */
-export function seedApp(appsDir: string, sourceDir: string, appId?: string): boolean {
-  const id = appId ?? path.basename(sourceDir);
-  const dest = path.join(appsDir, id);
-  if (fs.existsSync(dest)) return false;
-  if (!fs.existsSync(path.join(sourceDir, "manifest.json"))) return false;
-  fs.cpSync(sourceDir, dest, {
-    recursive: true,
-    // derived artifacts never seed (the engine installs/builds per instance)
-    filter: (src) => {
-      const rel = path.relative(sourceDir, src);
-      const segs = rel.split(path.sep);
-      return !segs.includes("node_modules") && !segs.includes("dist") && !segs.includes(".git");
-    },
-  });
   return true;
 }
 

@@ -1,6 +1,7 @@
 /**
  * Starts a packaged Chrysalis from an empty folder and walks the first run:
- * health, both frontends, account setup, the shipped roleplay app.
+ * health, both frontends, account setup, and installing Roleplay from the
+ * Store (this needs the network: the Store list and the app are on GitHub).
  *
  *   bun run scripts/smoke.ts out/dist/Chrysalis-1.0.0-linux-x64/chrysalis
  *   bun run scripts/smoke.ts bun out/dist/npm/chrysalis.js
@@ -75,10 +76,29 @@ try {
   const cookie = setup.headers.get("set-cookie")?.split(";")[0];
   check(setup.ok && cookie, `setup creates the admin account (${setup.status})`);
 
-  const apps = (await fetch(`${base}/v1/apps`, { headers: { cookie } }).then((r) => r.json())) as { apps?: { id: string }[] };
-  check(apps.apps?.some((a) => a.id === "roleplay"), "the new account has the roleplay app");
+  const json = { cookie: cookie!, "content-type": "application/json" };
+  const launch = (await fetch(`${base}/v1/launch`, { headers: json }).then((r) => r.json())) as { apps?: unknown[] };
+  check(launch.apps?.length === 0, "a new account starts with no apps");
 
-  const plugins = await fetch(`${base}/v1/apps/roleplay/plugins`, { headers: { cookie } });
+  const store = (await fetch(`${base}/v1/store`, { headers: json }).then((r) => r.json())) as {
+    apps?: { id: string; repository: string; ref?: string; official: boolean }[];
+    error?: string;
+  };
+  const roleplay = store.apps?.find((a) => a.id === "roleplay");
+  check(roleplay?.official, `the Store lists Roleplay as official${store.error ? ` (${store.error})` : ""}`);
+
+  const importApp = (body: Record<string, unknown>) =>
+    fetch(`${base}/v1/apps/import`, { method: "POST", headers: json, body: JSON.stringify({ gitUrl: roleplay.repository, ...(roleplay.ref ? { ref: roleplay.ref } : {}), ...body }) })
+      .then(async (r) => ({ status: r.status, body: (await r.json()) as { head?: string; slug?: string; id?: string; error?: string } }));
+  const preview = await importApp({});
+  check(preview.body.head && preview.body.slug, `the Store app previews (${preview.status} ${preview.body.error ?? ""})`);
+  const installed = await importApp({ confirm: preview.body.slug, head: preview.body.head });
+  check(installed.body.id === "roleplay", `Roleplay installs (${installed.status} ${installed.body.error ?? ""})`);
+
+  const after = (await fetch(`${base}/v1/launch`, { headers: json }).then((r) => r.json())) as { apps?: { id: string; official: boolean }[] };
+  check(after.apps?.find((a) => a.id === "roleplay")?.official, "the installed Roleplay is official");
+
+  const plugins = await fetch(`${base}/v1/apps/roleplay/plugins`, { headers: json });
   check(plugins.ok, "the roleplay app's plugins load");
 
   check(fs.existsSync(path.join(home, "config.yaml")), "config.yaml is created");

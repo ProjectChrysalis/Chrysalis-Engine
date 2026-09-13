@@ -5,7 +5,7 @@ import {
   ArrowClockwise, ArrowLeft, ArrowSquareOut, ArrowUUpLeft, Brain, CaretDown, CaretLeft, CaretRight,
   Chat, ChatCircle, CheckCircle, CloudArrowUp, Code, Columns, Copy, FolderPlus, GearSix, HardDrives, Info,
   Lock, PencilSimpleLine, Plus, PlusSquare, Prohibit, SignOut, SlidersHorizontal,
-  SpeakerHigh, SquaresFour, TerminalWindow, X,
+  SpeakerHigh, SquaresFour, Storefront, TerminalWindow, X,
 } from "@phosphor-icons/react"
 
 const glyphs = {
@@ -26,6 +26,7 @@ const glyphs = {
   rebuild: ArrowClockwise,
   server: HardDrives,
   speaker: SpeakerHigh,
+  store: Storefront,
   "speech-bubble": Chat,
   "terminal-active": TerminalWindow,
   "chevron-left": CaretLeft,

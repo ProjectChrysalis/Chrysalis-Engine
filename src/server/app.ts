@@ -10,8 +10,9 @@ import nodeCrypto from "node:crypto";
 import { PluginStoreService } from "../plugins/store.js";
 import { discoverPlugins, discoverAppPlugins, discoverActivePlugins, runPluginHook, runPluginRoute, runPluginTool, readPluginExport, startSchedule, stopSchedule, invalidatePluginCache, collectSiblingTools, collectSiblingLlmHooks, mergeToolBridges, type PluginRuntimeDeps, type PluginToolBridge } from "../plugins/runtime.js";
 import { McpRegistry, WEB_SEARCH_PRESET, readStdioApprovals, stdioFingerprint, writeStdioApproval, type CredentialMap, type McpServerConfig } from "../mcp/registry.js";
-import { listApps, readApp, createAppSkeleton, renameAppDir, appTree, validateAppManifest, hashAppTree, isOfficialApp, type AppInfo } from "../apps/manager.js";
-import { UPDATE_STRATEGIES, applyWrites, compareVersions, manifestVersion, mergeTrees, readBaseline, readCodeTree, recoverBaseline, satisfiesRange, seedDataTemplates, seedShippedApp, writeBaseline } from "../apps/update.js";
+import { listApps, readApp, createAppSkeleton, renameAppDir, appTree, validateAppManifest, hashAppTree, type AppInfo } from "../apps/manager.js";
+import { UPDATE_STRATEGIES, applyWrites, forgetInstall, mergeTrees, moveInstall, readBaseline, readCodeTree, readInstallSource, recoverBaseline, satisfiesRange, seedDataTemplates, writeBaseline, writeInstallSource, type InstallSource } from "../apps/update.js";
+import { OFFICIAL_SOURCES, createCatalog, isOfficialSource, normalizeGitUrl } from "../apps/store.js";
 import { gitClone, gitRemoteHead, isValidGitUrl, stripVcs, swapAppContents } from "../apps/git.js";
 import { bootstrapUserDir } from "../paths.js";
 import type { UserService, UserRecord } from "../users.js";
@@ -77,6 +78,11 @@ export interface AppDeps {
   setupToken?: string | null;
   /** Reading and changing server settings (Settings > Server). */
   settings?: ServerSettings;
+  /** Repository owners whose apps are official (tests point this at a
+   *  local server). */
+  officialSources?: readonly string[];
+  /** How the Store list is fetched (tests substitute a stub). */
+  storeFetch?: typeof fetch;
 }
 
 const SESSION_COOKIE = "chrysalis_session";
@@ -178,7 +184,14 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   const { users, sessions, config, dataDir, bus } = deps;
   initNetTokens(dataDir);
   const sandbox = deps.sandbox ?? createSandbox(sandboxConfigOf(config), bus);
-  const builtinAppsDir = path.join(resourcesDir(), "apps");
+  const officialSources = deps.officialSources ?? OFFICIAL_SOURCES;
+  /** Official = this engine installed the app from a maintainers' repository.
+   *  Read from the install record outside the workspace: a manifest can say
+   *  anything, since the agent, the app and a non-admin shell can all write it. */
+  const officialApp = (p: UserPaths, app: AppInfo): boolean => {
+    const source = readInstallSource(p.appUpstream, app.id);
+    return !!source && isOfficialSource(source.git, officialSources);
+  };
   let setupToken = deps.setupToken ?? null;
   const app = new Hono<AppEnv>();
 
@@ -279,27 +292,14 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
    *  workspace (see stdioFingerprint). */
   const stdioApprovalsFile = (p: UserPaths): string => path.join(path.dirname(p.auth), "mcp-approved.json");
 
-  /** A new account's workspace: directory shape, git, the shipped app
-   *  (activated), and its packages downloading in the background. */
+  /** A new account's workspace: directory shape and git. Apps come from the
+   *  welcome screen or the Store. */
   const provisionAccount = async (username: string): Promise<UserPaths> => {
     const p = bootstrapUserDir(dataDir, username);
     // a fresh account starts with no approved stdio servers (and so never
     // takes part in the one-time boot adoption of existing ones)
     writeStdioApproval(stdioApprovalsFile(p), "", null);
     await git.initRepo(p.root);
-    const seeded = seedShippedApp(p, builtinAppsDir, "roleplay");
-    if (seeded) await git.initRepo(p.root);
-    const settings = JSON.parse(fs.readFileSync(p.settings, "utf8")) as { activeApp?: string | null };
-    const roleplay = readApp(p.apps, "roleplay");
-    if (!settings.activeApp && roleplay) {
-      settings.activeApp = "roleplay";
-      fs.writeFileSync(p.settings, JSON.stringify(settings, null, 2) + "\n", "utf8");
-    }
-    if (roleplay && config.apps.packageDownloads && hasPackages(roleplay.dir) && !fs.existsSync(path.join(roleplay.dir, "node_modules"))) {
-      void installApp(roleplay.dir).then((r) => {
-        if (!r.ok) log.warn(`[apps] package install failed for ${username}/roleplay: ${r.log.split("\n").slice(-3).join(" ")}`);
-      });
-    }
     return p;
   };
   const getMcp = (u: UserRecord): McpRegistry => {
@@ -966,7 +966,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     if (appId === undefined) return next();
     const p = c.get("paths") as UserPaths | undefined;
     const info = p ? readApp(p.apps, appId) : null;
-    const trusted = !!info && isOfficialApp(builtinAppsDir, info);
+    const trusted = !!info && !!p && officialApp(p, info);
     if (!info || !appBridgeAllows(appId, c.req.method.toUpperCase(), c.req.path, trusted)) {
       return c.json({ error: "blocked by the app sandbox" }, 403);
     }
@@ -1450,8 +1450,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
 
   // ---------- launch + settings (home-flow contract, SPEC-v2 §12.5) ----------
   // The v2 client's boot moment: what apps exist, that the agent tab exists,
-  // and what to auto-enter. First boot (single seeded app) goes straight in;
-  // once more apps exist → picker. settings.launchDefault pins a choice.
+  // and what to auto-enter. A single app goes straight in; with more, or
+  // none yet, the picker shows. settings.launchDefault pins a choice.
   // engine identity for the launcher footer (version + repo link)
   const ENGINE_INFO = { version: ENGINE_VERSION, repository: ENGINE_REPOSITORY };
 
@@ -1468,18 +1468,39 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       apps: apps.map((a) => ({
         id: a.id, name: a.manifest.name, kind: a.manifest.kind,
         author: a.manifest.author ?? null,
-        official: isOfficialApp(builtinAppsDir, a),
-        repository: a.manifest.source?.git ?? null,
-        // a newer version this engine ships, when the engine can run it
-        update: isOfficialApp(builtinAppsDir, a) ? (() => {
-          const next = shippedUpdate(a);
-          return next?.engineOk ? next.version : null;
-        })() : null,
+        official: officialApp(p, a),
+        repository: installSourceOf(p, a)?.git ?? null,
       })),
       engine: ENGINE_INFO,
       agent: true, // the agent tab is always available (kernel-level)
       default: def,
     });
+  });
+
+  // ---------- store ----------
+  // The Store list, and per entry whether it is official and which of this
+  // account's apps came from it. Installing is the git import, preview first.
+  let catalog: { url: string; list: ReturnType<typeof createCatalog> } | null = null;
+  app.get("/v1/store", async (c) => {
+    const p = c.get("paths");
+    const url = config.apps.store;
+    if (!url) return c.json({ enabled: false, apps: [], fetchedAt: null });
+    if (catalog?.url !== url) {
+      catalog = {
+        url,
+        list: createCatalog({ url, cacheFile: path.join(dataDir, "store-catalog.json"), fetcher: deps.storeFetch, userAgent: `Chrysalis/${ENGINE_VERSION}` }),
+      };
+    }
+    const result = await catalog.list.get({ fresh: c.req.query("fresh") === "1" });
+    const installed = new Map<string, string>();
+    for (const a of listApps(p.apps)) {
+      const source = installSourceOf(p, a);
+      if (source) installed.set(normalizeGitUrl(source.git), a.id);
+    }
+    const apps = result.apps
+      .map((e) => ({ ...e, official: isOfficialSource(e.repository, officialSources), installed: installed.get(normalizeGitUrl(e.repository)) ?? null }))
+      .sort((a, b) => Number(b.official) - Number(a.official) || b.added.localeCompare(a.added) || a.name.localeCompare(b.name));
+    return c.json({ enabled: true, apps, fetchedAt: result.fetchedAt, ...(result.error ? { error: result.error } : {}) });
   });
 
   app.get("/v1/settings", (c) => {
@@ -1488,6 +1509,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     try { settings = JSON.parse(fs.readFileSync(p.settings, "utf8")); } catch { /* defaults */ }
     return c.json({
       launchDefault: typeof settings.launchDefault === "string" ? settings.launchDefault : null,
+      storeSeen: typeof settings.storeSeen === "string" ? settings.storeSeen : null,
       model: typeof settings.model === "string" ? settings.model : null,
       reasoning: isReasoningLevel(settings.reasoning) ? settings.reasoning : null,
       autoCompact:
@@ -1502,9 +1524,12 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   app.put("/v1/settings", async (c) => {
     const u = c.get("user");
     const p = c.get("paths");
-    const body = await c.req.json<{ launchDefault?: string | null; model?: string | null; reasoning?: string | null; autoCompact?: boolean | number | null }>().catch(() => null) ?? {};
-    if (!("launchDefault" in body) && !("model" in body) && !("reasoning" in body) && !("autoCompact" in body)) {
-      return c.json({ error: "launchDefault, model, reasoning or autoCompact required" }, 400);
+    const body = await c.req.json<{ launchDefault?: string | null; storeSeen?: string; model?: string | null; reasoning?: string | null; autoCompact?: boolean | number | null }>().catch(() => null) ?? {};
+    if (!("launchDefault" in body) && !("storeSeen" in body) && !("model" in body) && !("reasoning" in body) && !("autoCompact" in body)) {
+      return c.json({ error: "launchDefault, storeSeen, model, reasoning or autoCompact required" }, 400);
+    }
+    if (body.storeSeen !== undefined && !(typeof body.storeSeen === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.storeSeen))) {
+      return c.json({ error: "storeSeen must be a date (YYYY-MM-DD)" }, 400);
     }
     if (body.launchDefault !== undefined && body.launchDefault !== null && typeof body.launchDefault !== "string") {
       return c.json({ error: "launchDefault must be a string app id or null" }, 400);
@@ -1528,12 +1553,14 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       ? (JSON.parse(fs.readFileSync(p.settings, "utf8")) as Record<string, unknown>)
       : {};
     if (body.launchDefault !== undefined) settings.launchDefault = body.launchDefault;
+    if (body.storeSeen !== undefined) settings.storeSeen = body.storeSeen;
     if (body.model !== undefined) settings.model = body.model;
     if (body.reasoning !== undefined) settings.reasoning = body.reasoning;
     if (body.autoCompact !== undefined) settings.autoCompact = body.autoCompact;
     fs.writeFileSync(p.settings, JSON.stringify(settings, null, 2) + "\n");
     const changes: string[] = [];
     if (body.launchDefault !== undefined) changes.push("launch default");
+    if (body.storeSeen !== undefined) changes.push("store seen");
     if (body.model !== undefined) changes.push("default model");
     if (body.reasoning !== undefined) changes.push("thinking level");
     if (body.autoCompact !== undefined) changes.push("auto-compact");
@@ -2690,6 +2717,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     if (!readApp(p.apps, id)) return c.json({ error: "app not found" }, 404);
     const appDir = safeResolve(p.apps, id);
     fs.rmSync(appDir, { recursive: true, force: true });
+    forgetInstall(p.appUpstream, id);
     invalidatePluginCache();
     try {
       const settings = JSON.parse(fs.readFileSync(p.settings, "utf8")) as { activeApp?: string | null; launchDefault?: string | null; pluginGrants?: Record<string, string[]>; disabledPlugins?: string[]; appMcp?: Record<string, string[]> };
@@ -2744,6 +2772,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     if (oldId !== newId && !renameAppDir(p.apps, oldId, newId)) {
       return c.json({ error: `rename failed (does "${newId}" already exist?)` }, 409);
     }
+    if (oldId !== newId) moveInstall(p.appUpstream, oldId, newId);
     const settings = JSON.parse(fs.readFileSync(p.settings, "utf8")) as { activeApp?: string | null };
     if (settings.activeApp === oldId) {
       settings.activeApp = newId;
@@ -2866,6 +2895,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       try {
         const head = await gitClone(gitUrl, staging, ref);
         stripVcs(staging);
+        // sidecar so the confirm phase knows the head without a .git to ask
+        fs.writeFileSync(path.join(staging, ".staged-head"), head + "\n", "utf8");
         const staged = readStaged(staging);
         if (!staged) return c.json({ error: "not a Chrysalis app (missing or invalid manifest.json)" }, 422);
         const pluginPreviews = staged.plugins.map((pid) => {
@@ -2923,11 +2954,16 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       } catch {
         return c.json({ error: "staging expired — run the import preview again" }, 409);
       }
+      // another preview of the same repository can replace the staged copy
+      if (reviewedHead && head !== reviewedHead) {
+        return c.json({ error: "the repository moved since the preview — run the import again to review what changed" }, 409);
+      }
     }
 
     let id = slug;
     const existing = fs.existsSync(path.join(p.apps, id)) ? readApp(p.apps, id) : null;
-    if (existing && existing.manifest.source?.git !== gitUrl) {
+    const existingSource = existing ? installSourceOf(p, existing)?.git : undefined;
+    if (existing && (!existingSource || normalizeGitUrl(existingSource) !== normalizeGitUrl(gitUrl))) {
       let n = 2;
       while (fs.existsSync(path.join(p.apps, `${slug}-${n}`))) n++;
       id = `${slug}-${n}`;
@@ -2959,18 +2995,24 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     stampBundledPlugins(p, id, dest, gitUrl, head);
     manifest.source = { git: gitUrl, ref, head, contentHash: hashAppTree(dest) ?? undefined };
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
-    // the version the next update merges against
+    // the version the next update merges against, and where it comes from
     writeBaseline(p.appUpstream, id, manifest.version, readCodeTree(dest));
+    writeInstallSource(p.appUpstream, id, { git: gitUrl, ref });
     invalidatePluginCache();
     await git.commitAll(p.root, u.username, `app(${id}): ${existing ? "updated" : "imported"} from ${gitUrl}`);
     bus.emit(u.username, "app_changed", { app: id });
     return c.json({ ok: true, id, head });
   });
 
-  /** Where an app's next version comes from: the copy this engine ships for
-   *  an official app, or the repository a git-imported app tracks. */
-  const updateSourceOf = (info: AppInfo): "shipped" | "git" | null =>
-    isOfficialApp(builtinAppsDir, info) ? "shipped" : info.manifest.source?.git ? "git" : null;
+  /** Where an app's next version comes from: the repository this engine
+   *  installed it from, or for an older import without that record, the
+   *  source its manifest names. */
+  const installSourceOf = (p: UserPaths, info: AppInfo): InstallSource | null => {
+    const recorded = readInstallSource(p.appUpstream, info.id);
+    if (recorded) return recorded;
+    const src = info.manifest.source;
+    return src?.git ? { git: src.git, ref: src.ref ?? "HEAD" } : null;
+  };
 
   /** Has the app's code changed since the version it was installed from?
    *  null when that version is not on record. */
@@ -2983,55 +3025,29 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     return false;
   };
 
-  /** A newer shipped version an official app can move to, or null. */
-  const shippedUpdate = (info: AppInfo): { version: string; engine: string | null; engineOk: boolean } | null => {
-    const shipped = path.join(builtinAppsDir, info.id);
-    const version = manifestVersion(shipped);
-    if (compareVersions(version, info.manifest.version) <= 0) return null;
-    const engine = readApp(builtinAppsDir, info.id)?.manifest.engine ?? null;
-    return { version, engine, engineOk: !engine || satisfiesRange(engine, ENGINE_INFO.version) };
-  };
-
-  // Update check. An official app compares against the copy this engine
-  // ships; a git-imported one asks the remote (ls-remote only). Nothing local
-  // moves either way.
+  // Update check: asks the app's repository for its head (ls-remote only).
+  // Nothing local moves.
   app.get("/v1/apps/:id/updates", async (c) => {
     const p = c.get("paths");
     const info = readApp(p.apps, c.req.param("id"));
     if (!info) return c.json({ error: "app not found" }, 404);
-    const source = updateSourceOf(info);
+    const source = installSourceOf(p, info);
     if (!source) return c.json({ supported: false });
     const modified = codeModified(p, info);
-    if (source === "shipped") {
-      const next = shippedUpdate(info);
-      return c.json({
-        supported: true,
-        source,
-        version: info.manifest.version,
-        available: next?.version ?? null,
-        upToDate: !next,
-        engineOk: next?.engineOk ?? true,
-        engine: next?.engine ?? null,
-        engineVersion: ENGINE_INFO.version,
-        modified,
-        repository: info.manifest.repository ?? null,
-      });
-    }
-    const src = info.manifest.source!;
+    const localHead = info.manifest.source?.head ?? null;
     try {
-      const remoteHead = await gitRemoteHead(src.git, src.ref ?? "HEAD");
+      const remoteHead = await gitRemoteHead(source.git, source.ref);
       return c.json({
         supported: true,
-        source,
-        repository: src.git,
+        repository: source.git,
         version: info.manifest.version,
-        localHead: src.head ?? null,
+        localHead,
         remoteHead,
-        upToDate: !remoteHead || remoteHead === src.head,
+        upToDate: !remoteHead || remoteHead === localHead,
         modified,
       });
     } catch (e) {
-      return c.json({ supported: true, source, repository: src.git, error: (e as Error).message }, 200);
+      return c.json({ supported: true, repository: source.git, error: (e as Error).message }, 200);
     }
   });
 
@@ -3072,29 +3088,24 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const id = c.req.param("id");
     const info = readApp(p.apps, id);
     if (!info) return c.json({ error: "app not found" }, 404);
-    const source = updateSourceOf(info);
-    if (!source) return c.json({ error: "this app has no update source: it is neither shipped with the engine nor imported from git" }, 400);
+    const source = installSourceOf(p, info);
+    if (!source) return c.json({ error: "this app has no update source: it was not installed from a repository" }, 400);
+    const official = isOfficialSource(source.git, officialSources);
     const body = (await c.req.json().catch(() => ({}))) as { confirmDeps?: boolean; strategy?: unknown };
     const strategy = UPDATE_STRATEGIES.find((x) => x === body.strategy) ?? "merge";
 
     const staging = path.join(p.apps, ".staging", `${id}-update`);
-    let incoming: string;
-    let head: string | null = null;
-    if (source === "shipped") {
-      if (!shippedUpdate(info)) return c.json({ status: "current", version: info.manifest.version });
-      incoming = path.join(builtinAppsDir, id);
-    } else {
+    let head: string;
+    fs.rmSync(staging, { recursive: true, force: true });
+    try {
+      head = await gitClone(source.git, staging, source.ref);
+      stripVcs(staging);
+      stampPluginSources(staging, source.git, head);
+    } catch (e) {
       fs.rmSync(staging, { recursive: true, force: true });
-      try {
-        head = await gitClone(info.manifest.source!.git, staging, info.manifest.source!.ref ?? "HEAD");
-        stripVcs(staging);
-        stampPluginSources(staging, info.manifest.source!.git, head);
-      } catch (e) {
-        fs.rmSync(staging, { recursive: true, force: true });
-        return c.json({ error: `clone failed: ${(e as Error).message}` }, 502);
-      }
-      incoming = staging;
+      return c.json({ error: `clone failed: ${(e as Error).message}` }, 502);
     }
+    const incoming = staging;
     const dropStaging = () => fs.rmSync(staging, { recursive: true, force: true });
     const incomingManifest = readStaged(incoming)?.manifest;
     if (!incomingManifest) {
@@ -3110,10 +3121,11 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
 
     // Changed dependencies carry supply-chain weight for third-party apps:
     // the first pass reports WHAT would be installed and changes nothing.
+    // Official apps come from the maintainers, who own that choice.
     const depFingerprint = (dir: string): string =>
       ["package.json", "package-lock.json", "bun.lock", "bun.lockb"].map((f) => { try { return fs.readFileSync(path.join(dir, f), "utf8"); } catch { return ""; } }).join("\u0000");
     const depsChanged = hasPackages(incoming) && depFingerprint(info.dir) !== depFingerprint(incoming);
-    if (source === "git" && depsChanged && config.apps.packageDownloads && body.confirmDeps !== true) {
+    if (!official && depsChanged && config.apps.packageDownloads && body.confirmDeps !== true) {
       const readDeps = (dir: string): Record<string, string> => {
         try {
           const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")) as Record<string, Record<string, string> | undefined>;
@@ -3182,10 +3194,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     applyWrites(info.dir, result.writes);
     seedDataTemplates(incoming, info.dir);
     // the incoming manifest wins for content fields; provenance stays ours
-    const src = info.manifest.source;
-    const next = source === "git" && src
-      ? { ...incomingManifest, origin: "imported" as const, source: { git: src.git, ...(src.ref ? { ref: src.ref } : {}), ...(head ? { head } : {}) } }
-      : incomingManifest;
+    const next = { ...incomingManifest, origin: "imported" as const, source: { git: source.git, ref: source.ref, head } };
     fs.writeFileSync(path.join(info.dir, "manifest.json"), JSON.stringify(next, null, 2) + "\n", "utf8");
     writeBaseline(p.appUpstream, id, to, theirs);
     dropStaging();
@@ -3194,14 +3203,14 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       fs.rmSync(path.join(info.dir, "node_modules"), { recursive: true, force: true });
       if (config.apps.packageDownloads) await installApp(info.dir);
     }
-    if (source === "git" && src) grantBundledPlugins(p, id, info.dir, src.git);
+    grantBundledPlugins(p, id, info.dir, source.git);
     invalidatePluginCache();
     evictAgents(u.username);
     await runAppUpdateHooks(u, p, id, from, to);
     const note = !result.conflicts.length ? "" : strategy === "agent" ? `, ${result.conflicts.length} conflicts left for the agent` : strategy === "mine" ? `, your side kept in ${result.conflicts.length} conflicts` : "";
     await git.commitAll(p.root, u.username, `app(${id}): updated v${from} → v${to}${strategy === "theirs" ? ", your edits replaced" : ""}${note}`);
     bus.emit(u.username, "app_changed", { app: id, updated: true });
-    const link = source === "git" ? `${src!.git}${head ? ` (commit ${head.slice(0, 10)})` : ""}` : info.manifest.repository ?? readApp(builtinAppsDir, id)?.manifest.repository ?? ENGINE_INFO.repository;
+    const link = `${source.git} (commit ${head.slice(0, 10)})`;
     return c.json({
       status: "applied",
       from,
@@ -3699,7 +3708,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
   var loaded = false;
   var hide = function () { if (!loaded) { loaded = true; boot.style.display = "none"; } };
   var fail = function () { bootmsg.textContent = "The build failed. This window shows the app's last good build."; };
-  ChrysalisBridgeHost.serve(frame, appId, username, ${isOfficialApp(builtinAppsDir, app)});
+  ChrysalisBridgeHost.serve(frame, appId, username, ${officialApp(c.get("paths"), app)});
   var load = function () { boot.style.display = "flex"; loaded = false; frame.src = ChrysalisBridgeHost.frameSrc(appId, username); };
   // the same signal the shell's app pane waits for, plus a load fallback
   window.addEventListener("message", function (e) {

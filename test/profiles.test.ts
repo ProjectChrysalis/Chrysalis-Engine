@@ -1,6 +1,6 @@
 /**
  * Per-profile architecture (user ask 2026-08-19): every user gets their OWN
- * Chrysalis world — workspace, seeded+active roleplay app, git repo, agent
+ * Chrysalis world — workspace, apps, git repo, agent
  * session space, mcp.json, credentials (outside the workspace), workspace
  * AGENTS.md — with strict cross-user isolation. Plus the outbound MCP server list (the
  * engine agent consuming external MCP servers).
@@ -18,6 +18,7 @@ import { UserService } from "../src/users.js";
 import { defaultInstanceConfig } from "../src/config.js";
 import { userPaths } from "../src/paths.js";
 import { invalidatePluginCache } from "../src/plugins/runtime.js";
+import { installNotesApp } from "./fixtures/notes-app.js";
 
 // tests here bootstrap whole user worlds (seeded app copy + git history),
 // which can outlast the 5s default while test files run in parallel
@@ -50,19 +51,20 @@ async function createUser(username: string): Promise<string> {
   const res = await app.request("/v1/admin/users", { method: "POST", headers: adminH(), body: JSON.stringify({ username, password: "test-pass-1" }) });
   expect(res.status).toBe(200);
   const j = (await res.json()) as { token: string };
+  installNotesApp(userPaths(dataDir, username).apps);
+  invalidatePluginCache();
   return j.token;
 }
 const userH = (t: string) => ({ authorization: `Bearer ${t}`, "content-type": "application/json" });
 
 describe("per-profile worlds", () => {
-  it("each user gets the full bundle: workspace, seeded+active roleplay app, git, credentials + mcp.json outside it, AGENTS.md", async () => {
+  it("each user gets the full bundle: workspace, git, credentials + mcp.json outside it, AGENTS.md, their own apps", async () => {
     const ta = await createUser("alice");
     const tb = await createUser("bob");
 
     for (const name of ["alice", "bob"]) {
       const p = userPaths(dataDir, name);
-      // workspace + the shipped pieces
-      expect(fs.existsSync(path.join(p.root, "apps/roleplay/manifest.json"))).toBe(true);
+      expect(fs.existsSync(path.join(p.root, "apps/notes/manifest.json"))).toBe(true);
       // MCP config is seeded OUTSIDE the workspace, beside the credentials
       expect(fs.existsSync(p.mcp)).toBe(true);
       expect(p.mcp.startsWith(p.root)).toBe(false);
@@ -76,14 +78,12 @@ describe("per-profile worlds", () => {
       expect(p.auth).toContain(name);
       // agent session space is per-user by layout
       expect(path.join(p.root, "agent", "sessions")).toContain(path.join("users", name));
-      // roleplay is seeded and reachable through their own token
-      const chars = await app.request("/v1/apps/roleplay/characters", { headers: userH(name === "alice" ? ta : tb) });
-      expect(chars.status).toBe(200);
-      const charList = ((await chars.json()) as { characters: Array<{ id: string }> }).characters;
-      expect(charList.map((x) => x.id)).toContain("example-bot");
-      // active app = roleplay
+      // their app is reachable through their own token
+      const notes = await app.request("/v1/apps/notes/notes", { headers: userH(name === "alice" ? ta : tb) });
+      expect(notes.status).toBe(200);
+      // a single app is where launch goes
       const launch = await app.request("/v1/launch", { headers: userH(name === "alice" ? ta : tb) });
-      expect(((await launch.json()) as { default: string }).default).toBe("roleplay");
+      expect(((await launch.json()) as { default: string }).default).toBe("notes");
     }
   });
 
@@ -91,21 +91,20 @@ describe("per-profile worlds", () => {
     const ta = await createUser("alice");
     const tb = await createUser("bob");
 
-    // alice adds a character through her app route
-    const put = await app.request("/v1/apps/roleplay/characters/secret-bot", {
+    // alice adds a note through her app route
+    const put = await app.request("/v1/apps/notes/notes/secret-bot", {
       method: "PUT",
       headers: userH(ta),
-      body: JSON.stringify({ name: "Secret", first_mes: "hi" }),
+      body: JSON.stringify({ text: "Secret" }),
     });
     expect(put.status).toBe(200);
 
     // bob's world does not contain it
-    const bobChars = await app.request("/v1/apps/roleplay/characters", { headers: userH(tb) });
-    const bobIds = ((await bobChars.json()) as { characters: Array<{ id: string }> }).characters.map((x) => x.id);
-    expect(bobIds).not.toContain("secret-bot");
+    const bobNotes = await app.request("/v1/apps/notes/notes", { headers: userH(tb) });
+    expect(((await bobNotes.json()) as { notes: string[] }).notes).not.toContain("secret-bot");
     // alice's does
-    const aliceChars = await app.request("/v1/apps/roleplay/characters", { headers: userH(ta) });
-    expect((((await aliceChars.json()) as { characters: Array<{ id: string }> }).characters).map((x) => x.id)).toContain("secret-bot");
+    const aliceNotes = await app.request("/v1/apps/notes/notes", { headers: userH(ta) });
+    expect(((await aliceNotes.json()) as { notes: string[] }).notes).toContain("secret-bot");
   });
 });
 
@@ -150,25 +149,25 @@ describe("outbound MCP server list (agent tooling)", () => {
       (await r.json()) as { servers: Array<{ id: string; share?: string; use?: boolean }> };
     const cfg = JSON.stringify({ type: "http", url: "https://example.invalid/mcp" });
 
-    // an engine server defaults to "all apps", so roleplay sees it, off
+    // an engine server defaults to "all apps", so the app sees it, off
     expect((await app.request("/v1/mcp/everywhere", { method: "PUT", headers: h, body: cfg })).status).toBe(200);
-    expect((await json(await app.request("/v1/apps/roleplay/mcp", { headers: h }))).servers)
+    expect((await json(await app.request("/v1/apps/notes/mcp", { headers: h }))).servers)
       .toContainEqual(expect.objectContaining({ id: "everywhere", use: false }));
 
     // the app opts in; the engine's list still shows the server
-    expect((await app.request("/v1/apps/roleplay/mcp/everywhere", { method: "PATCH", headers: h, body: JSON.stringify({ use: true }) })).status).toBe(200);
-    expect((await json(await app.request("/v1/apps/roleplay/mcp", { headers: h }))).servers)
+    expect((await app.request("/v1/apps/notes/mcp/everywhere", { method: "PATCH", headers: h, body: JSON.stringify({ use: true }) })).status).toBe(200);
+    expect((await json(await app.request("/v1/apps/notes/mcp", { headers: h }))).servers)
       .toContainEqual(expect.objectContaining({ id: "everywhere", use: true }));
     expect((await json(await app.request("/v1/mcp", { headers: h }))).servers.map((s) => s.id)).toContain("everywhere");
 
     // only "all" servers can be opted into; agent-only is not app business
     expect((await app.request("/v1/mcp/everywhere", { method: "PATCH", headers: h, body: JSON.stringify({ share: "agent" }) })).status).toBe(200);
-    expect((await app.request("/v1/apps/roleplay/mcp/everywhere", { method: "PATCH", headers: h, body: JSON.stringify({ use: true }) })).status).toBe(404);
-    const afterShare = (await json(await app.request("/v1/apps/roleplay/mcp", { headers: h }))).servers.map((s) => s.id);
+    expect((await app.request("/v1/apps/notes/mcp/everywhere", { method: "PATCH", headers: h, body: JSON.stringify({ use: true }) })).status).toBe(404);
+    const afterShare = (await json(await app.request("/v1/apps/notes/mcp", { headers: h }))).servers.map((s) => s.id);
     expect(afterShare).not.toContain("everywhere");
 
     // the app tier has no server registration of its own
-    expect((await app.request("/v1/apps/roleplay/mcp/weather", { method: "PUT", headers: h, body: cfg })).status).toBe(404);
+    expect((await app.request("/v1/apps/notes/mcp/weather", { method: "PUT", headers: h, body: cfg })).status).toBe(404);
   }, 30_000);
 
   it("deleting an app forgets its MCP opt-ins", async () => {
@@ -176,11 +175,11 @@ describe("outbound MCP server list (agent tooling)", () => {
     const h = userH(t);
     const cfg = JSON.stringify({ type: "http", url: "https://example.invalid/mcp" });
     expect((await app.request("/v1/mcp/weather", { method: "PUT", headers: h, body: cfg })).status).toBe(200);
-    expect((await app.request("/v1/apps/roleplay/mcp/weather", { method: "PATCH", headers: h, body: JSON.stringify({ use: true }) })).status).toBe(200);
-    expect((await app.request("/v1/apps/roleplay", { method: "DELETE", headers: h })).status).toBe(200);
+    expect((await app.request("/v1/apps/notes/mcp/weather", { method: "PATCH", headers: h, body: JSON.stringify({ use: true }) })).status).toBe(200);
+    expect((await app.request("/v1/apps/notes", { method: "DELETE", headers: h })).status).toBe(200);
     const settingsFile = userPaths(dataDir, "mcp-orphan-user").settings;
     const settings = JSON.parse(fs.readFileSync(settingsFile, "utf8")) as { appMcp?: Record<string, string[]> };
-    expect(settings.appMcp?.["roleplay"]).toBeUndefined();
+    expect(settings.appMcp?.["notes"]).toBeUndefined();
   }, 30_000);
 });
 
