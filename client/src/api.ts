@@ -294,6 +294,8 @@ export interface ServerConfig {
 export interface ServerInfo {
   version: string
   installKind: "source" | "binary" | "npm" | "android"
+  container: boolean
+  portable: boolean
   configPath: string
   homeDir: string
   dataDir: string

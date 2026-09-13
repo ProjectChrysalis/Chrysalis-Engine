@@ -2,6 +2,10 @@
  * Is there a newer Chrysalis? Asked of the project's GitHub releases only
  * when an admin looks (Settings > Server), never in the background, and
  * remembered for an hour so reopening the page does not ask again.
+ *
+ * Stable copies compare against the latest release. Staging copies follow the
+ * rolling staging-latest pre-release instead: it is replaced on every push, so
+ * any build other than this one is newer.
  */
 import { ENGINE_REPOSITORY, ENGINE_VERSION } from "./install.js";
 
@@ -25,21 +29,43 @@ export function isNewer(candidate: string, current: string): boolean {
   return false;
 }
 
-export async function latestRelease(fetcher: typeof fetch = fetch): Promise<ReleaseInfo | null> {
+export const isStagingBuild = (version: string): boolean => version.includes("-staging");
+
+/** The build a staging-latest release carries, read from its title
+ *  ("Staging <version>") or failing that from an asset name. */
+export function stagingVersionOf(release: { name?: unknown; assets?: unknown }): string | null {
+  const title = typeof release.name === "string" ? /^Staging\s+(\S+)$/.exec(release.name.trim())?.[1] : undefined;
+  if (title) return title;
+  const assets = Array.isArray(release.assets) ? release.assets : [];
+  for (const asset of assets) {
+    const name = (asset as { name?: unknown })?.name;
+    const m = typeof name === "string" ? /^Chrysalis-(.+-staging\.[^-]+)-[a-z0-9]+-[a-z0-9]+\.(?:zip|tar\.gz|apk)$/.exec(name) : null;
+    if (m?.[1]) return m[1];
+  }
+  return null;
+}
+
+export async function latestRelease(fetcher: typeof fetch = fetch, current: string = ENGINE_VERSION): Promise<ReleaseInfo | null> {
   if (cached && Date.now() - cached.at < TTL_MS) return cached.value;
   const slug = /^https:\/\/github\.com\/([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/.exec(ENGINE_REPOSITORY ?? "")?.[1];
   if (!slug) return null;
+  const staging = isStagingBuild(current);
   let value: ReleaseInfo | null = null;
   try {
-    const res = await fetcher(`https://api.github.com/repos/${slug}/releases/latest`, {
-      headers: { accept: "application/vnd.github+json", "user-agent": `Chrysalis/${ENGINE_VERSION}` },
+    const res = await fetcher(`https://api.github.com/repos/${slug}/releases/${staging ? "tags/staging-latest" : "latest"}`, {
+      headers: { accept: "application/vnd.github+json", "user-agent": `Chrysalis/${current}` },
       signal: AbortSignal.timeout(8000),
     });
     if (res.ok) {
-      const body = (await res.json()) as { tag_name?: unknown; html_url?: unknown };
-      if (typeof body.tag_name === "string" && typeof body.html_url === "string") {
-        const version = body.tag_name.replace(/^v/, "");
-        value = { version, url: body.html_url, newer: isNewer(version, ENGINE_VERSION) };
+      const body = (await res.json()) as { tag_name?: unknown; html_url?: unknown; name?: unknown; assets?: unknown };
+      if (typeof body.html_url === "string") {
+        if (staging) {
+          const version = stagingVersionOf(body);
+          if (version) value = { version, url: body.html_url, newer: version !== current };
+        } else if (typeof body.tag_name === "string") {
+          const version = body.tag_name.replace(/^v/, "");
+          value = { version, url: body.html_url, newer: isNewer(version, current) };
+        }
       }
     }
   } catch {

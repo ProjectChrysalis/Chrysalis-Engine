@@ -29,6 +29,7 @@ RUN apt-get update \
 COPY --from=build /out /opt/chrysalis
 USER chrysalis
 ENV CHRYSALIS_HOME=/chrysalis \
+    CHRYSALIS_CONTAINER=1 \
     CHRYSALIS_LAN=true \
     CHRYSALIS_OPEN_BROWSER=false
 VOLUME /chrysalis

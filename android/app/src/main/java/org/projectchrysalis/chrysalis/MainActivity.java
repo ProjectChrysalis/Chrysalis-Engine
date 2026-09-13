@@ -27,7 +27,6 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
-import java.time.Instant;
 
 /** Start and stop the local server, open it in the browser, and check for a
  *  newer release. Chrysalis itself runs in the phone's browser. */
@@ -247,44 +246,39 @@ public final class MainActivity extends Activity implements EngineService.Listen
 
     /** A newer release on the project's GitHub page shows a button to it. The
      *  APK is downloaded and installed by the person, in the browser. A
-     *  staging build asks for the replaced pre-release instead of the stable
-     *  latest, and is newer whenever that pre-release has been published
-     *  since this copy was installed. */
+     *  staging build follows the rolling staging-latest pre-release instead
+     *  of the stable latest: it is replaced on every push, so any build other
+     *  than this one is newer. */
     private void checkForUpdate() {
         String repo = BuildConfig.REPOSITORY;
         if (!repo.startsWith("https://github.com/")) return;
         String slug = repo.substring("https://github.com/".length()).replaceAll("\\.git$|/$", "");
         boolean staging = BuildConfig.VERSION_NAME.contains("-staging");
-        long installedAt;
-        try {
-            installedAt = getPackageManager().getPackageInfo(getPackageName(), 0).lastUpdateTime;
-        } catch (PackageManager.NameNotFoundException e) {
-            installedAt = 0;
-        }
-        final long installed = installedAt;
         new Thread(() -> {
             try {
                 JSONObject release = Http.getJson(
                     "https://api.github.com/repos/" + slug + (staging ? "/releases/tags/staging-latest" : "/releases/latest"),
                     8000);
                 String tag = release.optString("tag_name", "").replaceFirst("^v", "");
-                if (staging ? !publishedAfter(release.optString("published_at", ""), installed) : !Versions.newer(tag, BuildConfig.VERSION_NAME)) {
-                    return;
-                }
+                String apkName = "Chrysalis-" + BuildConfig.VERSION_NAME + "-android-arm64.apk";
                 // straight at the APK so the browser downloads it; the release
                 // page carries every platform's file and invites mis-taps
                 String page = release.getString("html_url");
+                String apk = null;
+                boolean carriesThisBuild = false;
                 JSONArray assets = release.optJSONArray("assets");
                 if (assets != null) {
                     for (int i = 0; i < assets.length(); i++) {
                         JSONObject asset = assets.optJSONObject(i);
-                        if (asset != null && asset.optString("name", "").endsWith("-android-arm64.apk")) {
-                            page = asset.optString("browser_download_url", page);
-                            break;
-                        }
+                        String name = asset == null ? "" : asset.optString("name", "");
+                        if (!name.endsWith("-android-arm64.apk")) continue;
+                        if (name.equals(apkName)) carriesThisBuild = true;
+                        apk = asset.optString("browser_download_url", null);
                     }
                 }
-                final String url = page;
+                // a staging release still uploading has no APK yet: nothing to offer
+                if (staging ? apk == null || carriesThisBuild : !Versions.newer(tag, BuildConfig.VERSION_NAME)) return;
+                final String url = apk != null ? apk : page;
                 runOnUiThread(() -> {
                     if (staging) update.setText(R.string.action_update_staging);
                     else update.setText(getString(R.string.action_update, tag));
@@ -295,13 +289,5 @@ public final class MainActivity extends Activity implements EngineService.Listen
                 // offline or no releases yet
             }
         }, "chrysalis-update").start();
-    }
-
-    private static boolean publishedAfter(String iso, long when) {
-        try {
-            return Instant.parse(iso).toEpochMilli() > when;
-        } catch (RuntimeException e) {
-            return false;
-        }
     }
 }

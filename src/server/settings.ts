@@ -7,12 +7,16 @@
  * file never describes a server that cannot start.
  */
 import { applySettings, saveConfigFile, type InstanceConfig, type LoadedConfig } from "../config.js";
-import { ENGINE_VERSION, INSTALL_KIND, type InstallKind } from "../install.js";
+import { ENGINE_VERSION, INSTALL_KIND, IN_CONTAINER, isPortable, type InstallKind } from "../install.js";
 import { engineUrls } from "./listen.js";
 
 export interface ServerInfo {
   version: string;
   installKind: InstallKind;
+  /** the published container image */
+  container: boolean;
+  /** config.yaml and data/ live in the program's own folder */
+  portable: boolean;
   configPath: string;
   homeDir: string;
   dataDir: string;
@@ -52,6 +56,8 @@ export class ServerSettings {
     return {
       version: ENGINE_VERSION,
       installKind: INSTALL_KIND,
+      container: IN_CONTAINER,
+      portable: isPortable(homeDir),
       configPath: loaded.path,
       homeDir,
       dataDir,

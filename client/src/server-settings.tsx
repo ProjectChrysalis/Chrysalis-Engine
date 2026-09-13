@@ -149,10 +149,12 @@ function PhoneQr(props: { urls: string[] }) {
 }
 
 /** How this kind of install gets a new version. */
-function updateHow(kind: ServerInfo["installKind"]): string {
-  if (kind === "source") return tr("Update with git pull, then bun install, then restart Chrysalis.")
-  if (kind === "npm") return tr("Update with bun install -g chrysalis-engine, then restart Chrysalis.")
-  if (kind === "android") return tr("Install the new app from the release page. Your data stays.")
+function updateHow(info: ServerInfo, staging: boolean): string {
+  if (info.container) return staging ? tr("Pull the staging image and recreate the container. Your data stays in its volume.") : tr("Pull the latest image and recreate the container. Your data stays in its volume.")
+  if (info.installKind === "source") return tr("Update with git pull, then bun install, then restart Chrysalis.")
+  if (info.installKind === "npm") return tr("Update with bun install -g chrysalis-engine, then restart Chrysalis.")
+  if (info.installKind === "android") return tr("Install the new app from the release page. Your data stays.")
+  if (info.portable) return tr("Download it from the release page, then move config.yaml and the data folder into the new copy before deleting this one.")
   return tr("Download it from the release page and replace this copy. Your data stays in its own folder.")
 }
 
@@ -169,7 +171,7 @@ function ReleaseRow(props: { info: ServerInfo }) {
         <span className="min-w-0 flex-1 text-ink">{tr("Chrysalis {version} is available", { version: r.version })}</span>
         <a className="text-accent underline" href={r.url} target="_blank" rel="noreferrer">{tr("Release page")}</a>
       </div>
-      <p className="text-12 leading-4 text-ink-muted">{updateHow(props.info.installKind)}</p>
+      <p className="text-12 leading-4 text-ink-muted">{updateHow(props.info, props.info.version.includes("-staging"))}</p>
     </div>
   )
 }

@@ -294,6 +294,25 @@ describe("release check", () => {
     expect(isNewer("1.0.0", "1.0.0")).toBe(false);
     expect(isNewer("0.9.9", "1.0.0")).toBe(false);
   });
+
+  it("reads the build a staging pre-release carries", async () => {
+    const { stagingVersionOf } = await import("../src/updates.js");
+    expect(stagingVersionOf({ name: "Staging 1.0.0-staging.20260913.276664c" })).toBe("1.0.0-staging.20260913.276664c");
+    expect(stagingVersionOf({ name: "", assets: [{ name: "Chrysalis-1.0.0-staging.20260914.abc1234-linux-x64.tar.gz" }] })).toBe("1.0.0-staging.20260914.abc1234");
+    expect(stagingVersionOf({ name: "Chrysalis 1.0.0", assets: [] })).toBeNull();
+  });
+
+  it("offers a staging copy the rolling pre-release, not the stable one", async () => {
+    const { latestRelease } = await import("../src/updates.js");
+    const asked: string[] = [];
+    const fetcher = (async (url: string) => {
+      asked.push(url);
+      return Response.json({ tag_name: "staging-latest", name: "Staging 1.0.0-staging.20260914.def5678", html_url: "https://github.com/x/y/releases/tag/staging-latest" });
+    }) as unknown as typeof fetch;
+    const release = await latestRelease(fetcher, "1.0.0-staging.20260913.276664c");
+    expect(asked[0]).toEndWith("/releases/tags/staging-latest");
+    expect(release).toEqual({ version: "1.0.0-staging.20260914.def5678", url: "https://github.com/x/y/releases/tag/staging-latest", newer: true });
+  });
 });
 
 describe("admin_create_user agent tool", () => {

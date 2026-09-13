@@ -70,3 +70,15 @@ export function resolveHomeDir(explicit?: string): string {
   if (fs.existsSync(path.join(besideProgram, "config.yaml"))) return besideProgram;
   return osAppDataDir();
 }
+
+/** Running in the published container image, which says so in its
+ *  environment. A container is updated by pulling a new image. */
+export const IN_CONTAINER = process.env.CHRYSALIS_CONTAINER === "1";
+
+/** A portable copy keeps config.yaml and data/ in the program's own folder,
+ *  so replacing that folder would take them with it. */
+export function isPortable(homeDir: string): boolean {
+  if (INSTALL_KIND === "source" || INSTALL_KIND === "android") return false;
+  const besideProgram = INSTALL_KIND === "npm" ? import.meta.dir : path.dirname(process.execPath);
+  return path.resolve(homeDir) === path.resolve(besideProgram);
+}
