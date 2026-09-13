@@ -330,7 +330,7 @@ const dict = {
   "Update available": "업데이트 있음",
   "Update plugin": "플러그인 업데이트",
   "Update with bun install -g chrysalis-engine, then restart Chrysalis.": "bun install -g chrysalis-engine으로 업데이트한 뒤 Chrysalis를 다시 시작하세요.",
-  "Update with git pull, then bun install, then restart Chrysalis.": "git pull, bun install 순서로 업데이트한 뒤 Chrysalis를 다시 시작하세요.",
+  "Update with git pull, bun install and bun run build:client, then restart Chrysalis.": "git pull, bun install, bun run build:client 순서로 업데이트한 뒤 Chrysalis를 다시 시작하세요.",
   "Updated to v{version}.": "v{version}(으)로 업데이트했습니다.",
   "Updates the installed copy{version}. Its permissions become the ones below.": "설치된 사본{version}을(를) 업데이트합니다. 권한은 아래 항목으로 바뀝니다.",
   "Updating…": "업데이트 중…",

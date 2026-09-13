@@ -151,7 +151,7 @@ function PhoneQr(props: { urls: string[] }) {
 /** How this kind of install gets a new version. */
 function updateHow(info: ServerInfo, staging: boolean): string {
   if (info.container) return staging ? tr("Pull the staging image and recreate the container. Your data stays in its volume.") : tr("Pull the latest image and recreate the container. Your data stays in its volume.")
-  if (info.installKind === "source") return tr("Update with git pull, then bun install, then restart Chrysalis.")
+  if (info.installKind === "source") return tr("Update with git pull, bun install and bun run build:client, then restart Chrysalis.")
   if (info.installKind === "npm") return tr("Update with bun install -g chrysalis-engine, then restart Chrysalis.")
   if (info.installKind === "android") return tr("Install the new app from the release page. Your data stays.")
   if (info.portable) return tr("Download it from the release page, then move config.yaml and the data folder into the new copy before deleting this one.")

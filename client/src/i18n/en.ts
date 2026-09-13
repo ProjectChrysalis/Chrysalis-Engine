@@ -332,7 +332,7 @@ const en = {
   "Update available": "",
   "Update plugin": "",
   "Update with bun install -g chrysalis-engine, then restart Chrysalis.": "",
-  "Update with git pull, then bun install, then restart Chrysalis.": "",
+  "Update with git pull, bun install and bun run build:client, then restart Chrysalis.": "",
   "Updated to v{version}.": "",
   "Updates the installed copy{version}. Its permissions become the ones below.": "",
   "Updating…": "",

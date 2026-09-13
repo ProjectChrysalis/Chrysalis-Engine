@@ -330,7 +330,7 @@ const dict = {
   "Update available": "更新があります",
   "Update plugin": "プラグインを更新",
   "Update with bun install -g chrysalis-engine, then restart Chrysalis.": "bun install -g chrysalis-engine で更新し、Chrysalis を再起動してください。",
-  "Update with git pull, then bun install, then restart Chrysalis.": "git pull、続けて bun install で更新し、Chrysalis を再起動してください。",
+  "Update with git pull, bun install and bun run build:client, then restart Chrysalis.": "git pull、bun install、bun run build:client で更新し、Chrysalis を再起動してください。",
   "Updated to v{version}.": "v{version} に更新しました。",
   "Updates the installed copy{version}. Its permissions become the ones below.": "インストール済みのコピー{version}を更新します。権限は下記のものになります。",
   "Updating…": "更新中…",
