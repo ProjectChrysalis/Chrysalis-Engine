@@ -30,6 +30,7 @@ interface ServerStatus {
   rev: string;
   needsBuild: boolean;
   buildable: boolean;
+  installing?: boolean;
   status: { rev?: string; ok?: boolean; mode?: string; errors?: BuildMessage[] } | null;
   dev: unknown;
 }
@@ -187,6 +188,7 @@ class AppBuild {
   private frame: BuilderFrame | null = null;
   private changed = new Set<string>();
   private running: Promise<void> | null = null;
+  private settling: Promise<ServerStatus | null> | null = null;
   private again = false;
   private retried = false;
   private renew: ReturnType<typeof setInterval> | undefined;
@@ -302,6 +304,11 @@ class AppBuild {
       try {
         st = (await api(this.base())) as ServerStatus;
         if (!st.needsBuild) break;
+        // the holder is waiting out a package install, not stuck
+        if (st.installing) {
+          i--;
+          continue;
+        }
         // an idle lease (its holder is not mid-build) yields at once; one that
         // stays busy past any plausible build is forced over. Either way this
         // tab stops waiting the moment the holder has nothing to protect.
@@ -343,13 +350,10 @@ class AppBuild {
           this.again = false;
           const changed = [...this.changed];
           this.changed.clear();
-          if (kind === "update") {
-            try {
-              rev = ((await api(this.base())) as ServerStatus).rev;
-            } catch {
-              /* stamp whatever lands */
-            }
-          }
+          const st = await this.packagesSettled();
+          if (this.disposed) return;
+          // stamp the sources as they are now; an install moves the rev
+          if (st) rev = st.rev;
           await this.run(kind, rev, changed);
           kind = "update";
         } while (this.again || this.changed.size);
@@ -359,6 +363,27 @@ class AppBuild {
       }
     })();
     await this.running;
+  }
+
+  /** The engine's status once no package install is running for this app
+   *  (null if it could not be asked). A build during an install reads a
+   *  half-written node_modules and fails on imports about to land. */
+  private packagesSettled(): Promise<ServerStatus | null> {
+    this.settling ??= (async () => {
+      try {
+        for (;;) {
+          const st = (await api(this.base())) as ServerStatus;
+          if (!st.installing || this.disposed) return st;
+          this.status({ phase: "waiting", message: "Installing the app's packages" });
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      } catch {
+        return null;
+      } finally {
+        this.settling = null;
+      }
+    })();
+    return this.settling;
   }
 
   private async run(kind: "full" | "update", rev: string, changed: string[] = []): Promise<void> {

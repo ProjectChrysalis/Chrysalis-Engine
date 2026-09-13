@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { INSTALL_KIND } from "../install.js";
 
 export interface InstallResult {
   ok: boolean;
@@ -20,6 +21,35 @@ const scrubEnv = (): NodeJS.ProcessEnv => {
   }
   return out;
 };
+
+/** App dirs with a package operation running, each chained behind the one
+ *  before it. A build during one reads a half-written node_modules, so the
+ *  builder waits while an app is listed here. */
+const running = new Map<string, Promise<InstallResult>>();
+
+/** Is a package install or removal running for this app? */
+export function packagesBusy(appDir: string): boolean {
+  return running.has(path.resolve(appDir));
+}
+
+/** One package operation per app at a time: two installs writing the same
+ *  node_modules leave it in neither state. */
+function exclusive(appDir: string, run: () => Promise<InstallResult>): Promise<InstallResult> {
+  const key = path.resolve(appDir);
+  const next = (running.get(key) ?? Promise.resolve()).then(run);
+  running.set(key, next);
+  void next.then(() => {
+    if (running.get(key) === next) running.delete(key);
+  });
+  return next;
+}
+
+/** Packages are hardlinked out of the install cache. Android app storage
+ *  cannot link across directories, so only there are they copied: a copy is
+ *  a new file, and on Windows the virus scanner inspects each one the first
+ *  time the builder reads it (tens of seconds per build, against under one
+ *  for cache files it has already seen). */
+const LINK_BACKEND = INSTALL_KIND === "android" ? ["--backend=copyfile"] : [];
 
 /** Does this app declare package dependencies? */
 export function hasPackages(appDir: string): boolean {
@@ -59,12 +89,9 @@ function runBun(appDir: string, args: string[]): Promise<InstallResult> {
 
 export function installApp(appDir: string): Promise<InstallResult> {
   if (!hasPackages(appDir)) return Promise.resolve({ ok: false, log: "no package.json in this app", ms: 0 });
-  // --backend=copyfile: the default hardlinks out of the install cache, which
-  // fails on filesystems that cannot link across directories (Android app
-  // storage). App dep trees are small; copying is the portable choice.
   // `bun install` does NOT remove packages taken out of package.json —
   // uninstallApp does that.
-  return runBun(appDir, ["install", "--ignore-scripts", "--backend=copyfile"]);
+  return exclusive(appDir, () => runBun(appDir, ["install", "--ignore-scripts", ...LINK_BACKEND]));
 }
 
 /** Take packages out of an app: `bun remove` updates package.json, the
@@ -73,5 +100,5 @@ export function installApp(appDir: string): Promise<InstallResult> {
 export function uninstallApp(appDir: string, packages: string[]): Promise<InstallResult> {
   if (!hasPackages(appDir)) return Promise.resolve({ ok: false, log: "no package.json in this app", ms: 0 });
   if (!packages.length) return Promise.resolve({ ok: false, log: "no package names given", ms: 0 });
-  return runBun(appDir, ["remove", ...packages]);
+  return exclusive(appDir, () => runBun(appDir, ["remove", ...LINK_BACKEND, ...packages]));
 }

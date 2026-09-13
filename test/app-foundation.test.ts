@@ -364,6 +364,22 @@ afterEach(() => {
     expect(lost.needsBuild).toBe(true);
   });
 
+  it("build status holds builds off while the app's packages install, one install at a time", async () => {
+    const { installApp, packagesBusy } = await import("../src/apps/packages.js");
+    const dir = path.join(dataDir, "users", "alice", "apps", "notes");
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "notes", private: true }));
+    const status = async () => ((await (await app.request("/v1/apps/notes/build", { headers: h() })).json()) as { installing: boolean }).installing;
+    expect(await status()).toBe(false);
+    const first = installApp(dir);
+    const second = installApp(dir);
+    expect(await status()).toBe(true);
+    expect((await first).ok).toBe(true);
+    // the second install waited its turn and still counts
+    expect(packagesBusy(dir)).toBe(true);
+    expect((await second).ok).toBe(true);
+    expect(await status()).toBe(false);
+  });
+
   it("app tier: createAppSkeleton kind web writes the standard app shape", async () => {
     const { createAppSkeleton, readApp } = await import("../src/apps/manager.js");
     const r = createAppSkeleton(path.join(dataDir, "users", "alice", "apps"), { id: "demo", name: "Demo", kind: "web" });

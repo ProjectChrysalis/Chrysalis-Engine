@@ -49,7 +49,7 @@ import { log } from "../logger.js";
 import type { EventBus } from "./ws.js";
 import { ensureLookWatcher } from "./look-watch.js";
 import { assertPublicHost } from "../net-guard.js";
-import { installApp, hasPackages } from "../apps/packages.js";
+import { installApp, hasPackages, packagesBusy } from "../apps/packages.js";
 import { appFsOps, checkOutput, leaseHolder, MAX_BATCH_OPS, readBuildStatus, readDevMeta, sourceRev, takeLease, writeClientErrors, writeClientLogs, writeOutput } from "../builder/server.js";
 import { builderAsset, builderFrameCsp, builderVersion } from "../builder/assets.js";
 import type { FsOp } from "../builder/fs.js";
@@ -3867,8 +3867,11 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     // host would rebuild on every open and never re-stamp, looping forever.
     // app_check is the one that distrusts a stale stamp, explicitly.
     const needsBuild = buildable && (!status || status.rev !== rev || (status.ok && !built) || lostDev);
+    // packages still landing: a build now fails on imports that are moments
+    // away, so the builder holds off until the install ends
+    const installing = packagesBusy(a.dir);
     return c.json(
-      { rev, buildable, needsBuild, status, dev },
+      { rev, buildable, needsBuild, installing, status, dev },
       200,
       { "cache-control": "no-store" },
     );
