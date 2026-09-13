@@ -1,6 +1,6 @@
 import { tr } from "./i18n/index"
 import { prefs } from "./prefs"
-import type { StoreList } from "./types"
+import type { AppUpdate, StoreList } from "./types"
 // Chrysalis engine HTTP client for the launcher shell (auth, settings,
 // connections, apps). The agent chat lives in its own app (client-agent/).
 export interface EngineConnection {
@@ -239,10 +239,16 @@ export const storeApi = {
   markSeen: (day: string) => api("PUT", "/v1/settings", { storeSeen: day }),
 }
 
+export const updatesApi = {
+  /** Every app's upstream state; `fresh` skips the engine's one-minute cache. */
+  list: (fresh = false) => api<{ apps: AppUpdate[] }>("GET", `/v1/apps/updates${fresh ? "?fresh=1" : ""}`),
+}
+
 /** Install an app from a git repository: the preview step, then the confirm
- *  pinned to the commit the preview saw, then its packages in the background. */
-export async function installFromGit(gitUrl: string, ref?: string): Promise<string> {
-  const target = { gitUrl, ...(ref ? { ref } : {}) }
+ *  pinned to the commit the preview saw, then its packages in the background.
+ *  `id` names the install folder, as the Store entry does. */
+export async function installFromGit(gitUrl: string, ref?: string, id?: string): Promise<string> {
+  const target = { gitUrl, ...(ref ? { ref } : {}), ...(id ? { id } : {}) }
   const preview = await api<{ slug: string; head: string }>("POST", "/v1/apps/import", target)
   const done = await api<{ id: string }>("POST", "/v1/apps/import", { ...target, confirm: preview.slug, head: preview.head })
   void api("POST", `/v1/apps/${encodeURIComponent(done.id)}/install`).catch(() => undefined)

@@ -36,3 +36,11 @@ export interface StoreList {
   fetchedAt: number | null
   error?: string
 }
+
+/** One app's upstream state, from /v1/apps/updates. */
+export interface AppUpdate {
+  id: string
+  available: boolean
+  remoteHead?: string | null
+  error?: string
+}

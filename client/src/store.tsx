@@ -192,7 +192,7 @@ export function WelcomeApps(props: { store: StoreState; onDone: (ids: string[]) 
     for (const a of queue) {
       setProgress((prev) => ({ ...prev, [a.id]: { state: "installing" } }))
       try {
-        const id = await installFromGit(a.repository, a.ref)
+        const id = await installFromGit(a.repository, a.ref, a.id)
         ids.push(id)
         setProgress((prev) => ({ ...prev, [a.id]: { state: "done", id } }))
       } catch (e: any) {

@@ -88,7 +88,7 @@ try {
   check(roleplay?.official, `the Store lists Roleplay as official${store.error ? ` (${store.error})` : ""}`);
 
   const importApp = (body: Record<string, unknown>) =>
-    fetch(`${base}/v1/apps/import`, { method: "POST", headers: json, body: JSON.stringify({ gitUrl: roleplay.repository, ...(roleplay.ref ? { ref: roleplay.ref } : {}), ...body }) })
+    fetch(`${base}/v1/apps/import`, { method: "POST", headers: json, body: JSON.stringify({ gitUrl: roleplay.repository, ...(roleplay.ref ? { ref: roleplay.ref } : {}), id: roleplay.id, ...body }) })
       .then(async (r) => ({ status: r.status, body: (await r.json()) as { head?: string; slug?: string; id?: string; error?: string } }));
   const preview = await importApp({});
   check(preview.body.head && preview.body.slug, `the Store app previews (${preview.status} ${preview.body.error ?? ""})`);

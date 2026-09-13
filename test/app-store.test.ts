@@ -232,6 +232,37 @@ describe("installing from the store", () => {
     expect((await launchApps()).find((a) => a.id === otherId)?.official).toBe(false);
   }, 60_000);
 
+  it("installs a Store app under the entry's id, not the repository's name", async () => {
+    const url = await publish("studio-app", { name: "Studio", version: "1.0.0", kind: "app" });
+    const preview = (await (await call("/v1/apps/import", { method: "POST", body: JSON.stringify({ gitUrl: url, id: "studio" }) })).json()) as { slug: string; head: string };
+    expect(preview.slug).toBe("studio");
+    const done = (await (await call("/v1/apps/import", { method: "POST", body: JSON.stringify({ gitUrl: url, id: "studio", confirm: preview.slug, head: preview.head }) })).json()) as { id: string };
+    expect(done.id).toBe("studio");
+    expect(fs.existsSync(path.join(userPaths(dataDir, "alice").apps, "studio", "manifest.json"))).toBe(true);
+    // a bad id is refused before anything is staged
+    const bad = await call("/v1/apps/import", { method: "POST", body: JSON.stringify({ gitUrl: url, id: "../evil" }) });
+    expect(bad.status).toBe(400);
+  }, 60_000);
+
+  it("checks every app with a source at once, for the launcher badges", async () => {
+    const url = await publish("studio", { name: "Studio", version: "1.0.0", kind: "app" });
+    const id = await importApp(url);
+    const p = userPaths(dataDir, "alice");
+    // a locally created app has no upstream: never checked
+    fs.mkdirSync(path.join(p.apps, "mine"), { recursive: true });
+    fs.writeFileSync(path.join(p.apps, "mine", "manifest.json"), JSON.stringify({ name: "Mine", version: "1", kind: "app" }));
+    const check = async () =>
+      ((await (await call("/v1/apps/updates?fresh=1")).json()) as { apps: { id: string; available: boolean; remoteHead?: string | null }[] }).apps;
+    // freshly installed: the stamped head is the remote's
+    expect(await check()).toEqual([{ id, available: false, remoteHead: expect.any(String) }]);
+    // an install with no stamped head (an adopted one) counts as behind
+    const manifestPath = path.join(p.apps, id, "manifest.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { source: { head?: string } };
+    delete manifest.source.head;
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    expect(await check()).toEqual([{ id, available: true, remoteHead: expect.any(String) }]);
+  }, 60_000);
+
   it("adopts an install an earlier engine shipped, and only that", async () => {
     const p = userPaths(dataDir, "alice");
     const make = (id: string) => {

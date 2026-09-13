@@ -9,7 +9,7 @@ import { IconSmall } from "./ui/icon"
 import { Icon } from "./ui/icon"
 import { IconButton } from "./ui/button"
 import { Button } from "./ui/button"
-import { api, prefs, authApi, appPluginsApi, type AuthUser } from "./api"
+import { api, prefs, authApi, appPluginsApi, updatesApi, type AuthUser } from "./api"
 import { SettingsBody, type TabValue } from "./settings"
 import type { LaunchInfo, Me, StoreApp } from "./types"
 import { StoreDialog, WelcomeApps, useStore } from "./store"
@@ -1068,6 +1068,22 @@ type TreeDir = { name: string; path: string; type: "dir"; children: TreeNode[] }
 type TreeFile = { name: string; path: string; type: "file"; size?: number }
 type TreeNode = TreeDir | TreeFile
 
+/** Which of the account's apps have newer commits upstream, for the launcher
+ *  badges. One engine-side check per app with an install source, refreshed
+ *  after an update lands. */
+function useAppUpdates(launch: LaunchInfo | null) {
+  const key = (launch?.apps ?? []).map((a) => `${a.id}:${a.repository ?? ""}`).join(",")
+  const updates = useResource(() => updatesApi.list(), [key])
+  const ids = new Set((updates.data?.apps ?? []).filter((u) => u.available).map((u) => u.id))
+  const refresh = () => {
+    void updatesApi
+      .list(true)
+      .then((r) => updates.mutate(r))
+      .catch(() => undefined)
+  }
+  return { has: (id: string) => ids.has(id), refresh }
+}
+
 function LaunchPicker(props: {
   launch: LaunchInfo | null
   onAgent: () => void
@@ -1083,6 +1099,7 @@ function LaunchPicker(props: {
   const [browsing, setBrowsing] = useState(false)
   const [welcomeSkipped, setWelcomeSkipped] = useState(false)
   const store = useStore()
+  const updates = useAppUpdates(props.launch)
   const apps = props.launch?.apps ?? []
   const welcome = !!props.launch && apps.length === 0 && !welcomeSkipped
 
@@ -1163,6 +1180,12 @@ function LaunchPicker(props: {
                           >
                             {tr("Official App")}
                           </span> : null}
+                        {updates.has(a.id) ? <span
+                            className="shrink-0 rounded-full bg-warning-soft/30 px-1.5 py-px text-9 font-medium tracking-wide text-ink"
+                            title={tr("Update available")}
+                          >
+                            {tr("Update")}
+                          </span> : null}
                       </span>
                       <span className="block truncate text-12 text-ink-muted">
                         {a.author ? tr("by {author}", { author: a.author }) : a.repository ? tr("from git") : tr("app")}
@@ -1232,7 +1255,10 @@ function LaunchPicker(props: {
                   official={selApp.official === true}
                   onBack={() => setSelected(null)}
                   onLaunch={() => props.onApp(selApp.id)}
-                  onUpdated={() => void props.onRefresh()}
+                  onUpdated={() => {
+                    void props.onRefresh()
+                    updates.refresh()
+                  }}
                   onAskAgent={props.onAskAgent}
                 />
               </div>
@@ -1709,6 +1735,7 @@ function ImportAppDialog(props: { from: StoreApp | null; onClose: () => void; on
   const from = props.from
   const [gitUrl, setGitUrl] = useState(from?.repository ?? "")
   const ref = from?.ref ? { ref: from.ref } : {}
+  const appId = from ? { id: from.id } : {}
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState("")
   const [preview, setPreview] = useState<{
@@ -1726,7 +1753,7 @@ function ImportAppDialog(props: { from: StoreApp | null; onClose: () => void; on
     setErr("")
     setPreview(null)
     try {
-      const r = await api<NonNullable<typeof preview>>("POST", "/v1/apps/import", { gitUrl: gitUrl.trim(), ...ref })
+      const r = await api<NonNullable<typeof preview>>("POST", "/v1/apps/import", { gitUrl: gitUrl.trim(), ...ref, ...appId })
       setPreview(r)
     } catch (e: any) {
       setErr(e.message ?? String(e))
@@ -1742,7 +1769,7 @@ function ImportAppDialog(props: { from: StoreApp | null; onClose: () => void; on
     setErr("")
     try {
       // head pins the install to the commit this preview reviewed
-      const r = await api<{ ok: boolean; id: string }>("POST", "/v1/apps/import", { gitUrl: gitUrl.trim(), ...ref, confirm: p.slug, head: p.head })
+      const r = await api<{ ok: boolean; id: string }>("POST", "/v1/apps/import", { gitUrl: gitUrl.trim(), ...ref, ...appId, confirm: p.slug, head: p.head })
       // dependencies + first build in the background, like New app
       void api("POST", `/v1/apps/${encodeURIComponent(r.id)}/install`).catch(() => undefined)
       await props.onImported(r.id)

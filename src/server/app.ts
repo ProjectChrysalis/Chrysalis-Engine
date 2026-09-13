@@ -2881,13 +2881,18 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   app.post("/v1/apps/import", async (c) => {
     const u = c.get("user");
     const p = c.get("paths");
-    const body = await c.req.json<{ gitUrl?: string; ref?: string; confirm?: string; head?: string }>().catch(() => null) ?? ({} as never);
+    const body = await c.req.json<{ gitUrl?: string; ref?: string; confirm?: string; head?: string; id?: string }>().catch(() => null) ?? ({} as never);
     const gitUrl = typeof body.gitUrl === "string" ? body.gitUrl.trim() : "";
     const ref = typeof body.ref === "string" && body.ref.trim() ? body.ref.trim() : "HEAD";
     // the commit the preview showed: confirm installs THAT tree or nothing
     const reviewedHead = typeof body.head === "string" ? body.head.trim() : "";
     if (!isValidGitUrl(gitUrl)) return c.json({ error: "give a git repository URL (https://… or git@…)" }, 400);
-    const slug = (gitUrl.split(/[/:]/).pop() ?? "app").replace(/\.git$/, "").toLowerCase().replace(/[^a-z0-9-]/g, "") || "app";
+    // the Store names the install folder; without it the repository's name is used
+    const requestedId = typeof body.id === "string" ? body.id.trim().toLowerCase() : "";
+    if (requestedId && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(requestedId)) {
+      return c.json({ error: "id must be lowercase letters, digits, - or _ (at most 64)" }, 400);
+    }
+    const slug = requestedId || (gitUrl.split(/[/:]/).pop() ?? "app").replace(/\.git$/, "").toLowerCase().replace(/[^a-z0-9-]/g, "") || "app";
     const staging = path.join(p.apps, ".staging", slug);
 
     if (!body.confirm) {
@@ -3024,6 +3029,35 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     for (const [rel, body] of ours) if (!base.files.get(rel)?.equals(body)) return true;
     return false;
   };
+
+  // Update check for the launcher: one ls-remote per app, in parallel, for
+  // the badge on every row. Results are reused for a minute so reopening the
+  // launcher does not repeat the round trips; `fresh=1` after an update.
+  const updateChecks = new Map<string, { at: number; signature: string; apps: { id: string; available: boolean; remoteHead?: string | null; error?: string }[] }>();
+  app.get("/v1/apps/updates", async (c) => {
+    const u = c.get("user");
+    const p = c.get("paths");
+    const entries = listApps(p.apps)
+      .map((app) => ({ app, source: installSourceOf(p, app) }))
+      .filter((e): e is { app: AppInfo; source: InstallSource } => e.source !== null);
+    const signature = entries.map((e) => `${e.app.id}:${e.source.git}:${e.source.ref}:${e.app.manifest.source?.head ?? ""}`).join("|");
+    const cached = updateChecks.get(u.username);
+    if (c.req.query("fresh") !== "1" && cached?.signature === signature && Date.now() - cached.at < 60_000) {
+      return c.json({ apps: cached.apps });
+    }
+    const slow = (ms: number) => new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the repository did not answer in time")), ms));
+    const apps = await Promise.all(entries.map(async ({ app, source }) => {
+      const localHead = app.manifest.source?.head ?? null;
+      try {
+        const remoteHead = await Promise.race([gitRemoteHead(source.git, source.ref), slow(15_000)]);
+        return { id: app.id, available: !!remoteHead && remoteHead !== localHead, remoteHead };
+      } catch (e) {
+        return { id: app.id, available: false, error: (e as Error).message };
+      }
+    }));
+    updateChecks.set(u.username, { at: Date.now(), signature, apps });
+    return c.json({ apps });
+  });
 
   // Update check: asks the app's repository for its head (ls-remote only).
   // Nothing local moves.
