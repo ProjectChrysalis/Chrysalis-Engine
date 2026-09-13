@@ -14,6 +14,7 @@
     <string name="action_logs">Logs</string>
     <string name="action_battery">Keep running in the background</string>
     <string name="action_update">Get version %1$s</string>
+    <string name="action_update_staging">Get the latest staging build</string>
 
     <string name="battery_hint">Android may pause Chrysalis while you use the browser. Allow it to run in the background.</string>
     <string name="data_hint">Your chats and settings stay on this phone. Uninstalling the app deletes them, so export a backup first.</string>

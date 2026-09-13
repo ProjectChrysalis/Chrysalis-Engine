@@ -23,9 +23,11 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.time.Instant;
 
 /** Start and stop the local server, open it in the browser, and check for a
  *  newer release. Chrysalis itself runs in the phone's browser. */
@@ -244,25 +246,62 @@ public final class MainActivity extends Activity implements EngineService.Listen
     }
 
     /** A newer release on the project's GitHub page shows a button to it. The
-     *  APK is downloaded and installed by the person, in the browser. */
+     *  APK is downloaded and installed by the person, in the browser. A
+     *  staging build asks for the replaced pre-release instead of the stable
+     *  latest, and is newer whenever that pre-release has been published
+     *  since this copy was installed. */
     private void checkForUpdate() {
         String repo = BuildConfig.REPOSITORY;
         if (!repo.startsWith("https://github.com/")) return;
         String slug = repo.substring("https://github.com/".length()).replaceAll("\\.git$|/$", "");
+        boolean staging = BuildConfig.VERSION_NAME.contains("-staging");
+        long installedAt;
+        try {
+            installedAt = getPackageManager().getPackageInfo(getPackageName(), 0).lastUpdateTime;
+        } catch (PackageManager.NameNotFoundException e) {
+            installedAt = 0;
+        }
+        final long installed = installedAt;
         new Thread(() -> {
             try {
-                JSONObject release = Http.getJson("https://api.github.com/repos/" + slug + "/releases/latest", 8000);
-                String tag = release.getString("tag_name").replaceFirst("^v", "");
+                JSONObject release = Http.getJson(
+                    "https://api.github.com/repos/" + slug + (staging ? "/releases/tags/staging-latest" : "/releases/latest"),
+                    8000);
+                String tag = release.optString("tag_name", "").replaceFirst("^v", "");
+                if (staging ? !publishedAfter(release.optString("published_at", ""), installed) : !Versions.newer(tag, BuildConfig.VERSION_NAME)) {
+                    return;
+                }
+                // straight at the APK so the browser downloads it; the release
+                // page carries every platform's file and invites mis-taps
                 String page = release.getString("html_url");
-                if (!Versions.newer(tag, BuildConfig.VERSION_NAME)) return;
+                JSONArray assets = release.optJSONArray("assets");
+                if (assets != null) {
+                    for (int i = 0; i < assets.length(); i++) {
+                        JSONObject asset = assets.optJSONObject(i);
+                        if (asset != null && asset.optString("name", "").endsWith("-android-arm64.apk")) {
+                            page = asset.optString("browser_download_url", page);
+                            break;
+                        }
+                    }
+                }
+                final String url = page;
                 runOnUiThread(() -> {
-                    update.setText(getString(R.string.action_update, tag));
+                    if (staging) update.setText(R.string.action_update_staging);
+                    else update.setText(getString(R.string.action_update, tag));
                     update.setVisibility(View.VISIBLE);
-                    update.setOnClickListener(v -> startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(page))));
+                    update.setOnClickListener(v -> startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))));
                 });
             } catch (Exception ignored) {
                 // offline or no releases yet
             }
         }, "chrysalis-update").start();
+    }
+
+    private static boolean publishedAfter(String iso, long when) {
+        try {
+            return Instant.parse(iso).toEpochMilli() > when;
+        } catch (RuntimeException e) {
+            return false;
+        }
     }
 }
