@@ -11,7 +11,7 @@ import { PluginStoreService } from "../plugins/store.js";
 import { discoverPlugins, discoverAppPlugins, runPluginHook, runPluginHookOutcome, runPluginRoute, runPluginTool, readPluginExport, syncSchedules, stopSchedules, invalidatePluginCache, collectSiblingTools, collectSiblingLlmHooks, mergeToolBridges, type LoadedPlugin, type PluginRuntimeDeps, type PluginToolBridge } from "../plugins/runtime.js";
 import { McpRegistry, WEB_SEARCH_PRESET, readStdioApprovals, stdioFingerprint, writeStdioApproval, type CredentialMap, type McpServerConfig } from "../mcp/registry.js";
 import { listApps, readApp, createAppSkeleton, renameAppDir, appTree, validateAppManifest, hashAppTree, type AppInfo } from "../apps/manager.js";
-import { UPDATE_STRATEGIES, applyWrites, restoreWrites, forgetInstall, mergeTrees, moveInstall, readBaseline, readCodeTree, readInstallSource, readPendingUpgrade, recoverBaseline, satisfiesRange, seedDataTemplates, writeBaseline, writeInstallSource, writePendingUpgrade, type InstallSource } from "../apps/update.js";
+import { UPDATE_STRATEGIES, applyWrites, mergeBrief, restoreWrites, forgetInstall, mergeTrees, moveInstall, readBaseline, readCodeTree, readInstallSource, readPendingUpgrade, recoverBaseline, satisfiesRange, seedDataTemplates, writeBaseline, writeInstallSource, writePendingUpgrade, type InstallSource } from "../apps/update.js";
 import { OFFICIAL_SOURCES, createCatalog, isOfficialSource, normalizeGitUrl } from "../apps/store.js";
 import { gitClone, gitRemoteHead, isValidGitRef, isValidGitUrl, remoteManifest, stripVcs } from "../apps/git.js";
 import { BACKUP_MAX_BYTES, BACKUP_META_DIR, BackupError, buildBackup, extractBackup, locateBackup, type BackupMeta } from "../apps/backup.js";
@@ -44,7 +44,9 @@ import { sandboxConfigOf } from "../config.js";
 import { BrowserSandbox } from "../sandbox/browser.js";
 import { sandboxAsset, sandboxFrameCsp, sandboxVersion, wasmshAsset } from "../sandbox/assets.js";
 import { workspaceFs, type FsOp as WorkspaceFsOp } from "../sandbox/workspace.js";
-import { initNetTokens, issueNetToken, netTokenUser, proxySandboxRequest, readSandboxEpoch, readSandboxSettings, writeSandboxSettings } from "../sandbox/network.js";
+import { decodeGitArgs, initNetTokens, issueNetToken, netTokenUser, proxySandboxRequest, readSandboxEpoch, readSandboxSettings, writeSandboxSettings } from "../sandbox/network.js";
+import { SANDBOX_GIT_HOST } from "../sandbox/browser/prelude.js";
+import { GitCliError, runGitArgs } from "../agent/git-cli.js";
 import { log } from "../logger.js";
 import type { EventBus } from "./ws.js";
 import { ensureLookWatcher } from "./look-watch.js";
@@ -762,6 +764,34 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       },
     }),
   );
+  /** git from the sandbox shell (SHELL_PRELUDE): the arguments come in
+   *  the body, stdout goes back as the body, stderr and the exit status as
+   *  headers. The shell's cwd picks the folder pathspecs are relative to. */
+  const sandboxGit = async (c: Context<AppEnv>, username: string): Promise<Response> => {
+    const headers: Record<string, string> = { "access-control-allow-origin": "*", "access-control-expose-headers": "*", "content-type": "text/plain; charset=utf-8" };
+    const reply = (stdout: string, stderr: string, exit: number) =>
+      c.body(stdout, 200, { ...headers, "x-git-exit": String(exit), ...(stderr ? { "x-git-stderr": Buffer.from(stderr.slice(0, 4000)).toString("base64") } : {}) });
+    const capped = await readCappedBody(c, 256 * 1024);
+    if (!capped.ok) return reply("", `git: ${capped.error}\n`, 128);
+    let forwarded: [string, string][] = [];
+    try {
+      forwarded = JSON.parse(decodeURIComponent(c.req.header("x-sandbox-headers") ?? "[]")) as [string, string][];
+    } catch { /* no cwd: the workspace root */ }
+    const pwd = forwarded.find((h) => Array.isArray(h) && String(h[0]).toLowerCase() === "x-git-cwd")?.[1] ?? "/workspace";
+    const norm = String(pwd).replace(/\/+$/, "");
+    if (norm !== "/workspace" && !norm.startsWith("/workspace/")) {
+      return reply("", "fatal: not a git repository: the workspace repository is /workspace\n", 128);
+    }
+    try {
+      const out = await runGitArgs(
+        { dir: userPaths(dataDir, username).root, username, readOnly: false, cwd: norm.slice("/workspace".length).replace(/^\//, "") },
+        decodeGitArgs(new TextDecoder().decode(capped.bytes)),
+      );
+      return reply(out && !out.endsWith("\n") ? `${out}\n` : out, "", 0);
+    } catch (e) {
+      return reply("", `${e instanceof GitCliError ? "" : "fatal: "}${(e as Error).message}\n`, e instanceof GitCliError ? 1 : 128);
+    }
+  };
   app.post("/v1/sandbox/net", async (c) => {
     const cors = { "access-control-allow-origin": "*" };
     const auth = netTokenUser(c.req.header("x-sandbox-token"));
@@ -770,6 +800,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     if (!auth || !user || user.enabled === false || auth.epoch !== readSandboxEpoch(userPaths(dataDir, auth.username).sandbox)) {
       return c.body("sandbox network: not signed in\n", 401, cors);
     }
+    const target = c.req.header("x-sandbox-url") ?? "";
+    if (URL.canParse(target) && new URL(target).hostname === SANDBOX_GIT_HOST) return sandboxGit(c, auth.username);
     if (!readSandboxSettings(userPaths(dataDir, auth.username).sandbox).internet) {
       return c.body("sandbox network: internet access is off (Settings, Agent)\n", 403, cors);
     }
@@ -1288,7 +1320,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const u = c.get("user");
     const file = c.get("paths").sandbox;
     const { internet } = readSandboxSettings(file);
-    return c.json({ internet, token: internet ? issueNetToken(u.username, readSandboxEpoch(file)) : null });
+    // the token is issued with internet off too: the shell's git rides it
+    return c.json({ internet, token: issueNetToken(u.username, readSandboxEpoch(file)) });
   });
 
   // Browser sandbox host bridge: heartbeat (registration + liveness), run
@@ -3352,24 +3385,6 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   });
 
   /** The agent's brief for conflicts an update left in the files. */
-  const mergeBrief = (info: AppInfo, from: string, to: string, conflicts: { path: string; reason: string }[], before: string | null, link: string | null): string => {
-    const marked = conflicts.filter((x) => x.reason === "both edited" || x.reason === "no baseline");
-    const kept = conflicts.filter((x) => !marked.includes(x));
-    return [
-      `The ${info.manifest.name} app (apps/${info.id}/) was updated from v${from} to v${to}, and some of my own edits overlapped with the update. Merge them.`,
-      ...(marked.length
-        ? ["", `These files now contain conflict markers: <<<<<<< your version, then ======= and the v${to} side, closed by >>>>>>> v${to}. Keep what both sides meant, remove every marker, and make sure the file still parses:`, ...marked.map((x) => `- apps/${info.id}/${x.path}`)]
-        : []),
-      ...(kept.length
-        ? ["", "These kept my version because no text merge was possible. Check whether they need the update's change:", ...kept.map((x) => `- apps/${info.id}/${x.path} (${x.reason})`)]
-        : []),
-      "",
-      ...(before ? [`My version from before the update is commit ${before.slice(0, 10)} in the workspace history: the git tool's show ${before.slice(0, 10)}:apps/${info.id}/<path> prints a file as it was, and diff ${before.slice(0, 10)} -- apps/${info.id} shows everything the update changed.`] : []),
-      ...(link ? [`Where the update comes from: ${link}`] : []),
-      "When the files are merged, rebuild the app and check it loads.",
-    ].join("\n");
-  };
-
   /** A data upgrade may walk every chat an app has: it gets minutes and room
    *  a request never does, on a sandbox of its own. */
   const UPGRADE_LIMITS = { executionTimeoutMs: 5 * 60_000, memoryLimitBytes: 512 * 1024 * 1024 };
@@ -3630,7 +3645,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       conflicts: result.conflicts,
       ...(upgradeFailed.length ? { upgradeFailed } : {}),
       ...(warnings.length ? { warnings } : {}),
-      ...(strategy === "agent" && result.conflicts.length ? { agentPrompt: mergeBrief(info, from, to, result.conflicts, before, link) } : {}),
+      ...(strategy === "agent" && result.conflicts.length ? { agentPrompt: mergeBrief({ id: info.id, name: info.manifest.name }, from, to, result.conflicts, { base, ours }, before, link) } : {}),
     });
   };
 

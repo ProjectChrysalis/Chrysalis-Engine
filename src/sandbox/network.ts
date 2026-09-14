@@ -241,3 +241,11 @@ export async function proxySandboxRequest(input: ProxyInput): Promise<Response> 
   });
   return new Response(stream, { status, headers: out });
 }
+
+/** The git arguments a sandbox shell request carries: one base64 line per
+ *  argument (see SHELL_PRELUDE). */
+export function decodeGitArgs(body: string): string[] {
+  const lines = body.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  return lines.map((line) => Buffer.from(line.trim(), "base64").toString("utf8"));
+}

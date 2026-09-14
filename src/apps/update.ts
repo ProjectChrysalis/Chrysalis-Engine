@@ -15,6 +15,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { createTwoFilesPatch } from "diff";
 import { UPDATE_KEEP, fileHistory, mergeFile, readDirAt, showFile } from "./git.js";
 
 export type UpdateStrategy = "merge" | "mine" | "theirs" | "agent";
@@ -238,6 +239,8 @@ const isText = (b: Buffer): boolean => !b.subarray(0, 8000).includes(0);
 
 /** Plan an update. `base` is null when no baseline is known: a file both
  *  sides have but disagree on is then a conflict. */
+const LOCKFILE = /(^|\/)(bun\.lockb?|package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$/;
+
 export async function mergeTrees(
   base: Tree | null,
   ours: Tree,
@@ -261,6 +264,13 @@ export async function mergeTrees(
       continue;
     }
     if (base && same(t, b)) continue;
+    // a lockfile is generated from package.json: merging one line by line
+    // yields a file no package manager wrote. The update's copy is taken and
+    // the package install that follows the update brings it in line.
+    if (t && LOCKFILE.test(rel)) {
+      writes.set(rel, t);
+      continue;
+    }
     if (strategy === "theirs") {
       // a file only you added has no upstream version to take
       if (t || b) writes.set(rel, t ?? null);
@@ -390,4 +400,50 @@ export function satisfiesRange(range: string, version: string): boolean {
       default: return cmp === 0;
     }
   });
+}
+
+/** The agent's brief for conflicts an update left in the files. Each marked
+ *  file carries what I changed in it since the installed version: that
+ *  version lives outside the workspace, so the agent cannot look it up. */
+export function mergeBrief(
+  app: { id: string; name: string },
+  from: string,
+  to: string,
+  conflicts: { path: string; reason: string }[],
+  trees: { base: Map<string, Buffer> | null; ours: Map<string, Buffer> },
+  before: string | null,
+  link: string | null,
+): string {
+  const marked = conflicts.filter((x) => x.reason === "both edited" || x.reason === "no baseline");
+  const kept = conflicts.filter((x) => !marked.includes(x));
+  const MAX_LINES = 60;
+  let budget = 240;
+  const myChanges = (rel: string): string[] => {
+    const b = trees.base?.get(rel);
+    const o = trees.ours.get(rel);
+    if (!b || !o || budget <= 0) return [];
+    const body = createTwoFilesPatch(`v${from}/${rel}`, `mine/${rel}`, b.toString("utf8"), o.toString("utf8"), "", "", { context: 1 })
+      .replace(/^(Index [^\n]*\n)?={10,}\n/, "")
+      .split("\n")
+      .filter((l) => !l.startsWith("---") && !l.startsWith("+++") && l !== "\\ No newline at end of file")
+      .filter(Boolean);
+    const shown = body.slice(0, Math.min(MAX_LINES, budget));
+    budget -= shown.length;
+    if (!shown.length) return [];
+    return ["  What I changed in it since v" + from + ":", "  ```diff", ...shown.map((l) => `  ${l}`), ...(body.length > shown.length ? [`  … ${body.length - shown.length} more lines`] : []), "  ```"];
+  };
+  return [
+    `The ${app.name} app (apps/${app.id}/) was updated from v${from} to v${to}, and some of my own edits overlapped with the update. Merge them.`,
+    ...(marked.length
+      ? ["", `These files now contain conflict markers: <<<<<<< your version, then ======= and the v${to} side, closed by >>>>>>> v${to}. Keep what both sides meant, remove every marker, and make sure the file still parses:`, ...marked.flatMap((x) => [`- apps/${app.id}/${x.path}`, ...myChanges(x.path)])]
+      : []),
+    ...(kept.length
+      ? ["", "These kept my version because no text merge was possible. Check whether they need the update's change:", ...kept.map((x) => `- apps/${app.id}/${x.path} (${x.reason})`)]
+      : []),
+    ...(marked.some((x) => x.path === "package.json") ? ["", "Lockfiles were taken from the update. Once package.json is merged, run app_deps so the packages match it."] : []),
+    "",
+    ...(before ? [`My whole version from before the update is commit ${before.slice(0, 10)}: git show ${before.slice(0, 10)}:apps/${app.id}/<path> prints a file as it was, and git diff ${before.slice(0, 10)} -- apps/${app.id} shows everything the update changed.`] : []),
+    ...(link ? [`Where the update comes from: ${link}`] : []),
+    "When the files are merged, rebuild the app and check it loads.",
+  ].join("\n");
 }

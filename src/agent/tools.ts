@@ -290,7 +290,7 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
     name: "git",
     label: "Git",
     description:
-      `Git for the workspace repository, with the command line's own arguments (no leading "git"): ${GIT_COMMANDS}. Examples: "status", "diff HEAD~3 -- apps/roleplay/src", "log --oneline -n 10 -- apps/roleplay", "show abc1234:apps/roleplay/src/App.tsx", "restore --source abc1234 -- apps/roleplay/src/App.tsx", "revert abc1234", "commit -m \"what changed\"". File tools commit on their own; commit after bash changes. There is one line of history (main) and no staging area, branches or remotes. It runs here, not in the bash shell.`,
+      `Git for the workspace repository, with the command line's own arguments (no leading "git"): ${GIT_COMMANDS}. Examples: "status", "diff HEAD~3 -- apps/roleplay/src", "log --oneline -n 10 -- apps/roleplay", "show abc1234:apps/roleplay/src/App.tsx", "restore --source abc1234 -- apps/roleplay/src/App.tsx", "revert abc1234", "commit -m \"what changed\"". File tools commit on their own; commit after bash changes. There is one line of history (main) and no staging area, branches or remotes. The same git works in the bash shell when you want pipes or redirects.`,
     parameters: Type.Object({
       args: Type.String({ description: "The git arguments, as typed after `git` on a command line" }),
     }),

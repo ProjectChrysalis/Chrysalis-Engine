@@ -103,6 +103,20 @@ describe("agent git command line", () => {
     expect(read("apps/demo/src/App.tsx")).toBe("later work\n");
   });
 
+  it("pathspecs follow the shell's folder, and ls-tree and ls-files list what a commit holds", async () => {
+    const inApp = (args: string) => runGitCli({ dir, username: "alice", readOnly: false, cwd: "apps/demo" }, args);
+    write("apps/demo/src/App.tsx", "changed\n");
+    expect(await inApp("diff --name-only -- src")).toBe("apps/demo/src/App.tsx");
+    expect(await inApp("show HEAD:./src/extra.ts")).toBe("export {}\n");
+    expect(await inApp("show HEAD:apps/demo/src/extra.ts")).toBe("export {}\n");
+    await expect(inApp("diff -- ../../..")).rejects.toThrow(/outside the workspace/);
+    expect(await run("ls-tree --name-only HEAD")).toBe("apps\nsettings.json");
+    expect(await run("ls-tree HEAD -- apps/demo/src/extra.ts")).toMatch(/^100644 blob [0-9a-f]{40}\tapps\/demo\/src\/extra.ts$/);
+    expect(await run("ls-tree --name-only HEAD apps/demo")).toBe("apps/demo/data\napps/demo/src");
+    expect(await run("ls-tree -r --name-only HEAD apps/demo/src")).toBe("apps/demo/src/App.tsx\napps/demo/src/extra.ts");
+    expect(await inApp("ls-files src")).toBe("apps/demo/src/App.tsx\napps/demo/src/extra.ts");
+  });
+
   it("commit takes every change; the rest explains itself", async () => {
     await expect(run("commit")).rejects.toThrow(/needs a message/);
     expect(await run("commit -m nothing")).toContain("nothing to commit");

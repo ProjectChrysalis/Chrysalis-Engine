@@ -13,6 +13,7 @@
 import { createBrowserWorkerSession, type WasmshSession } from "@mayflowergmbh/wasmsh-pyodide/browser";
 import { TOP_LEVEL_DOMAINS } from "./tlds";
 import { workerLockdown } from "./lockdown";
+import { SANDBOX_GIT_HOST, SHELL_PRELUDE } from "./prelude";
 
 declare const __SANDBOX_VERSION__: string;
 
@@ -36,11 +37,6 @@ const WIRE_HTTP_FETCH = `importScripts(\`\${assetBaseUrl}/pyodide.asm.js\`);
       return settings.instantiateWasm(info, done);
     },
   });`;
-
-const GIT_POINTER = `git() {
-  echo "git: not a command in this shell. Use your git tool with the same arguments, in its own call: {\\"args\\": \\"$*\\"}" >&2
-  return 127
-}`;
 
 interface MountFile {
   path: string;
@@ -99,7 +95,7 @@ PY`;
 
 async function makeWorker(config: SandboxConfig): Promise<Worker> {
   const workerUrl = new URL(WORKER_REL, location.href).href;
-  const net = config.internet && config.token ? { token: config.token, url: new URL("/v1/sandbox/net", location.href).href } : null;
+  const net = config.token ? { token: config.token, url: new URL("/v1/sandbox/net", location.href).href, internet: config.internet } : null;
   const res = await fetch(workerUrl);
   if (!res.ok) throw new Error(`could not load the sandbox worker: HTTP ${res.status}`);
   const src = await res.text();
@@ -138,13 +134,13 @@ async function boot(): Promise<WasmshSession> {
         // this stops runaway shell loops from wedging the worker forever
         stepBudget: 500_000_000,
         // the runtime checks hosts before the worker's HTTP runs: with
-        // internet on, every name under a TLD passes and the proxy decides
-        allowedHosts: cfg.internet && cfg.token ? TOP_LEVEL_DOMAINS.map((tld) => `*.${tld}`) : [],
+        // internet on, every name under a TLD passes and the proxy decides.
+        // The git host passes either way: the engine answers it itself
+        allowedHosts: !cfg.token ? [] : cfg.internet ? [SANDBOX_GIT_HOST, ...TOP_LEVEL_DOMAINS.map((tld) => `*.${tld}`)] : [SANDBOX_GIT_HOST],
         timeoutMs: 0,
       });
-      // the workspace history lives with the engine, not in this VFS: a git
-      // typed here says where it went instead of "command not found"
-      await s.run(GIT_POINTER);
+      // cd and git wrappers (see prelude.ts)
+      await s.run(SHELL_PRELUDE);
       session = s;
       return s;
     })().catch((e) => {

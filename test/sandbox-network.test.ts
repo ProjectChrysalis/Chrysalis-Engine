@@ -21,9 +21,10 @@ import { defaultInstanceConfig } from "../src/config.js";
 import { workerLockdown } from "../src/sandbox/browser/lockdown.js";
 import { proxySandboxRequest } from "../src/sandbox/network.js";
 import { TOP_LEVEL_DOMAINS } from "../src/sandbox/browser/tlds.js";
+import { SANDBOX_GIT_HOST } from "../src/sandbox/browser/prelude.js";
 
 const WORKER = "http://engine.test/client/sandbox/wasmsh/abc/browser-worker.js";
-const NET = { token: "tok123", url: "http://engine.test/v1/sandbox/net" };
+const NET = { token: "tok123", url: "http://engine.test/v1/sandbox/net", internet: true };
 
 /** A bare worker global: records what the real fetch and XHR were asked. */
 function workerScope(net: typeof NET | null) {
@@ -87,12 +88,20 @@ describe("sandbox worker lockdown", () => {
     expect(JSON.parse(decodeURIComponent(hx["x-sandbox-headers"]!))).toEqual([["Range", "bytes=0-10"]]);
   });
 
-  it("with internet off, nothing leaves", async () => {
-    const w = workerScope(null);
-    await expect((w.self.fetch as (u: string) => Promise<Response>)("https://example.com/")).rejects.toThrow(/network is disabled/);
-    const Xhr = w.self.XMLHttpRequest as new () => { open: (m: string, u: string) => void };
-    expect(() => new Xhr().open("GET", "https://example.com/")).toThrow(/network is disabled/);
-    expect(w.fetches).toEqual([]);
+  it("with internet off, nothing leaves but the shell's git, which the engine answers", async () => {
+    for (const net of [null, { ...NET, internet: false }]) {
+      const w = workerScope(net);
+      await expect((w.self.fetch as (u: string) => Promise<Response>)("https://example.com/")).rejects.toThrow(/network is disabled/);
+      const Xhr = w.self.XMLHttpRequest as new () => { open: (m: string, u: string, a?: boolean) => void; setRequestHeader: (k: string, v: string) => void; send: (b?: unknown) => void };
+      expect(() => new Xhr().open("GET", "https://example.com/")).toThrow(/network is disabled/);
+      expect(w.fetches).toEqual([]);
+      if (!net) continue;
+      const x = new Xhr();
+      x.open("POST", `http://${SANDBOX_GIT_HOST}/`, false);
+      x.send("c3RhdHVz\n");
+      expect(w.opened[0]!.url).toBe(NET.url);
+      expect(Object.fromEntries(w.opened[0]!.headers)["x-sandbox-url"]).toBe(`http://${SANDBOX_GIT_HOST}/`);
+    }
   });
 
   it("the host list names every top-level domain", () => {
@@ -158,7 +167,42 @@ describe("sandbox internet setting", () => {
     expect(fs.existsSync(path.join(dataDir, "credentials", "root", "sandbox.json"))).toBe(true);
     expect(fs.existsSync(path.join(dataDir, "users", "root", "sandbox.json"))).toBe(false);
     expect((await proxied(cfg.token)).status).toBe(401);
-    expect(await (await call("/v1/sandbox/config")).json()).toEqual({ internet: false, token: null });
+    const off = (await (await call("/v1/sandbox/config")).json()) as { internet: boolean; token: string };
+    expect(off.internet).toBe(false);
+    // a fresh token still refuses the internet: it only carries the shell's git
+    expect((await proxied(off.token)).status).toBe(403);
+  });
+
+  it("git in the sandbox shell runs against the workspace repository, internet or not", async () => {
+    const { commitAll } = await import("../src/git.js");
+    const root = path.join(dataDir, "users", "root");
+    fs.mkdirSync(path.join(root, "apps", "demo"), { recursive: true });
+    fs.writeFileSync(path.join(root, "apps", "demo", "a b.txt"), "first\n");
+    await commitAll(root, "root", "first");
+    fs.writeFileSync(path.join(root, "apps", "demo", "a b.txt"), "second\n");
+    await call("/v1/settings/sandbox", { method: "PUT", body: JSON.stringify({ internet: false }) });
+    const { token: t } = (await (await call("/v1/sandbox/config")).json()) as { token: string };
+    const git = (args: string[], cwd: string, tok = t) =>
+      app.request("/v1/sandbox/net", {
+        method: "POST",
+        headers: {
+          "x-sandbox-token": tok,
+          "x-sandbox-url": `http://${SANDBOX_GIT_HOST}/`,
+          "x-sandbox-method": "POST",
+          "x-sandbox-headers": encodeURIComponent(JSON.stringify([["x-git-cwd", cwd]])),
+        },
+        body: args.map((a) => `${Buffer.from(a).toString("base64")}\n`).join(""),
+      });
+    const shown = await git(["show", "HEAD:./a b.txt"], "/workspace/apps/demo");
+    expect(shown.headers.get("x-git-exit")).toBe("0");
+    expect(await shown.text()).toBe("first\n");
+    const diffed = await git(["diff", "--name-only", "--", "."], "/workspace/apps/demo");
+    expect(await diffed.text()).toBe("apps/demo/a b.txt\n");
+    const bad = await git(["log", "nope"], "/workspace");
+    expect(bad.headers.get("x-git-exit")).toBe("1");
+    expect(Buffer.from(bad.headers.get("x-git-stderr")!, "base64").toString()).toContain("bad revision");
+    expect((await git(["status"], "/tmp")).headers.get("x-git-exit")).toBe("128");
+    expect((await git(["status"], "/workspace", "forged")).status).toBe(401);
   });
 
   it("a token outlives an engine restart", async () => {

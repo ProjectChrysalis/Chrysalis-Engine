@@ -7,9 +7,12 @@
  * constructors' prototypes no longer expose the originals.
  *
  * With `net` set, http(s) requests to anywhere but the runtime's own assets
- * go to the engine's sandbox proxy instead, carrying the token.
+ * go to the engine's sandbox proxy instead, carrying the token: every host
+ * when `net.internet` is on, otherwise only the engine's own git host.
  */
-export function workerLockdown(workerUrl: string, net: { token: string; url: string } | null): string {
+import { SANDBOX_GIT_HOST } from "./prelude.js";
+
+export function workerLockdown(workerUrl: string, net: { token: string; url: string; internet: boolean } | null): string {
   return `
 ;(function () {
   var BASE = ${JSON.stringify(workerUrl)};
@@ -25,10 +28,12 @@ export function workerLockdown(workerUrl: string, net: { token: string; url: str
   // internet on: any other http(s) URL becomes a request to the engine's
   // proxy, which makes it on the sandbox's behalf
   var NET = ${JSON.stringify(net)};
+  var GIT_HOST = ${JSON.stringify(SANDBOX_GIT_HOST)};
   function external(u) {
     try {
       var abs = new URL(typeof u === "string" ? u : (u && (u.url || u.href)) || "", BASE);
-      return NET && (abs.protocol === "http:" || abs.protocol === "https:") ? abs.href : null;
+      if (!NET || (abs.protocol !== "http:" && abs.protocol !== "https:")) return null;
+      return NET.internet || abs.hostname === GIT_HOST ? abs.href : null;
     } catch (_) { return null; }
   }
   function netHeaders(url, method, pairs) {

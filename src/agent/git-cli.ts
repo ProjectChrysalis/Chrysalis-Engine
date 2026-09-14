@@ -27,6 +27,8 @@ export interface GitCliOptions {
   username: string;
   /** Plan mode: reads only. */
   readOnly: boolean;
+  /** Workspace-relative folder pathspecs are relative to (a shell's cd). */
+  cwd?: string;
 }
 
 export class GitCliError extends Error {}
@@ -77,12 +79,20 @@ function splitPathspecs(args: string[]): { flags: string[]; paths: string[] } {
   return at === -1 ? { flags: args, paths: [] } : { flags: args.slice(0, at), paths: args.slice(at + 1) };
 }
 
-/** A workspace-relative path from a pathspec; "." is the whole workspace. */
-function normalizeSpec(spec: string): string {
-  const rel = spec.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
-  if (rel === "." || rel === "") return "";
-  if (rel.startsWith("/") || rel.split("/").some((s) => s === "..")) fail(`pathspec '${spec}' is outside the workspace`);
-  return rel;
+/** A workspace-relative path from a pathspec, read from `cwd` the way a
+ *  shell reads it; "" is the whole workspace. */
+function normalizeSpec(spec: string, cwd = ""): string {
+  const out: string[] = [];
+  const joined = spec.replace(/\\/g, "/");
+  if (joined.startsWith("/")) fail(`pathspec '${spec}' is outside the workspace`);
+  for (const seg of `${cwd}/${joined}`.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      if (!out.length) fail(`pathspec '${spec}' is outside the workspace`);
+      out.pop();
+    } else out.push(seg);
+  }
+  return out.join("/");
 }
 
 const within = (file: string, specs: string[]): boolean => !specs.length || specs.some((s) => s === "" || file === s || file.startsWith(`${s}/`));
@@ -293,7 +303,7 @@ function takeFormat(flags: string[]): DiffFormat {
 
 async function status(o: GitCliOptions, args: string[]): Promise<string> {
   const { flags, paths } = splitPathspecs(args);
-  const specs = paths.map(normalizeSpec);
+  const specs = paths.map((p) => normalizeSpec(p, o.cwd));
   const rows = (await repo.status(o.dir)).filter((r) => within(r.path, specs)).sort((a, b) => a.path.localeCompare(b.path));
   // tracked changes first, untracked files after, as git lists them
   const changed = rows.filter((r) => r.head !== 0);
@@ -310,7 +320,7 @@ async function status(o: GitCliOptions, args: string[]): Promise<string> {
 
 async function diff(o: GitCliOptions, args: string[]): Promise<string> {
   const { flags, paths } = splitPathspecs(args);
-  const specs = paths.map(normalizeSpec);
+  const specs = paths.map((p) => normalizeSpec(p, o.cwd));
   const format = takeFormat(flags);
   if (flags.includes("--cached") || flags.includes("--staged")) return "(nothing is staged: the workspace commits changes directly; plain `diff` shows what is not committed yet)";
   const revs = flags.filter((f) => !f.startsWith("-")).flatMap((r) => (r.includes("..") ? r.split(/\.\.\.?/) : [r]));
@@ -329,7 +339,7 @@ interface LogEntry {
 
 async function log(o: GitCliOptions, args: string[]): Promise<string> {
   const { flags, paths } = splitPathspecs(args);
-  const specs = paths.map(normalizeSpec).filter(Boolean);
+  const specs = paths.map((p) => normalizeSpec(p, o.cwd)).filter(Boolean);
   let limit = DEFAULT_LOG;
   let limited = false;
   const rest: string[] = [];
@@ -372,7 +382,7 @@ async function log(o: GitCliOptions, args: string[]): Promise<string> {
       ? `${short(e.oid)} ${subject.split("\n")[0]}`
       : `commit ${e.oid}\nAuthor: ${e.commit.author.name} <${e.commit.author.email}>\nDate:   ${new Date(e.commit.author.timestamp * 1000).toISOString()}\n\n${subject.split("\n").map((l) => `    ${l}`).join("\n")}`;
     if (withPatch || withStat) {
-      const changes = await treeChanges(o.dir, e.commit.parent[0] ?? null, e.oid, paths.map(normalizeSpec));
+      const changes = await treeChanges(o.dir, e.commit.parent[0] ?? null, e.oid, paths.map((p) => normalizeSpec(p, o.cwd)));
       block += `\n\n${await formatChanges(changes, withStat && !withPatch ? "stat" : "patch")}`;
     }
     blocks.push(block);
@@ -387,7 +397,9 @@ async function show(o: GitCliOptions, args: string[]): Promise<string> {
   const colon = target.indexOf(":");
   if (colon !== -1) {
     const oid = await resolveRev(o.dir, target.slice(0, colon) || "HEAD");
-    const file = normalizeSpec(target.slice(colon + 1));
+    // rev:path is from the top of the repository; rev:./path from the cwd
+    const named = target.slice(colon + 1);
+    const file = normalizeSpec(named, /^\.\.?(\/|$)/.test(named) ? o.cwd : "");
     const reason = agentReadDenied(file) ?? (gitBoundaryIgnored(file) ? "not part of the workspace history" : null);
     if (reason) return fail(`${file}: ${reason}`);
     const body = await blobAt(o.dir, oid, file);
@@ -401,7 +413,7 @@ async function show(o: GitCliOptions, args: string[]): Promise<string> {
   const oid = await resolveRev(o.dir, target);
   const { commit } = await git.readCommit({ fs, dir: o.dir, oid });
   const header = `commit ${oid}\nAuthor: ${commit.author.name} <${commit.author.email}>\nDate:   ${new Date(commit.author.timestamp * 1000).toISOString()}\n\n${commit.message.trim().split("\n").map((l) => `    ${l}`).join("\n")}`;
-  const changes = await treeChanges(o.dir, commit.parent[0] ?? null, oid, paths.map(normalizeSpec));
+  const changes = await treeChanges(o.dir, commit.parent[0] ?? null, oid, paths.map((p) => normalizeSpec(p, o.cwd)));
   return changes.length ? `${header}\n\n${await formatChanges(changes, takeFormat(flags))}` : header;
 }
 
@@ -463,7 +475,7 @@ async function restore(o: GitCliOptions, args: string[]): Promise<string> {
 async function restoreFrom(o: GitCliOptions, source: string, specs: string[]): Promise<string> {
   if (!specs.length) return fail("name the files to restore: restore --source <commit> -- <path>...");
   const oid = await resolveRev(o.dir, source);
-  const normalized = specs.map(normalizeSpec);
+  const normalized = specs.map((p) => normalizeSpec(p, o.cwd));
   if (normalized.includes("")) fail("restore names files or folders, not the whole workspace");
   const found = await treeFiles(o.dir, oid, normalized);
   for (const spec of normalized) {
@@ -506,6 +518,37 @@ async function revert(o: GitCliOptions, args: string[]): Promise<string> {
   return writeBack(o, oid, files, `Revert "${c.message.trim().split("\n")[0]}"`);
 }
 
+async function lsTree(o: GitCliOptions, args: string[]): Promise<string> {
+  const { flags, paths } = splitPathspecs(args);
+  const loose = flags.filter((f) => !f.startsWith("-"));
+  const recursive = flags.includes("-r");
+  const namesOnly = flags.includes("--name-only") || flags.includes("--name-status");
+  const oid = await resolveRev(o.dir, loose[0] ?? fail("ls-tree needs a revision: ls-tree [-r] [--name-only] <commit> [<path>...]"));
+  const specs = [...loose.slice(1), ...paths].map((p) => normalizeSpec(p, o.cwd));
+  const files = await treeFiles(o.dir, oid, specs.filter(Boolean));
+  const rows = new Map<string, string>();
+  const folders = specs.length ? specs : [""];
+  for (const [file, blob] of files) {
+    // without -r a named folder lists its direct entries, subfolders once
+    const folder = folders.find((sp) => sp === "" || file.startsWith(`${sp}/`));
+    const rest = folder === undefined ? "" : folder === "" ? file : file.slice(folder.length + 1);
+    const cut = recursive || folder === undefined ? -1 : rest.indexOf("/");
+    if (cut === -1) rows.set(file, namesOnly ? file : `100644 blob ${blob}\t${file}`);
+    else {
+      const dir = `${folder ? `${folder}/` : ""}${rest.slice(0, cut)}`;
+      rows.set(dir, namesOnly ? dir : `040000 tree\t${dir}`);
+    }
+  }
+  return [...rows.keys()].sort().map((k) => rows.get(k)).join("\n");
+}
+
+async function lsFiles(o: GitCliOptions, args: string[]): Promise<string> {
+  const { flags, paths } = splitPathspecs(args);
+  const specs = [...flags.filter((f) => !f.startsWith("-")), ...paths].map((p) => normalizeSpec(p, o.cwd));
+  const files = await treeFiles(o.dir, await resolveRev(o.dir, "HEAD"), specs.filter(Boolean));
+  return [...files.keys()].sort().join("\n");
+}
+
 const UNSUPPORTED: Record<string, string> = {
   add: "there is no staging area: commit -m takes every change at once",
   stage: "there is no staging area: commit -m takes every change at once",
@@ -526,11 +569,15 @@ const UNSUPPORTED: Record<string, string> = {
   mv: "move the file, then commit",
 };
 
-export const GIT_COMMANDS = "status, diff, log, show, commit, restore, checkout <commit> -- <path>, revert";
+export const GIT_COMMANDS = "status, diff, log, show, ls-tree, ls-files, commit, restore, checkout <commit> -- <path>, revert";
 
 /** Run one git command line against the workspace repository. */
-export async function runGitCli(o: GitCliOptions, input: string): Promise<string> {
-  const args = splitArgs(input);
+export function runGitCli(o: GitCliOptions, input: string): Promise<string> {
+  return runGitArgs(o, splitArgs(input));
+}
+
+/** Run git with arguments already split (a shell's argv). */
+export async function runGitArgs(o: GitCliOptions, args: string[]): Promise<string> {
   const [cmd, ...rest] = args;
   if (!cmd || cmd === "help" || cmd === "--help") return `Supported: ${GIT_COMMANDS}. Arguments work as on the command line, including revisions like HEAD~2 and -- pathspecs.`;
   let out: string;
@@ -543,6 +590,8 @@ export async function runGitCli(o: GitCliOptions, input: string): Promise<string
     case "restore": out = await restore(o, rest); break;
     case "checkout": out = await checkout(o, rest); break;
     case "revert": out = await revert(o, rest); break;
+    case "ls-tree": out = await lsTree(o, rest); break;
+    case "ls-files": out = await lsFiles(o, rest); break;
     case "rev-parse": out = (await Promise.all(rest.filter((r) => !r.startsWith("-")).map((r) => resolveRev(o.dir, r)))).join("\n"); break;
     default:
       return fail(UNSUPPORTED[cmd] ? `git ${cmd}: ${UNSUPPORTED[cmd]}` : `git ${cmd} is not available. Supported: ${GIT_COMMANDS}.`);
