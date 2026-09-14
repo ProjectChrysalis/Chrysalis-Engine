@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { discoverPlugins, invalidatePluginCache, runPluginHook, runPluginRoute, runPluginTool, collectSiblingTools, collectSiblingLlmHooks } from "../src/plugins/runtime.js";
+import { discoverPlugins, invalidatePluginCache, runPluginHook, runPluginRoute, runPluginTool, collectSiblingTools, collectSiblingLlmHooks, syncSchedules, stopSchedules, type LoadedPlugin } from "../src/plugins/runtime.js";
+import { log } from "../src/logger.js";
 import { PluginStoreService } from "../src/plugins/store.js";
 
 let dir: string;
@@ -384,6 +385,69 @@ export function uiPanel(ctx) {
     expect(out?.text).toMatch(/^down: /);
   }, 30_000);
 
+  it("runPluginTool: a tool can make a two-phase model call, without tools of its own", async () => {
+    writePlugin(
+      "asker",
+      { name: "A", version: "1", permissions: ["tools", "llm"], origin: "local" },
+      `export function handleTool(name, args, host) {
+        const r = host.llm.results.q;
+        if (r) return { text: "model said " + r.text };
+        host.llm.request("q", { messages: [{ role: "user", content: args.q }], tools: [{ name: "nested", description: "no" }] });
+        return { text: "asking" };
+      }`,
+    );
+    const plugin = discoverPlugins(path.join(dir, "plugins"))[0]!;
+    const seen: { tools?: unknown }[] = [];
+    const fakeModels = {
+      generate: async (req: { messages: { content: string }[]; tools?: unknown }) => {
+        seen.push({ tools: req.tools });
+        return { text: req.messages[0]!.content.toUpperCase(), model: "fake/model", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, costTotal: 0 } };
+      },
+    };
+    const out = await runPluginTool(plugin, "ask", { q: "hi" }, { ...deps(), models: fakeModels as never });
+    expect(out).toEqual({ ok: true, text: "model said HI" });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.tools).toBeUndefined();
+  }, 30_000);
+
+  it("hooks get embeddings through the same passes as routes", async () => {
+    writePlugin(
+      "embedder",
+      { name: "E", version: "1", permissions: ["hooks", "llm"], origin: "local" },
+      `export function onTick(ctx, host) {
+        const v = host.llm.embedResults.v;
+        if (v) return { dims: v[0].length };
+        host.llm.embed("v", { texts: ["hello"] });
+        return ctx;
+      }`,
+    );
+    const plugin = discoverPlugins(path.join(dir, "plugins"))[0]!;
+    const fakeModels = { embed: async (texts: string[]) => texts.map(() => [0.1, 0.2, 0.3]) };
+    const out = await runPluginHook(plugin, "onTick", {}, { ...deps(), models: fakeModels as never });
+    expect(out).toEqual({ dims: 3 });
+  }, 30_000);
+
+  it("console output from routes and tools reaches the server log", async () => {
+    writePlugin(
+      "chatty",
+      { name: "Ch", version: "1", permissions: ["routes", "tools"], origin: "local" },
+      `export function handleRoute(req) { console.log("route says", req.path); return { status: 200, json: {} }; }
+      export function handleTool(name) { console.warn("tool says", name); return { text: "ok" }; }`,
+    );
+    const plugin = discoverPlugins(path.join(dir, "plugins"))[0]!;
+    const lines: string[] = [];
+    const original = log.info;
+    log.info = (...a: unknown[]) => { lines.push(a.map(String).join(" ")); };
+    try {
+      await runPluginRoute(plugin, { method: "GET", path: "/hello", query: {}, body: undefined }, deps());
+      await runPluginTool(plugin, "wave", {}, deps());
+    } finally {
+      log.info = original;
+    }
+    expect(lines.some((l) => l.includes("[plugin:chatty]") && l.includes("route says /hello"))).toBe(true);
+    expect(lines.some((l) => l.includes("[plugin:chatty]") && l.includes("tool says wave"))).toBe(true);
+  }, 30_000);
+
   it("store persists across invocations; denied for ungranted imported plugins", async () => {
     writePlugin(
       "counter",
@@ -503,4 +567,36 @@ describe("plugin network permission (host.net two-phase)", () => {
       srv.close();
     }
   });
+});
+
+describe("plugin timers", () => {
+  it("tick the code on disk now, follow the plugin list, and stop per owner", async () => {
+    const tickSource = (label: string) => `export function onTick(ctx, host) { return { label: "${label}" }; }`;
+    const manifest = { name: "T", version: "1", permissions: ["schedule"], origin: "local", schedule: { intervalMs: 5000 } };
+    writePlugin("kept", manifest, tickSource("old"));
+    writePlugin("dropped", manifest, tickSource("dropped"));
+    writePlugin("other-owner", manifest, tickSource("other"));
+    const pluginsDir = path.join(dir, "plugins");
+    const byId = (id: string) => (): LoadedPlugin[] => discoverPlugins(pluginsDir).filter((p) => p.id === id);
+    const events: string[] = [];
+    const onEvent = (_p: LoadedPlugin, payload: unknown) => events.push((payload as { label: string }).label);
+    const all = (): LoadedPlugin[] => discoverPlugins(pluginsDir).filter((p) => p.id !== "other-owner");
+    try {
+      syncSchedules("owner-a", all, deps(), onEvent);
+      syncSchedules("owner-b", byId("other-owner"), deps(), onEvent);
+      // "dropped" leaves owner A's list, owner B stops, and "kept" changes on disk
+      syncSchedules("owner-a", byId("kept"), deps(), onEvent);
+      stopSchedules("owner-b");
+      invalidatePluginCache(pluginsDir);
+      fs.writeFileSync(path.join(pluginsDir, "kept", "plugin.js"), tickSource("new"));
+      await new Promise((r) => setTimeout(r, 6_000));
+      expect(events).toContain("new");
+      expect(events).not.toContain("old");
+      expect(events).not.toContain("dropped");
+      expect(events).not.toContain("other");
+    } finally {
+      stopSchedules("owner-a");
+      stopSchedules("owner-b");
+    }
+  }, 30_000);
 });

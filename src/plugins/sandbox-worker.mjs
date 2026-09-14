@@ -18,9 +18,12 @@
  *   host.siblingTools                   → tool DEFS a wantsTools llm request
  *                                         would carry, when the dispatch asked
  *                                         (?siblingtools=1); absent otherwise
- *   fetch                               → ALWAYS throws (network disabled in
- *                                         this engine build until an async
- *                                         solution exists — SPEC-v2 §S1)
+ *   host.net.request(key, req)          → collected for two-phase execution;
+ *                                         results in host.net.results next pass
+ *   host.fs, host.zip                   → the app's data folder and uploaded
+ *                                         zips, when permitted
+ *   fetch                               → undefined: web requests go through
+ *                                         host.net, which the engine runs
  */
 import { parentPort } from "node:worker_threads";
 import fs from "node:fs";

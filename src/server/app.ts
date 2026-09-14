@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import nodeCrypto from "node:crypto";
 import { PluginStoreService } from "../plugins/store.js";
-import { discoverPlugins, discoverAppPlugins, discoverActivePlugins, runPluginHook, runPluginRoute, runPluginTool, readPluginExport, startSchedule, stopSchedule, invalidatePluginCache, collectSiblingTools, collectSiblingLlmHooks, mergeToolBridges, type PluginRuntimeDeps, type PluginToolBridge } from "../plugins/runtime.js";
+import { discoverPlugins, discoverAppPlugins, runPluginHook, runPluginRoute, runPluginTool, readPluginExport, syncSchedules, stopSchedules, invalidatePluginCache, collectSiblingTools, collectSiblingLlmHooks, mergeToolBridges, type LoadedPlugin, type PluginRuntimeDeps, type PluginToolBridge } from "../plugins/runtime.js";
 import { McpRegistry, WEB_SEARCH_PRESET, readStdioApprovals, stdioFingerprint, writeStdioApproval, type CredentialMap, type McpServerConfig } from "../mcp/registry.js";
 import { listApps, readApp, createAppSkeleton, renameAppDir, appTree, validateAppManifest, hashAppTree, type AppInfo } from "../apps/manager.js";
 import { UPDATE_STRATEGIES, applyWrites, forgetInstall, mergeTrees, moveInstall, readBaseline, readCodeTree, readInstallSource, recoverBaseline, satisfiesRange, seedDataTemplates, writeBaseline, writeInstallSource, type InstallSource } from "../apps/update.js";
@@ -359,7 +359,6 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
 
   // ---------- plugin services per user (store + runtime deps + schedules) ----------
   const pluginStores = new Map<string, PluginStoreService>();
-  const scheduled = new Set<string>();
   const getPluginDeps = (u: UserRecord): PluginRuntimeDeps => {
     let store = pluginStores.get(u.username);
     if (!store) {
@@ -465,16 +464,31 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       },
     };
   };
-  const ensureSchedules = (u: UserRecord): void => {
-    if (scheduled.has(u.username)) return;
-    scheduled.add(u.username);
-    const deps = getPluginDeps(u);
-    const p = userPaths(dataDir, u.username);
+  /** Timers belong to the account's workspace root, which is unique across
+   *  engines sharing a process (tests) and follows a rename. */
+  const scheduleOwner = (username: string): string => userPaths(dataDir, username).root;
+  /** Every plugin a user's timers may come from: their own plugins and the
+   *  enabled plugins of every installed app, whichever app is on screen. */
+  const schedulablePlugins = (username: string): LoadedPlugin[] => {
+    const p = userPaths(dataDir, username);
     const disabled = disabledAppPlugins(p.settings);
-    for (const plugin of discoverActivePlugins(activePluginSources(u))) {
-      if (disabled.has(plugin.id)) continue;
-      startSchedule(plugin, deps, (payload) => bus.emit(u.username, "plugin_event", { plugin: plugin.id, payload }));
-    }
+    const bundled = listApps(p.apps).flatMap((a) => discoverAppPlugins(p.apps, a.id));
+    return [...discoverPlugins(p.plugins), ...bundled].filter((pl) => !disabled.has(pl.id));
+  };
+  /** How often a signed-in request re-checks timers, so a plugin the agent
+   *  writes, an app install or a changed interval starts ticking without a
+   *  restart. Explicit changes (enable, disable, approve) sync at once. */
+  const SCHEDULE_SYNC_MS = 10_000;
+  const scheduleSyncedAt = new Map<string, number>();
+  const syncUserSchedules = (u: UserRecord): void => {
+    scheduleSyncedAt.set(u.username, Date.now());
+    syncSchedules(scheduleOwner(u.username), () => schedulablePlugins(u.username), getPluginDeps(u), (plugin, payload) =>
+      bus.emit(u.username, "plugin_event", { ...(plugin.appId ? { app: plugin.appId } : {}), plugin: plugin.id, payload }),
+    );
+  };
+  const stopUserSchedules = (username: string): void => {
+    scheduleSyncedAt.delete(username);
+    stopSchedules(scheduleOwner(username));
   };
 
   /** Active app id (SPEC-v2 §3). */
@@ -493,10 +507,6 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     } catch {
       return fallback;
     }
-  };
-  const activePluginSources = (u: UserRecord) => {
-    const p = userPaths(dataDir, u.username);
-    return { pluginsDir: p.plugins, appsDir: p.apps, activeAppId: readActiveApp(p) };
   };
 
   /** App plugins the user switched OFF (namespaced ids, settings.json —
@@ -978,7 +988,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     c.set("user", user);
     c.set("paths", userPaths(dataDir, user.username));
     c.set("models", getModels(user));
-    ensureSchedules(user);
+    if (Date.now() - (scheduleSyncedAt.get(user.username) ?? 0) > SCHEDULE_SYNC_MS) syncUserSchedules(user);
     await next();
   };
   // app pages + cached packages are user-scoped too (cookies flow in the
@@ -1086,7 +1096,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     modelServices.delete(oldName);
     mcpRegistries.delete(oldName);
     pluginStores.delete(oldName);
-    scheduled.delete(oldName);
+    stopUserSchedules(oldName);
     try {
       const oldDir = userPaths(dataDir, oldName).root;
       const newDir = userPaths(dataDir, record.username).root;
@@ -2561,7 +2571,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const p = c.get("paths");
     const deps = getPluginDeps(c.get("user"));
     const granted = deps.grantsFor;
-    const activeApp = readActiveApp(p);
+    // an app page lists its own plugins; the shell lists the app on screen
+    const activeApp = c.get("bridgeApp")?.id ?? readActiveApp(p);
     const mapper = (source: string) => (pl: ReturnType<typeof discoverPlugins>[number]) => ({
       id: pl.id,
       source,
@@ -2586,11 +2597,9 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const p = c.get("paths");
     const id = c.req.param("id");
     const body = await c.req.json<{ capabilities?: string[] }>().catch(() => ({ capabilities: undefined }));
-    const p2 = c.get("paths");
-    const activeApp = readActiveApp(p2);
     const plugin = [
-      ...discoverPlugins(p2.plugins),
-      ...(activeApp ? discoverAppPlugins(p2.apps, activeApp) : []),
+      ...discoverPlugins(p.plugins),
+      ...listApps(p.apps).flatMap((a) => discoverAppPlugins(p.apps, a.id)),
     ].find((pl) => pl.id === id);
     if (!plugin) return c.json({ error: "plugin not found" }, 404);
     const caps = body.capabilities ?? (plugin.manifest.permissions ?? []).filter((x) => x !== "hooks");
@@ -2598,9 +2607,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     settings.pluginGrants ??= {};
     settings.pluginGrants[id] = [...new Set([...(settings.pluginGrants[id] ?? []), ...caps])];
     fs.writeFileSync(p.settings, JSON.stringify(settings, null, 2) + "\n", "utf8");
-    // schedules arm once per boot (ensureSchedules); a grant approved after
-    // that moment would never tick until restart — re-arm on the next request
-    scheduled.delete(c.get("user").username);
+    // a newly granted schedule permission starts ticking now
+    syncUserSchedules(c.get("user"));
     return c.json({ ok: true, granted: settings.pluginGrants[id] });
   });
 
@@ -3561,10 +3569,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     else cur.add(key);
     settings.disabledPlugins = [...cur];
     fs.writeFileSync(p.settings, JSON.stringify(settings, null, 2) + "\n", "utf8");
-    if (!enabled) {
-      stopSchedule(pluginDir);
-      scheduled.delete(u.username); // re-arm picks the new set on the next request
-    }
+    syncUserSchedules(u);
     return { status: 200, body: { ok: true, disabled: !enabled } };
   };
   app.post("/v1/apps/:id/plugins/:pid/disable", async (c) => {
@@ -4337,6 +4342,9 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
           return c.json({ error: "you cannot disable your own account" }, 400);
         }
         users.setEnabled(username, body.enabled);
+        const target = users.get(username);
+        if (!body.enabled) stopUserSchedules(username);
+        else if (target) syncUserSchedules(target);
       }
     } catch (e) {
       return c.json({ error: (e as Error).message }, 400);
@@ -4358,6 +4366,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
       return c.json({ error: "cannot delete the last admin" }, 400);
     }
     if (!users.delete(username)) return c.json({ error: "user not found" }, 404);
+    stopUserSchedules(username);
     // keep the user's files on disk (their workspace may be restored by
     // recreating the user); only the account is gone
     return c.json({ ok: true });
@@ -4421,6 +4430,9 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
     console.error("[route error]", c.req.method, c.req.path, err);
     return c.json({ error: "internal error (see the engine log)" }, 500);
   });
+
+  // plugin timers run from the start, not from the first signed-in request
+  for (const u of users.list()) if (u.enabled !== false) syncUserSchedules(u);
 
   return app;
 }

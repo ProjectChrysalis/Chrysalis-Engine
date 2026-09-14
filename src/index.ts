@@ -26,7 +26,7 @@ import { buildApp } from "./server/app.js";
 import { EventBus } from "./server/ws.js";
 import { engineUrls, Listener, selfUrl } from "./server/listen.js";
 import { ServerSettings } from "./server/settings.js";
-import { stopAllSchedules } from "./plugins/runtime.js";
+import { stopSchedules } from "./plugins/runtime.js";
 import { stopLookWatchers } from "./server/look-watch.js";
 import { createSandbox } from "./sandbox/index.js";
 import { log, logToFile } from "./logger.js";
@@ -289,7 +289,7 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
   const stopServing = async () => {
     stopping = true;
     // stop plugin schedules + look watchers so nothing fires mid-teardown
-    stopAllSchedules();
+    stopSchedules();
     stopLookWatchers();
     bus.dispose();
     releaseLock(dataDir, instance);

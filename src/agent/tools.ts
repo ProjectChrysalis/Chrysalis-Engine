@@ -550,7 +550,7 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
     name: "bash",
     label: "Run shell command",
     description:
-      "Run a shell command in the agent sandbox (by default a WebAssembly sandbox in the user's browser: bash, 88 standard utilities and python3, workspace mounted, internet only when the user allows it, no host access). Changes under the workspace are the user's files; commit them with the git tool afterwards. Use it for scripts, batch transforms, data crunching and checking your work — not for reading/editing single files (read_file/edit_file are better there). Output is capped (~64KB/stream, head+tail kept).",
+      "Run a shell command in the agent sandbox (by default a WebAssembly sandbox in the user's browser: bash, 88 standard utilities and python3, workspace mounted, internet unless the user turned it off in Settings, never this machine or its network, no host access). Changes under the workspace are the user's files; commit them with the git tool afterwards. Use it for scripts, batch transforms, data crunching and checking your work — not for reading/editing single files (read_file/edit_file are better there). Output is capped (~64KB/stream, head+tail kept).",
     parameters: Type.Object({
       command: Type.String({ description: "The shell command line. Runs with cwd = the user's workspace" }),
       timeout_ms: Type.Optional(

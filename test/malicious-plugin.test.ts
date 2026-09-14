@@ -273,6 +273,7 @@ describe("exfiltration ways out of an app page", () => {
     expect(host.eventAllowed("roleplay", true, evt("look_changed", { app: "roleplay", paths: ["data/"] }))).toBe(true);
     expect(host.eventAllowed("roleplay", true, evt("app_changed", { app: "roleplay" }))).toBe(true);
     expect(host.eventAllowed("roleplay", true, evt("app_built", { app: "roleplay", kind: "hot", seq: 3 }))).toBe(true);
+    expect(host.eventAllowed("roleplay", true, evt("plugin_event", { app: "roleplay", plugin: "roleplay__timer", payload: {} }))).toBe(true);
     // another app's builds, and the build queue itself, stay out
     expect(host.eventAllowed("roleplay", true, evt("app_built", { app: "other", kind: "hot", seq: 3 }))).toBe(false);
     expect(host.eventAllowed("roleplay", true, evt("build_needed", { app: "roleplay", paths: ["src/a.ts"] }))).toBe(false);
@@ -283,6 +284,7 @@ describe("exfiltration ways out of an app page", () => {
     expect(host.eventAllowed("roleplay", true, evt("agent_delta", { sessionId: "s" }))).toBe(false);
     expect(host.eventAllowed("roleplay", true, evt("agent_event", { sessionId: "s" }))).toBe(false);
     expect(host.eventAllowed("roleplay", true, evt("plugin_event", { plugin: "x", payload: {} }))).toBe(false);
+    expect(host.eventAllowed("roleplay", true, evt("plugin_event", { app: "other", plugin: "other__timer", payload: {} }))).toBe(false);
     expect(host.eventAllowed("roleplay", true, evt("oauth_event", { provider: "p" }))).toBe(false);
     expect(host.eventAllowed("roleplay", true, "not json")).toBe(false);
     // model-catalog pings only reach the shipped app that renders the catalog

@@ -30,7 +30,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { sandbox } from "./sandbox.js";
+import { sandbox, type SandboxResponse } from "./sandbox.js";
 import type { PluginStoreService } from "./store.js";
 import type { UserModelService, GenerateRequest, GenerateResult } from "../models.js";
 import { log } from "../logger.js";
@@ -67,6 +67,8 @@ export interface LoadedPlugin {
   mtimeMs: number;
   /** App data dir fs scope for app-bundled plugins (null for top-level). */
   fsRoot?: string | null;
+  /** The app a bundled plugin belongs to (absent for top-level). */
+  appId?: string;
 }
 
 export interface LlmRequestHook {
@@ -149,9 +151,9 @@ export function invalidatePluginCache(pluginsDir?: string): void {
   else discoveryCache.clear();
   // kill schedules whose plugin dir no longer exists (deleted apps/plugins) —
   // otherwise a removed scheduled plugin keeps ticking with frozen source
-  for (const [dir, timer] of activeTimers) {
+  for (const [dir, armed] of activeTimers) {
     if (!fs.existsSync(path.join(dir, "plugin.js"))) {
-      clearInterval(timer);
+      clearInterval(armed.timer);
       activeTimers.delete(dir);
     }
   }
@@ -169,20 +171,8 @@ export function discoverAppPlugins(appsDir: string, appId: string): LoadedPlugin
     id: `${appId}__${pl.id}`,
     manifest: { ...pl.manifest, name: pl.manifest.name ?? pl.id },
     fsRoot: dataDir,
+    appId,
   }));
-}
-
-export interface ActivePluginSources {
-  pluginsDir: string;
-  appsDir: string;
-  activeAppId: string | null;
-}
-
-/** All plugins active for a user: top-level + the active app's bundled. */
-export function discoverActivePlugins(src: ActivePluginSources): LoadedPlugin[] {
-  const top = discoverPlugins(src.pluginsDir);
-  const appBundled = src.activeAppId ? discoverAppPlugins(src.appsDir, src.activeAppId) : [];
-  return [...top, ...appBundled];
 }
 
 /** Read a static export (e.g. TOOLS) from a plugin without running hooks. */
@@ -200,9 +190,9 @@ export async function readPluginExport(plugin: LoadedPlugin, exportName: string)
 }
 
 /** Execute a plugin tool call (plugin exports handleTool(name, args, host)).
- *  A tool that needs the network registers net requests like a route would:
- *  the host executes them and re-runs the handler with results populated —
- *  same two-phase exchange, bounded passes. */
+ *  A tool that needs a model, the network or embeddings asks for them like a
+ *  route would: the host runs the requests and re-runs the handler with the
+ *  results, bounded passes. */
 export async function runPluginTool(
   plugin: LoadedPlugin,
   toolName: string,
@@ -210,9 +200,9 @@ export async function runPluginTool(
   deps: PluginRuntimeDeps,
 ): Promise<{ ok: boolean; text: string } | null> {
   if (!hasCapAny(plugin, "tools", deps)) return null;
-  const netAllowed = hasCapAny(plugin, "network", deps);
+  const caps = passCaps(plugin, deps);
   const MAX_TOOL_PASSES = 3;
-  let netResults: Record<string, unknown> = {};
+  let results = noResults();
   for (let pass = 0; pass < MAX_TOOL_PASSES; pass++) {
     const r = await sandbox.eval({
       source: plugin.source,
@@ -220,25 +210,26 @@ export async function runPluginTool(
       ctx: { name: toolName, args },
       storeSnapshot: snapshotOf(plugin, deps),
       storeAllowed: hasCapAny(plugin, "store", deps),
-      llmAllowed: hasCapAny(plugin, "llm", deps),
+      llmAllowed: caps.llm,
+      llmResults: results.llm,
+      embedResults: results.embed,
       fsAllowed: hasCapAny(plugin, "fs", deps) && !!plugin.fsRoot,
       fsRoot: plugin.fsRoot ?? null,
-      netAllowed,
-      netResults,
+      netAllowed: caps.net,
+      netResults: results.net,
     });
+    printLogs(plugin, r);
     applyStoreWrites(plugin, r, deps);
-    if (!r.ok) return null;
+    if (!r.ok) {
+      log.warn(`[plugin:${plugin.id}] tool ${toolName} failed: ${r.error}`);
+      return null;
+    }
     const out = r.out as { text?: unknown; isError?: unknown } | null;
-    const usable = out && typeof out === "object";
-    const nets = netAllowed ? (r.netRequests ?? []) : [];
-    if (!nets.length || pass === MAX_TOOL_PASSES - 1 || !usable) {
-      if (!usable) return null;
+    if (!out || typeof out !== "object") return null;
+    if (!passWants(r, caps) || pass === MAX_TOOL_PASSES - 1) {
       return { ok: out.isError !== true, text: String(out.text ?? "") };
     }
-    netResults = {};
-    for (const { key, req } of nets) {
-      netResults[key] = await executeNetRequest(plugin, req as { url?: unknown });
-    }
+    results = await runPassRequests(plugin, r, deps, caps, "tool");
   }
   return null;
 }
@@ -594,6 +585,109 @@ function llmSourceOf(plugin: LoadedPlugin): string {
   return `app:${m ? m[1] + "/" : ""}${plugin.id}`;
 }
 
+/** What a plugin may ask the host for between passes. */
+interface PassCaps {
+  llm: boolean;
+  net: boolean;
+}
+
+function passCaps(plugin: LoadedPlugin, deps: PluginRuntimeDeps): PassCaps {
+  return { llm: hasCapAny(plugin, "llm", deps), net: hasCapAny(plugin, "network", deps) };
+}
+
+/** Answers handed to the next pass, by the key the plugin asked under. */
+interface PassResults {
+  llm: Record<string, unknown>;
+  net: Record<string, unknown>;
+  embed: Record<string, unknown>;
+}
+
+const noResults = (): PassResults => ({ llm: {}, net: {}, embed: {} });
+
+/** Did this pass ask for anything it is allowed to get? */
+function passWants(r: SandboxResponse, caps: PassCaps): boolean {
+  return (
+    (caps.llm && ((r.llmRequests?.length ?? 0) > 0 || (r.embedRequests?.length ?? 0) > 0)) ||
+    (caps.net && (r.netRequests?.length ?? 0) > 0)
+  );
+}
+
+function printLogs(plugin: LoadedPlugin, r: SandboxResponse): void {
+  for (const line of r.logs ?? []) log.info(`[plugin:${plugin.id}] ${line}`);
+}
+
+/** The stand-in result for a model call that produced nothing usable. */
+function emptyGeneration(error?: string): GenerateResult {
+  return { text: "", model: "error", ...(error ? { error } : {}), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costTotal: 0, priced: false } };
+}
+
+/**
+ * Run what one pass asked for, host-side (keys never enter the sandbox and
+ * web requests carry no Chrysalis credentials), one request after another.
+ * Model requests get more the closer they are to an app route:
+ *   route  sibling tools, other plugins' llmRequest hooks, live streaming
+ *          and cancelling
+ *   hook   sibling tools; never the hook pipeline, so a hook's own model
+ *          call cannot recurse into it
+ *   tool   the plain request: a tool runs inside a tool loop already, and
+ *          tools of its own could nest that loop without end
+ */
+async function runPassRequests(
+  plugin: LoadedPlugin,
+  r: SandboxResponse,
+  deps: PluginRuntimeDeps,
+  caps: PassCaps,
+  mode: "route" | "hook" | "tool",
+): Promise<PassResults> {
+  const results = noResults();
+  if (caps.llm) {
+    for (const { key, req } of r.embedRequests ?? []) {
+      const texts = Array.isArray(req.texts) ? req.texts.map(String) : [];
+      try {
+        results.embed[key] = texts.length ? await deps.models.embed(texts, typeof req.model === "string" ? req.model : undefined) : null;
+      } catch (e) {
+        log.warn(`[plugin:${plugin.id}] embed "${key}" failed: ${(e as Error).message}`);
+        results.embed[key] = null;
+      }
+    }
+  }
+  if (caps.net) {
+    for (const { key, req } of r.netRequests ?? []) {
+      results.net[key] = await executeNetRequest(plugin, req as { url?: unknown });
+    }
+  }
+  if (!caps.llm) return results;
+  for (const { key, req } of r.llmRequests ?? []) {
+    // `stream` is an app-level routing descriptor, not a GenerateRequest
+    // field — strip it and use it to route live deltas when a sink exists.
+    // `wantsTools` likewise: a marker asking for sibling-contributed tools.
+    const { stream, wantsTools, ...clean } = req as GenerateRequest & { stream?: unknown; wantsTools?: unknown; tools?: unknown };
+    let toolBridge: PluginToolBridge | null = null;
+    if (mode !== "tool") {
+      toolBridge = pluginToolBridge(plugin, clean, deps);
+      if (wantsTools === true && deps.siblingTools) toolBridge = mergeToolBridges(toolBridge, await deps.siblingTools(plugin));
+    }
+    delete clean.tools;
+    const streamTag = mode === "route" ? stream : undefined;
+    const request = mode === "route" ? await applyLlmRequestHooks(plugin, key, clean, deps) : clean;
+    const onDelta = streamTag && deps.onLlmDelta ? (d: string) => deps.onLlmDelta!(streamTag, d) : undefined;
+    const onThinking = streamTag && deps.onLlmThinking ? (d: string) => deps.onLlmThinking!(streamTag, d) : undefined;
+    const onToolEvent = streamTag && deps.onLlmTool ? (ev: Parameters<NonNullable<PluginRuntimeDeps["onLlmTool"]>>[1]) => deps.onLlmTool!(streamTag, ev) : undefined;
+    const abortSignal = streamTag && deps.abortCtlFor ? deps.abortCtlFor(streamTag) : null;
+    try {
+      const out = await deps.models.generate({ ...request, ...toolBridge, ...(onToolEvent ? { onToolEvent } : {}), ...(abortSignal ? { signal: abortSignal } : {}), source: llmSourceOf(plugin) }, onDelta, onThinking);
+      // cancelled generations never commit: the client owns what a cancel
+      // keeps (it froze the exact on-screen bytes) and writes them itself
+      results.llm[key] = streamTag && deps.consumeCancel?.(streamTag) ? emptyGeneration() : out;
+    } catch (e) {
+      const msg = (e as Error).message;
+      log.warn(`[plugin:${plugin.id}] llm "${key}" failed: ${msg}`);
+      results.llm[key] = emptyGeneration(msg);
+    }
+  }
+  return results;
+}
+
 export async function runPluginRoute(
   plugin: LoadedPlugin,
   req: PluginRouteRequest,
@@ -601,14 +695,12 @@ export async function runPluginRoute(
 ): Promise<PluginRouteResponse | null> {
   if (!hasCapAny(plugin, "routes", deps)) return null;
   const MAX_ROUTE_PASSES = 3;
-  let llmResults: Record<string, unknown> = {};
-  let netResults: Record<string, unknown> = {};
-  let embedResults: Record<string, unknown> = {};
+  const caps = passCaps(plugin, deps);
+  let results = noResults();
   // pass-A carry-all: the sandbox module is re-evaluated fresh EVERY pass, so
   // plugin module state cannot survive — routes return {__llmPending, stash}
   // and the stash rides into the next pass's ctx verbatim
   let stash: Record<string, unknown> | undefined;
-  const netAllowed = hasCapAny(plugin, "network", deps);
   const zipOk = hasCapAny(plugin, "zip", deps) && !!req.zipBase64;
   // ?siblingtools=1: expose the tool DEFINITIONS a wantsTools:true llm request
   // from this plugin would carry (defs only — execution stays host-side), so a
@@ -627,18 +719,19 @@ export async function runPluginRoute(
       ctx: { ...req, zipBase64: undefined, ...(stash ? { stash } : {}) } as unknown as Record<string, unknown>,
       storeSnapshot: snapshotOf(plugin, deps),
       storeAllowed: hasCapAny(plugin, "store", deps),
-      llmAllowed: hasCapAny(plugin, "llm", deps),
+      llmAllowed: caps.llm,
       fsAllowed: hasCapAny(plugin, "fs", deps) && !!plugin.fsRoot,
       fsRoot: plugin.fsRoot ?? null,
       zipAllowed: zipOk,
       ...(zipOk ? { zipBase64: req.zipBase64! } : {}),
-      llmResults,
-      netAllowed,
-      netResults,
-      embedResults,
+      llmResults: results.llm,
+      netAllowed: caps.net,
+      netResults: results.net,
+      embedResults: results.embed,
       ...(siblingToolDefs ? { siblingToolDefs } : {}),
       retryOnPoison: req.method === "GET" || req.method === "HEAD",
     });
+    printLogs(plugin, r);
     applyStoreWrites(plugin, r, deps);
     if (!r.ok) {
       log.warn(`[plugin:${plugin.id}] route ${req.method} ${req.path} failed: ${r.error}`);
@@ -651,8 +744,8 @@ export async function runPluginRoute(
     if (out?.__llmPending === true && out.stash && typeof out.stash === "object") {
       stash = out.stash as Record<string, unknown>;
     }
-    const wantsLlm = out?.__llmPending === true || (r.llmRequests?.length ?? 0) > 0 || (r.netRequests?.length ?? 0) > 0;
-    if (!wantsLlm || pass === MAX_ROUTE_PASSES - 1) {
+    const pending = out?.__llmPending === true || passWants(r, caps);
+    if (!pending || pass === MAX_ROUTE_PASSES - 1) {
       if (!out || typeof out !== "object" || (out.json === undefined && out.text === undefined && out.status === undefined)) {
         return null; // no route matched
       }
@@ -663,48 +756,7 @@ export async function runPluginRoute(
         ...(typeof out.contentType === "string" ? { contentType: out.contentType } : {}),
       };
     }
-    // execute llm + net + embed requests host-side (keys never enter the
-    // sandbox; net fetches carry no Chrysalis credentials), then re-invoke
-    llmResults = {};
-    netResults = {};
-    embedResults = {};
-    for (const { key, req } of r.embedRequests ?? []) {
-      const texts = Array.isArray(req.texts) ? req.texts.map(String) : [];
-      embedResults[key] = texts.length ? await deps.models.embed(texts, typeof req.model === "string" ? req.model : undefined) : null;
-    }
-    for (const { key, req: nreq } of r.netRequests ?? []) {
-      netResults[key] = await executeNetRequest(plugin, nreq as { url?: unknown });
-    }
-    for (const { key, req: gen } of r.llmRequests ?? []) {
-      // `stream` is an app-level routing descriptor, not a GenerateRequest
-      // field — strip it and use it to route live deltas when a sink exists.
-      // `wantsTools` likewise: a marker asking for sibling-contributed tools.
-      const { stream: streamTag, wantsTools, ...clean } = gen as GenerateRequest & { stream?: unknown; wantsTools?: unknown; tools?: unknown };
-      let toolBridge = pluginToolBridge(plugin, clean, deps);
-      if (wantsTools === true && deps.siblingTools) {
-        toolBridge = mergeToolBridges(toolBridge, await deps.siblingTools(plugin));
-      }
-      delete clean.tools;
-      const patched = await applyLlmRequestHooks(plugin, key, clean, deps);
-      const onDelta = streamTag && deps.onLlmDelta ? (d: string) => deps.onLlmDelta!(streamTag, d) : undefined;
-      const onThinking = streamTag && deps.onLlmThinking ? (d: string) => deps.onLlmThinking!(streamTag, d) : undefined;
-      const onToolEvent = streamTag && deps.onLlmTool ? (ev: Parameters<NonNullable<PluginRuntimeDeps["onLlmTool"]>>[1]) => deps.onLlmTool!(streamTag, ev) : undefined;
-      const abortSignal = streamTag && deps.abortCtlFor ? deps.abortCtlFor(streamTag) : null;
-      try {
-        const out = await deps.models.generate({ ...patched, ...toolBridge, ...(onToolEvent ? { onToolEvent } : {}), ...(abortSignal ? { signal: abortSignal } : {}), source: llmSourceOf(plugin) }, onDelta, onThinking);
-        // cancelled generations never commit: the client owns what a cancel
-        // keeps (it froze the exact on-screen bytes) and writes them itself
-        if (streamTag && deps.consumeCancel?.(streamTag)) {
-          llmResults[key] = { text: "", model: "error", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costTotal: 0, priced: false } };
-        } else {
-          llmResults[key] = out;
-        }
-      } catch (e) {
-        const msg = (e as Error).message;
-        log.warn(`[plugin:${plugin.id}] llm "${key}" failed: ${msg}`);
-        llmResults[key] = { text: "", model: "error", error: msg, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costTotal: 0, priced: false } };
-      }
-    }
+    results = await runPassRequests(plugin, r, deps, caps, "route");
   }
   return null;
 }
@@ -758,8 +810,6 @@ export interface PluginManifest {
   networkHosts?: string[];
 }
 
-// ---------- permissions ----------
-
 // ---------- hook execution (two-phase llm exchange, worker-isolated) ----------
 
 const MAX_PASSES = 3;
@@ -771,13 +821,10 @@ export async function runPluginHook(
   deps: PluginRuntimeDeps,
 ): Promise<Record<string, unknown> | null> {
   const storeOk = hasCapAny(plugin, "store", deps);
-  const storeNs = storeOk ? deps.store.namespace(plugin.id) : null;
-  const llmOk = hasCapAny(plugin, "llm", deps);
-  const netAllowed = hasCapAny(plugin, "network", deps);
+  const caps = passCaps(plugin, deps);
   const storeSnapshot = snapshotOf(plugin, deps);
 
-  let llmResults: Record<string, GenerateResult> = {};
-  let netResults: Record<string, unknown> = {};
+  let results = noResults();
   let current: Record<string, unknown> = ctx;
 
   for (let pass = 0; pass < MAX_PASSES; pass++) {
@@ -787,16 +834,17 @@ export async function runPluginHook(
       ctx: current as unknown,
       storeSnapshot,
       storeAllowed: storeOk,
-      llmAllowed: llmOk,
-      llmResults: llmOk ? (llmResults as unknown as Record<string, unknown>) : {},
-      netAllowed,
-      netResults,
+      llmAllowed: caps.llm,
+      llmResults: results.llm,
+      embedResults: results.embed,
+      netAllowed: caps.net,
+      netResults: results.net,
       fsAllowed: hasCapAny(plugin, "fs", deps) && !!plugin.fsRoot,
       fsRoot: plugin.fsRoot ?? null,
     });
 
-    if (r.storeWrites && storeNs) applyStoreWrites(plugin, r, deps);
-    for (const line of r.logs ?? []) log.info(`[plugin:${plugin.id}] ${line}`);
+    applyStoreWrites(plugin, r, deps);
+    printLogs(plugin, r);
 
     if (!r.ok) {
       if (!storeOk && r.storeWrites && Object.keys(r.storeWrites).length > 0) {
@@ -806,37 +854,12 @@ export async function runPluginHook(
       return null; // crash-isolated: pass original ctx through
     }
 
-    const llmRequests = llmOk ? (r.llmRequests ?? []) : [];
-    const netRequests = netAllowed ? (r.netRequests ?? []) : [];
-    if (llmRequests.length === 0 && netRequests.length === 0) {
-      return (r.out as Record<string, unknown> | null) ?? null;
-    }
+    if (!passWants(r, caps)) return (r.out as Record<string, unknown> | null) ?? null;
     if (pass === MAX_PASSES - 1) {
       log.warn(`[plugin:${plugin.id}] ${hook}: exceeded ${MAX_PASSES} passes; using last good ctx`);
       return (r.out as Record<string, unknown> | null) ?? null;
     }
-    // execute requests host-side (keys never enter the sandbox) and re-run
-    llmResults = {};
-    netResults = {};
-    for (const { key, req: nreq } of netRequests) {
-      netResults[key] = await executeNetRequest(plugin, nreq as { url?: unknown });
-    }
-    for (const { key, req } of llmRequests) {
-      try {
-        const clean = { ...(req as GenerateRequest & { tools?: unknown; wantsTools?: unknown }) };
-        let toolBridge = pluginToolBridge(plugin, clean, deps);
-        if (clean.wantsTools === true && deps.siblingTools) {
-          toolBridge = mergeToolBridges(toolBridge, await deps.siblingTools(plugin));
-        }
-        delete clean.tools;
-        delete clean.wantsTools;
-        llmResults[key] = await deps.models.generate({ ...clean, ...toolBridge, source: llmSourceOf(plugin) });
-      } catch (e) {
-        const msg = (e as Error).message;
-        log.warn(`[plugin:${plugin.id}] llm request "${key}" failed: ${msg}`);
-        llmResults[key] = { text: "", model: "error", error: msg, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costTotal: 0, priced: false } };
-      }
-    }
+    results = await runPassRequests(plugin, r, deps, caps, "hook");
     current = (r.out as Record<string, unknown>) ?? current;
   }
   return null;
@@ -845,37 +868,75 @@ export async function runPluginHook(
 
 // ---------- scheduler (SPEC §5.4: schedule service, interval flavor) ----------
 
-const activeTimers = new Map<string, NodeJS.Timeout>();
+const MIN_INTERVAL_MS = 5_000;
 
-export function startSchedule(
-  plugin: LoadedPlugin,
+interface ArmedTimer {
+  /** Whose plugin this is (one workspace root per account). */
+  owner: string;
+  intervalMs: number;
+  timer: NodeJS.Timeout;
+}
+
+/** Armed timers by plugin dir. */
+const activeTimers = new Map<string, ArmedTimer>();
+
+function intervalOf(plugin: LoadedPlugin): number | null {
+  const ms = plugin.manifest.schedule?.intervalMs;
+  return typeof ms === "number" && ms > 0 ? Math.max(MIN_INTERVAL_MS, ms) : null;
+}
+
+/**
+ * Make one owner's timers match `list()`, the plugins they may come from:
+ * every plugin with a schedule and the schedule permission ticks, and a timer
+ * whose plugin is gone, disabled, lost the permission or changed its interval
+ * stops (and re-arms at the new interval). A tick looks its plugin up again,
+ * so it runs the code on disk now, and never starts while the previous tick of
+ * the same plugin is still running.
+ */
+export function syncSchedules(
+  owner: string,
+  list: () => LoadedPlugin[],
   deps: PluginRuntimeDeps,
-  onEvent: (payload: unknown) => void,
+  onEvent: (plugin: LoadedPlugin, payload: unknown) => void,
 ): void {
-  const interval = plugin.manifest.schedule?.intervalMs;
-  if (!interval || !hasCapAny(plugin, "schedule", deps)) return;
-  const key = plugin.dir;
-  if (activeTimers.has(key)) return;
-  const ms = Math.max(5_000, interval);
-  if (interval < 5_000) log.warn(`[plugin:${plugin.id}] schedule.intervalMs < 5000, clamped to 5000`);
-  const timer = setInterval(async () => {
-    const result = await runPluginHook(plugin, "onTick", { pluginId: plugin.id }, deps);
-    if (result) onEvent(result);
-  }, ms);
-  timer.unref();
-  activeTimers.set(key, timer);
+  const wanted = new Map<string, LoadedPlugin>();
+  for (const plugin of list()) {
+    if (intervalOf(plugin) !== null && hasCapAny(plugin, "schedule", deps)) wanted.set(plugin.dir, plugin);
+  }
+  for (const [dir, armed] of activeTimers) {
+    if (armed.owner !== owner) continue;
+    const plugin = wanted.get(dir);
+    if (plugin && intervalOf(plugin) === armed.intervalMs) continue;
+    clearInterval(armed.timer);
+    activeTimers.delete(dir);
+  }
+  for (const [dir, plugin] of wanted) {
+    if (activeTimers.has(dir)) continue;
+    const intervalMs = intervalOf(plugin)!;
+    if (plugin.manifest.schedule!.intervalMs < MIN_INTERVAL_MS) log.warn(`[plugin:${plugin.id}] schedule.intervalMs < ${MIN_INTERVAL_MS}, clamped to ${MIN_INTERVAL_MS}`);
+    let running = false;
+    const timer = setInterval(async () => {
+      if (running) return;
+      const current = list().find((p) => p.dir === dir);
+      if (!current || intervalOf(current) === null || !hasCapAny(current, "schedule", deps)) return;
+      running = true;
+      try {
+        const result = await runPluginHook(current, "onTick", { pluginId: current.id }, deps);
+        if (result) onEvent(current, result);
+      } finally {
+        running = false;
+      }
+    }, intervalMs);
+    timer.unref();
+    activeTimers.set(dir, { owner, intervalMs, timer });
+  }
 }
 
-export function stopAllSchedules(): void {
-  for (const t of activeTimers.values()) clearInterval(t);
-  activeTimers.clear();
-}
-
-/** Stop one plugin's armed timer (e.g. the plugin was disabled or removed). */
-export function stopSchedule(pluginDir: string): void {
-  const t = activeTimers.get(pluginDir);
-  if (t) {
-    clearInterval(t);
-    activeTimers.delete(pluginDir);
+/** Stop one owner's timers, or every timer when no owner is given. */
+export function stopSchedules(owner?: string): void {
+  for (const [dir, armed] of activeTimers) {
+    if (owner !== undefined && armed.owner !== owner) continue;
+    clearInterval(armed.timer);
+    activeTimers.delete(dir);
   }
 }

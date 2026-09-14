@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { discoverActivePlugins, invalidatePluginCache } from "../src/plugins/runtime.js";
+import { discoverAppPlugins, discoverPlugins, invalidatePluginCache } from "../src/plugins/runtime.js";
 import { CURATED_PROVIDERS, curatedProviders, mapOpenAiModelsResponse } from "../src/providers/custom.js";
 import { UserModelService } from "../src/models.js";
 import { defaultInstanceConfig } from "../src/config.js";
@@ -24,16 +24,17 @@ function writePlugin(base: string, id: string, manifest: Record<string, unknown>
   fs.writeFileSync(path.join(p, "plugin.js"), code);
 }
 
-describe("active plugin discovery (apps)", () => {
-  it("top-level plugins always active; app plugins only when their app is active", () => {
+describe("plugin discovery (apps)", () => {
+  it("app plugins are namespaced by app, scoped to its data, and know their app", () => {
     writePlugin(path.join(dir, "plugins"), "user-plugin", { name: "U", version: "1", permissions: ["hooks"] }, "export const x = 1;");
     writePlugin(path.join(dir, "apps", "vn", "plugins"), "engine", { name: "E", version: "1", permissions: ["hooks"] }, "export const z = 3;");
 
-    const none = discoverActivePlugins({ pluginsDir: path.join(dir, "plugins"), appsDir: path.join(dir, "apps"), activeAppId: null });
-    expect(none.map((p) => p.id)).toEqual(["user-plugin"]);
+    expect(discoverPlugins(path.join(dir, "plugins")).map((p) => p.id)).toEqual(["user-plugin"]);
 
-    const withApp = discoverActivePlugins({ pluginsDir: path.join(dir, "plugins"), appsDir: path.join(dir, "apps"), activeAppId: "vn" });
-    expect(withApp.map((p) => p.id).sort()).toEqual(["user-plugin", "vn__engine"]);
+    const bundled = discoverAppPlugins(path.join(dir, "apps"), "vn");
+    expect(bundled.map((p) => p.id)).toEqual(["vn__engine"]);
+    expect(bundled[0]!.appId).toBe("vn");
+    expect(bundled[0]!.fsRoot).toBe(path.join(dir, "apps", "vn", "data"));
   });
 });
 

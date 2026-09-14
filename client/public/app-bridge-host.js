@@ -107,8 +107,9 @@
     if (!frame || typeof frame.type !== "string") return false;
     if (frame.type === "hello") return true;
     var payload = frame.payload || {};
-    // app_built drives the dev runtime's hot updates (src/builder/browser/runtime.ts)
-    if (frame.type === "look_changed" || frame.type === "app_stream" || frame.type === "app_changed" || frame.type === "app_built") {
+    // app_built drives the dev runtime's hot updates (src/builder/browser/runtime.ts);
+    // plugin_event carries what the app's own timers returned
+    if (frame.type === "look_changed" || frame.type === "app_stream" || frame.type === "app_changed" || frame.type === "app_built" || frame.type === "plugin_event") {
       return payload.app === appId;
     }
     if (frame.type === "connections_changed") return trusted === true;
