@@ -89,6 +89,6 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: npm
         if: env.NPM_TOKEN != ''
-        run: npm publish --provenance --access public assets/*.tgz
+        run: npm publish --provenance --access public assets/npm-pack/*.tgz
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
