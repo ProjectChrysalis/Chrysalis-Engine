@@ -419,6 +419,8 @@ const dict = {
   "{n} tool": "도구 {n}개",
   "{n} tools": "도구 {n}개",
   "{plugin} can now use:": "{plugin}이(가) 새로 쓸 수 있는 권한:",
+  "{plugin} can now send data to:": "{plugin}이(가) 새로 데이터를 보낼 수 있는 곳:",
+  "Can reach this computer or your local network: {hosts}": "이 컴퓨터나 로컬 네트워크에 접속할 수 있습니다: {hosts}",
   "· by {author}": "· {author} 제작",
   "“{name}” created": "“{name}” 생성됨",
   "Update to {version}": "{version}(으)로 업데이트",

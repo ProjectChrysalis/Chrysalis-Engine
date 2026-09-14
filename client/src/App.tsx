@@ -1363,7 +1363,7 @@ type UpdateReply = {
   needsDepConfirm?: boolean
   head?: string
   deps?: { added: { name: string; spec: string }[]; changed: { name: string; spec: string; was: string }[]; removed: string[]; nonRegistry: string[] }
-  permissions?: { id: string; name: string; added: string[] }[]
+  permissions?: { id: string; name: string; added: string[]; hosts: string[] }[]
   /** plugins whose data upgrade failed; it is tried again when the app opens */
   upgradeFailed?: { plugin: string; error: string }[]
   warnings?: string[]
@@ -1416,7 +1416,7 @@ function AppDetail(props: {
         changed: { name: string; spec: string; was: string }[]
         removed: string[]
         nonRegistry: string[]
-        permissions: { id: string; name: string; added: string[] }[]
+        permissions: { id: string; name: string; added: string[]; hosts: string[] }[]
       }
     | { state: "error"; message: string }
   >({ state: "idle" })
@@ -1656,10 +1656,16 @@ function AppDetail(props: {
             </p> : null}
           {updates.permissions.length > 0 ? <div className="flex flex-col gap-1">
               {updates.permissions.map((pl) => (
-                <div key={pl.id} className="flex flex-wrap items-center gap-1">
-                  <span className="text-11 text-ink">{tr("{plugin} can now use:", { plugin: pl.name })}</span>
-                  {pl.added.map((perm) => (<span key={perm} className="rounded-full bg-warning-soft/20 px-1.5 py-0.5 text-10 text-ink-muted">{perm}</span>))}
-                </div>
+                <Fragment key={pl.id}>
+                  {pl.added.length > 0 ? <div className="flex flex-wrap items-center gap-1">
+                      <span className="text-11 text-ink">{tr("{plugin} can now use:", { plugin: pl.name })}</span>
+                      {pl.added.map((perm) => (<span key={perm} className="rounded-full bg-warning-soft/20 px-1.5 py-0.5 text-10 text-ink-muted">{perm}</span>))}
+                    </div> : null}
+                  {pl.hosts.length > 0 ? <div className="flex flex-wrap items-center gap-1">
+                      <span className="text-11 text-ink">{tr("{plugin} can now send data to:", { plugin: pl.name })}</span>
+                      {pl.hosts.map((host) => (<span key={host} className="rounded-full bg-warning-soft/20 px-1.5 py-0.5 font-mono text-10 text-ink-muted">{host}</span>))}
+                    </div> : null}
+                </Fragment>
               ))}
             </div> : null}
           <div className="flex justify-end gap-2">
@@ -1785,6 +1791,24 @@ function dataEgressWarning(permissions: string[], networkHosts: string[]): strin
   if (!readsData || !sends) return null
   const where = networkHosts.length ? networkHosts.join(", ") : tr("hosts it names at runtime")
   return tr("Can read this app's stored data (chats, characters, personas) and send it to {where}.", { where })
+}
+
+/** Hosts a plugin lists by a local name or address. The network guard only
+ *  keeps a plugin off this computer and the local network when it reaches
+ *  them through a public name; one that lists them outright is let through. */
+function localNetworkWarning(permissions: string[], networkHosts: string[]): string | null {
+  if (!permissions.includes("network")) return null
+  const local = networkHosts.filter((h) => {
+    const host = h.toLowerCase().replace(/^\[|\]$/g, "")
+    if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".lan")) return true
+    const v4 = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(host)
+    if (v4) {
+      const a = Number(v4[1]), b = Number(v4[2])
+      return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)
+    }
+    return host.includes(":") && (host === "::1" || /^f[cde]/.test(host))
+  })
+  return local.length ? tr("Can reach this computer or your local network: {hosts}", { hosts: local.join(", ") }) : null
 }
 
 /** Import an app from a git repository or a backup file: preview what's
@@ -1969,6 +1993,7 @@ function ImportAppDialog(props: { from: StoreApp | null; onClose: () => void; on
                               ))}
                           </div>
                           {dataEgressWarning(pl.permissions, pl.networkHosts) ? <p className="mt-1 text-11 leading-4 text-warning">{dataEgressWarning(pl.permissions, pl.networkHosts)}</p> : null}
+                          {localNetworkWarning(pl.permissions, pl.networkHosts) ? <p className="mt-1 text-11 leading-4 text-warning">{localNetworkWarning(pl.permissions, pl.networkHosts)}</p> : null}
                         </li>
                       ))}
                   </ul> : <p className="mt-1 text-12 text-ink-muted">{tr("No plugins, plain UI app.")}</p>}
@@ -2169,6 +2194,7 @@ export function AppPluginsDialog(props: { appId: string; open: boolean; onClose:
                         {preview!.permissions.length === 0 && preview!.networkHosts.length === 0 ? <span className="text-11 text-ink-faint">{tr("No permissions, no network. It only gets its own storage.")}</span> : null}
                       </div>
                       {dataEgressWarning(preview!.permissions, preview!.networkHosts) ? <p className="text-11 leading-4 text-warning">{dataEgressWarning(preview!.permissions, preview!.networkHosts)}</p> : null}
+                      {localNetworkWarning(preview!.permissions, preview!.networkHosts) ? <p className="text-11 leading-4 text-warning">{localNetworkWarning(preview!.permissions, preview!.networkHosts)}</p> : null}
                       <p className="rounded-lg border border-warning/30 bg-warning-soft/10 p-2.5 text-12 leading-4 text-ink-muted">
                         {tr("Community plugins run real code on your Chrysalis server. This one gets the capabilities above, installed into {appId} only. App updates keep it. Import repositories you trust.", { appId: props.appId })}
                       </p>

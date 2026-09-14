@@ -419,6 +419,8 @@ const dict = {
   "{n} tool": "{n} ferramenta",
   "{n} tools": "{n} ferramentas",
   "{plugin} can now use:": "{plugin} agora pode usar:",
+  "{plugin} can now send data to:": "{plugin} agora pode enviar dados para:",
+  "Can reach this computer or your local network: {hosts}": "Pode acessar este computador ou sua rede local: {hosts}",
   "· by {author}": "· por {author}",
   "“{name}” created": "«{name}» criado",
   "Update to {version}": "Atualizar para {version}",

@@ -2711,7 +2711,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         staged: true, slug, head: staged.head,
         manifest: { name: manifest.name ?? slug, version: manifest.version ?? null, author: manifest.author ?? null, description: manifest.description ?? null },
         permissions: declaredPermissions(manifest),
-        networkHosts: Array.isArray(manifest.networkHosts) ? manifest.networkHosts.filter((h): h is string => typeof h === "string") : [],
+        networkHosts: manifestHosts(manifest),
         installed,
       });
     }
@@ -2987,6 +2987,20 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   const declaredPermissions = (m: { permissions?: unknown }): string[] =>
     Array.isArray(m.permissions) ? m.permissions.filter((x): x is string => typeof x === "string" && x !== "hooks") : [];
 
+  /** The hosts a plugin manifest lists for its network access. */
+  const manifestHosts = (m: { networkHosts?: unknown }): string[] =>
+    Array.isArray(m.networkHosts) ? m.networkHosts.filter((h): h is string => typeof h === "string") : [];
+
+  /** The hosts the plugin installed in `dir` lists; none when it has no
+   *  readable manifest. */
+  const pluginHosts = (dir: string): string[] => {
+    try {
+      return manifestHosts(JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8")) as { networkHosts?: unknown });
+    } catch {
+      return [];
+    }
+  };
+
   /** What the import preview shows for each bundled plugin. */
   const previewPlugins = (dir: string, plugins: string[]) =>
     plugins.map((pid) => {
@@ -3000,7 +3014,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
           version: typeof m.version === "string" ? m.version : null,
           description: typeof m.description === "string" ? m.description : null,
           permissions: declaredPermissions(m),
-          networkHosts: Array.isArray(m.networkHosts) ? m.networkHosts.filter((h): h is string => typeof h === "string") : [],
+          networkHosts: manifestHosts(m),
         };
       } catch {
         return { id: pid, name: pid, version: null, description: null, permissions: [], networkHosts: [] };
@@ -3470,14 +3484,20 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const settingsNow = (() => {
       try { return JSON.parse(fs.readFileSync(p.settings, "utf8")) as { pluginGrants?: Record<string, string[]> }; } catch { return {}; }
     })();
-    const permissions: { id: string; name: string; added: string[] }[] = [];
+    // A host is not a grant: a plugin already allowed the network reaches
+    // whatever its manifest lists, so a host the installed copy did not list
+    // is reviewed like a new permission.
+    const permissions: { id: string; name: string; added: string[]; hosts: string[] }[] = [];
     try {
       for (const pid of fs.readdirSync(path.join(incoming, "plugins"))) {
         try {
-          const m = JSON.parse(fs.readFileSync(path.join(incoming, "plugins", pid, "manifest.json"), "utf8")) as { name?: unknown; permissions?: unknown };
+          const m = JSON.parse(fs.readFileSync(path.join(incoming, "plugins", pid, "manifest.json"), "utf8")) as { name?: unknown; permissions?: unknown; networkHosts?: unknown };
           const granted = settingsNow.pluginGrants?.[`${id}__${pid}`] ?? [];
-          const added = declaredPermissions(m).filter((x) => !granted.includes(x));
-          if (added.length) permissions.push({ id: pid, name: typeof m.name === "string" ? m.name : pid, added });
+          const declared = declaredPermissions(m);
+          const added = declared.filter((x) => !granted.includes(x));
+          const installedHosts = new Set(pluginHosts(path.join(info.dir, "plugins", pid)));
+          const hosts = declared.includes("network") ? manifestHosts(m).filter((h) => !installedHosts.has(h)) : [];
+          if (added.length || hosts.length) permissions.push({ id: pid, name: typeof m.name === "string" ? m.name : pid, added, hosts });
         } catch { /* not a plugin */ }
       }
     } catch { /* no plugins */ }

@@ -343,7 +343,7 @@ describe("installing from the store", () => {
 
     const review = (await (await call(`/v1/apps/${id}/update`, { method: "POST", body: "{}" })).json()) as { needsDepConfirm?: boolean; head: string; permissions: unknown };
     expect(review.needsDepConfirm).toBe(true);
-    expect(review.permissions).toEqual([{ id: "api", name: "API", added: ["network"] }]);
+    expect(review.permissions).toEqual([{ id: "api", name: "API", added: ["network"], hosts: [] }]);
     expect(grantsOf()[`${id}__api`]).toEqual(["routes"]);
 
     const moved = await call(`/v1/apps/${id}/update`, { method: "POST", body: JSON.stringify({ confirmDeps: true, head: "0".repeat(40) }) });
@@ -351,6 +351,32 @@ describe("installing from the store", () => {
     const applied = (await (await call(`/v1/apps/${id}/update`, { method: "POST", body: JSON.stringify({ confirmDeps: true, head: review.head }) })).json()) as { status: string };
     expect(applied.status).toBe("applied");
     expect(grantsOf()[`${id}__api`]).toEqual(["routes", "network"]);
+  }, 60_000);
+
+  it("asks before a community update points a networked plugin at a new host", async () => {
+    const url = await publish("feed", { name: "Feed", version: "1.0.0", kind: "app" }, "someone");
+    const manifestFile = (work: string) => path.join(work, "plugins", "api", "manifest.json");
+    const withHosts = (hosts: string[]) => JSON.stringify({ name: "API", version: "1.0.0", permissions: ["routes", "network"], networkHosts: hosts });
+    await republish("feed", (work) => fs.writeFileSync(manifestFile(work), withHosts(["cards.example"])), "someone");
+    const id = await importApp(url);
+    expect(grantsOf()[`${id}__api`]).toEqual(["routes", "network"]);
+
+    // same permissions, one more host: nothing new is granted, yet the plugin
+    // could send what it reads somewhere it could not before
+    await republish("feed", (work) => fs.writeFileSync(manifestFile(work), withHosts(["cards.example", "collector.example"])), "someone");
+    const review = (await (await call(`/v1/apps/${id}/update`, { method: "POST", body: "{}" })).json()) as { needsDepConfirm?: boolean; head: string; permissions: unknown };
+    expect(review.needsDepConfirm).toBe(true);
+    expect(review.permissions).toEqual([{ id: "api", name: "API", added: [], hosts: ["collector.example"] }]);
+    const p = userPaths(dataDir, "alice");
+    expect(JSON.parse(fs.readFileSync(path.join(p.apps, id, "plugins", "api", "manifest.json"), "utf8")).networkHosts).toEqual(["cards.example"]);
+
+    const applied = (await (await call(`/v1/apps/${id}/update`, { method: "POST", body: JSON.stringify({ confirmDeps: true, head: review.head }) })).json()) as { status: string };
+    expect(applied.status).toBe("applied");
+    expect(JSON.parse(fs.readFileSync(path.join(p.apps, id, "plugins", "api", "manifest.json"), "utf8")).networkHosts).toEqual(["cards.example", "collector.example"]);
+
+    // dropping a host is not a review
+    await republish("feed", (work) => fs.writeFileSync(manifestFile(work), withHosts(["cards.example"])), "someone");
+    expect(((await (await call(`/v1/apps/${id}/update`, { method: "POST", body: "{}" })).json()) as { status: string }).status).toBe("applied");
   }, 60_000);
 
   it("importing a plugin's repository again updates that plugin in place", async () => {

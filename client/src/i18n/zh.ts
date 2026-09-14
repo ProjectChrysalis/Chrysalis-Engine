@@ -419,6 +419,8 @@ const dict = {
   "{n} tool": "{n} 个工具",
   "{n} tools": "{n} 个工具",
   "{plugin} can now use:": "{plugin} 新增可用权限：",
+  "{plugin} can now send data to:": "{plugin} 新增可发送数据的地址：",
+  "Can reach this computer or your local network: {hosts}": "可以访问这台电脑或你的局域网：{hosts}",
   "· by {author}": "· 由 {author}",
   "“{name}” created": "“{name}”已创建",
   "Update to {version}": "更新到 {version}",

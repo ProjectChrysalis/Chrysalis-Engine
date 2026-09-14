@@ -419,6 +419,8 @@ const dict = {
   "{n} tool": "{n} ツール",
   "{n} tools": "{n} ツール",
   "{plugin} can now use:": "{plugin} が新たに使えるもの:",
+  "{plugin} can now send data to:": "{plugin} が新たにデータを送れる先:",
+  "Can reach this computer or your local network: {hosts}": "このコンピューターやローカルネットワークに接続できます: {hosts}",
   "· by {author}": "· {author} 作",
   "“{name}” created": "「{name}」を作成しました",
   "Update to {version}": "{version} に更新",
