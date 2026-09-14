@@ -3616,6 +3616,10 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       }, 500);
     }
     seedDataTemplates(incoming, info.dir);
+    // grants come from the version that was reviewed, not the merged files:
+    // a manifest left with conflict markers for the agent does not parse, and
+    // granting from it left that plugin with no permissions at all
+    grantBundledPlugins(p, id, incoming, source.git);
     dropStaging();
     fs.rmSync(path.join(info.dir, "dist"), { recursive: true, force: true });
     const warnings: string[] = [];
@@ -3625,7 +3629,6 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       const installed = await installApp(info.dir);
       if (!installed.ok) warnings.push(`Its packages did not install (${installed.log.split("\n").filter(Boolean).slice(-2).join(" ")}). Open the app to try again.`);
     }
-    grantBundledPlugins(p, id, info.dir, source.git);
     if (source.restored && sameTree(readCodeTree(info.dir), theirs)) writeInstallSource(p.appUpstream, id, { git: source.git, ref: source.ref });
     invalidatePluginCache();
     evictAgents(u.username);
@@ -4345,6 +4348,29 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
     return null;
   };
 
+  /** Why nothing answered an app route. A plugin that cannot load, or that
+   *  waits for a permission, fails silently otherwise, and every request of
+   *  the app reads as a missing route. */
+  const noRouteReason = (p: UserPaths, appId: string): string => {
+    const reasons: string[] = [];
+    let dirs: string[] = [];
+    try { dirs = fs.readdirSync(path.join(p.apps, appId, "plugins")); } catch { /* no plugins */ }
+    const loaded = new Map(discoverAppPlugins(p.apps, appId).map((pl) => [pl.id, pl]));
+    const grants = pluginGrants(p.settings);
+    const disabled = disabledAppPlugins(p.settings);
+    for (const dir of dirs) {
+      const pid = `${appId}__${dir}`;
+      if (!fs.existsSync(path.join(p.apps, appId, "plugins", dir, "plugin.js"))) continue;
+      const pl = loaded.get(pid);
+      if (!pl) reasons.push(`plugin ${dir} did not load: its manifest.json is missing or not valid JSON`);
+      else if (disabled.has(pid)) continue;
+      else if (pl.manifest.permissions.some((x) => x === "routes" || x === "register:routes") && !pluginGranted(pl, pl.manifest.permissions.includes("routes") ? "routes" : "register:routes", grants)) {
+        reasons.push(`plugin ${dir} is waiting for its routes permission to be approved`);
+      }
+    }
+    return reasons.length ? `no route: ${reasons.join("; ")}` : "no route";
+  };
+
   app.all("/v1/apps/:appId/*", async (c) => {
     const u = c.get("user");
     const appId = c.req.param("appId");
@@ -4368,7 +4394,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
       }
     }
     const got = await dispatchAppRoute(u, appId, c.req.method, rel, query, body);
-    if (got === null) return c.json({ error: "no route" }, 404);
+    if (got === null) return c.json({ error: noRouteReason(c.get("paths"), appId) }, 404);
     if (typeof got.payload === "string") {
       const ct = got.contentType ?? "text/plain; charset=utf-8";
       // response-level sandbox on EVERY text response: even if the app (or

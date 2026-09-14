@@ -385,6 +385,42 @@ describe("installing from the store", () => {
     expect(touched).not.toContain(".staging");
   }, 60_000);
 
+  it("an update whose plugin manifest conflicts still grants that plugin, and a locked plugin says why nothing answers", async () => {
+    const url = await publish("studio", { name: "Studio", version: "1.0.0", kind: "app" });
+    const id = await importApp(url);
+    const p = userPaths(dataDir, "alice");
+    const manifestPath = path.join(p.apps, id, "plugins", "api", "manifest.json");
+    // an install an earlier engine seeded: plugins local, nothing granted
+    const settings = JSON.parse(fs.readFileSync(p.settings, "utf8")) as { pluginGrants?: Record<string, string[]> };
+    delete settings.pluginGrants;
+    fs.writeFileSync(p.settings, JSON.stringify(settings));
+    const local = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    fs.writeFileSync(manifestPath, JSON.stringify({ ...local, origin: "local", version: "1.0.1" }, null, 2));
+    invalidatePluginCache();
+    expect((await call(`/v1/apps/${id}/ping`)).status).toBe(200);
+
+    // the update bumps the same line: the merged manifest has markers
+    await republish("studio", (work) => fs.writeFileSync(path.join(work, "plugins", "api", "manifest.json"), JSON.stringify({ name: "API", version: "1.1.0", permissions: ["routes"] }, null, 2)));
+    const updated = (await (await call(`/v1/apps/${id}/update`, { method: "POST", body: JSON.stringify({ strategy: "agent" }) })).json()) as { status: string; conflicts: { path: string }[] };
+    expect(updated.status).toBe("applied");
+    expect(updated.conflicts.map((c) => c.path)).toContain("plugins/api/manifest.json");
+    expect(fs.readFileSync(manifestPath, "utf8")).toContain("<<<<<<<");
+    expect(grantsOf()[`${id}__api`]).toEqual(["routes"]);
+    const broken = (await (await call(`/v1/apps/${id}/ping`)).json()) as { error: string };
+    expect(broken.error).toContain("plugin api did not load");
+
+    // the agent resolves the markers: the plugin answers again without anyone re-approving it
+    fs.writeFileSync(manifestPath, JSON.stringify({ name: "API", version: "1.1.0", permissions: ["routes"], origin: "imported", source: { git: url } }, null, 2));
+    invalidatePluginCache();
+    expect((await call(`/v1/apps/${id}/ping`)).status).toBe(200);
+
+    const settingsNow = JSON.parse(fs.readFileSync(p.settings, "utf8")) as { pluginGrants: Record<string, string[]> };
+    delete settingsNow.pluginGrants[`${id}__api`];
+    fs.writeFileSync(p.settings, JSON.stringify(settingsNow));
+    const locked = (await (await call(`/v1/apps/${id}/ping`)).json()) as { error: string };
+    expect(locked.error).toBe("no route: plugin api is waiting for its routes permission to be approved");
+  }, 60_000);
+
   it("importing a plugin's repository again updates that plugin in place", async () => {
     const id = await importApp(await publish("studio", { name: "Studio", version: "1.0.0", kind: "app" }));
     const work = path.join(repoDir, "extra-work");
