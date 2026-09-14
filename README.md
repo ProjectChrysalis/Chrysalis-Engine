@@ -156,6 +156,13 @@ Questions, ideas and apps you have built: join the
 [Project Chrysalis Discord](https://discord.gg/maFVqyeD4Q). Bugs go in
 [GitHub issues](https://github.com/ProjectChrysalis/Chrysalis-Engine/issues).
 
+<a href="https://www.star-history.com/#projectchrysalis/chrysalis-engine&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=projectchrysalis/chrysalis-engine&type=Date&theme=dark" />
+    <img src="https://api.star-history.com/svg?repos=projectchrysalis/chrysalis-engine&type=Date" alt="Star history chart" width="600" />
+  </picture>
+</a>
+
 ## Branches and contributing
 
 - `main` is stable. Releases are tagged here.
