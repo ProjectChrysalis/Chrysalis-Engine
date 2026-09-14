@@ -67,6 +67,22 @@ export class SessionService {
     if (this.sessions.delete(sha256(token))) this.save();
   }
 
+  /** Sign an account out everywhere, except the session `keep` belongs to.
+   *  A new password must end the sessions it replaces, and a deleted
+   *  account's sessions must not come back with the next account of that
+   *  name. */
+  destroyUser(username: string, keep?: string): void {
+    const kept = keep ? sha256(keep) : null;
+    let changed = false;
+    for (const [hash, entry] of this.sessions) {
+      if (entry.username === username && hash !== kept) {
+        this.sessions.delete(hash);
+        changed = true;
+      }
+    }
+    if (changed) this.save();
+  }
+
   /** Keep sessions valid across an account rename. */
   renameUser(oldUsername: string, next: string): void {
     let changed = false;

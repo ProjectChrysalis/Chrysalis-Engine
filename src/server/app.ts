@@ -831,6 +831,12 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     `Path=/; HttpOnly; SameSite=Lax${requestIsHttps(c) ? "; Secure" : ""}`;
   const sessionCookie = (c: Context, token: string) =>
     c.header("set-cookie", `${SESSION_COOKIE}=${token}; ${cookieFlags(c)}; Max-Age=${SESSION_MAX_AGE}`);
+  /** End an account's sessions and live sockets; `keepCurrent` spares the
+   *  session this request came in on. */
+  const signOutEverywhere = (c: Context, username: string, keepCurrent: boolean) => {
+    sessions.destroyUser(username, keepCurrent ? parseCookies(c.req.header("cookie") ?? "")[SESSION_COOKIE] : undefined);
+    bus.dropUser(username);
+  };
 
   /** Client IP for rate-limit buckets. cf-connecting-ip is single-valued and
    *  overwritten by the Cloudflare edge (the tunnel's proxy), so it can't be
@@ -961,6 +967,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     if (!user || user.enabled === false) return c.json({ error: "Account unavailable" }, 403);
     users.setPassword(username, body.password);
     resetCodes.delete(username);
+    signOutEverywhere(c, username, false);
     sessionCookie(c, sessions.create(username));
     return c.json({ username, role: user.role });
   });
@@ -1044,6 +1051,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       return c.json({ error: "Current password is incorrect" }, 403);
     }
     users.setPassword(u.username, body.next);
+    // every other browser signed in with the old password is signed out
+    signOutEverywhere(c, u.username, true);
     return c.json({ ok: true, hasPassword: true });
   });
 
@@ -4422,6 +4431,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
           return c.json({ error: "Your current password is incorrect" }, 403);
         }
         users.setPassword(username, body.password);
+        signOutEverywhere(c, username, true);
       }
       if (typeof body.enabled === "boolean") {
         if (!body.enabled && username === c.get("user").username) {
@@ -4452,6 +4462,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
       return c.json({ error: "cannot delete the last admin" }, 400);
     }
     if (!users.delete(username)) return c.json({ error: "user not found" }, 404);
+    signOutEverywhere(c, username, false);
     stopUserSchedules(username);
     // keep the user's files on disk (their workspace may be restored by
     // recreating the user); only the account is gone

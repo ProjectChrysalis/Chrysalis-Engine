@@ -143,6 +143,21 @@ export class EventBus {
     this.sockets.clear();
   }
 
+  /** Close one account's sockets. A socket was authorized once, at its
+   *  handshake: after the account's sessions end, clients still signed in
+   *  reconnect and the rest are refused. */
+  dropUser(username: string): void {
+    for (const ws of this.sockets) {
+      if (ws.data.username !== username) continue;
+      try {
+        ws.close(1008, "signed out");
+      } catch {
+        /* already gone */
+      }
+      this.sockets.delete(ws);
+    }
+  }
+
   dispose(): void {
     clearInterval(this.heartbeat);
     this.heartbeat = undefined;

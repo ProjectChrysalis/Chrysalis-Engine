@@ -131,6 +131,7 @@ async function resetPassword(dataDir: string, username: string | undefined): Pro
   if (!user) fail(`no account named "${username}". Accounts: ${users.list().map((u) => u.username).join(", ") || "none yet"}`);
   const password = crypto.randomBytes(9).toString("base64url");
   users.setPassword(user.username, password);
+  new SessionService(dataDir).destroyUser(user.username);
   console.log(`New password for ${user.username}: ${password}\nSign in with it, then change it in Settings.`);
 }
 

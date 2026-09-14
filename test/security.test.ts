@@ -1114,3 +1114,59 @@ describe("A4 transport guards", () => {
     expect(users.verify(token)?.username).toBe("tok");
   }, 30_000);
 });
+
+describe("A5 sessions end with the password and the account behind them", () => {
+  const setup = async () => {
+    const { buildApp } = await import("../src/server/app.js");
+    const { UserService } = await import("../src/users.js");
+    const { SessionService } = await import("../src/sessions.js");
+    const { EventBus } = await import("../src/server/ws.js");
+    const users = new UserService(dir);
+    users.create("admin", "admin", { password: "admin-pass-1" });
+    users.create("bob", "user", { password: "bob-pass-1" });
+    const app = buildApp({ users, sessions: new SessionService(dir), config: defaultInstanceConfig(), dataDir: dir, bus: new EventBus() });
+    const json = { "content-type": "application/json" };
+    const login = async (username: string, password: string): Promise<string> => {
+      const res = await app.request("/v1/auth/login", { method: "POST", headers: json, body: JSON.stringify({ username, password }) });
+      expect(res.status).toBe(200);
+      return /chrysalis_session=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")![1]!;
+    };
+    const as = (cookie: string, url: string, init: { method?: string; body?: unknown } = {}) =>
+      app.request(url, { method: init.method ?? "GET", headers: { ...json, cookie: `chrysalis_session=${cookie}` }, ...(init.body ? { body: JSON.stringify(init.body) } : {}) });
+    return { app, users, login, as };
+  };
+
+  it("changing a password signs out every other browser, not this one", async () => {
+    const { login, as } = await setup();
+    const phone = await login("bob", "bob-pass-1");
+    const laptop = await login("bob", "bob-pass-1");
+    expect((await as(laptop, "/v1/auth/password", { method: "PUT", body: { current: "bob-pass-1", next: "bob-pass-2" } })).status).toBe(200);
+    expect((await as(laptop, "/v1/me")).status).toBe(200);
+    expect((await as(phone, "/v1/me")).status).toBe(401);
+  });
+
+  it("an admin setting someone's password signs that account out", async () => {
+    const { login, as } = await setup();
+    const bob = await login("bob", "bob-pass-1");
+    const admin = await login("admin", "admin-pass-1");
+    expect((await as(admin, "/v1/admin/users/bob", { method: "PATCH", body: { password: "bob-pass-3", current: "admin-pass-1" } })).status).toBe(200);
+    expect((await as(bob, "/v1/me")).status).toBe(401);
+    expect((await as(admin, "/v1/me")).status).toBe(200);
+  });
+
+  it("a deleted account's sessions do not return with the next account of that name", async () => {
+    const { users, login, as } = await setup();
+    const oldBob = await login("bob", "bob-pass-1");
+    const admin = await login("admin", "admin-pass-1");
+    expect((await as(admin, "/v1/admin/users/bob", { method: "DELETE" })).status).toBe(200);
+    users.create("bob", "user", { password: "new-bob-pass" });
+    expect((await as(oldBob, "/v1/me")).status).toBe(401);
+    // nor through someone renaming their own account to that name
+    users.delete("bob");
+    users.create("carol", "user", { password: "carol-pass-1" });
+    const carol = await login("carol", "carol-pass-1");
+    expect((await as(carol, "/v1/auth/rename", { method: "POST", body: { username: "bob", password: "carol-pass-1" } })).status).toBe(200);
+    expect((await as(carol, "/v1/me")).status).toBe(200);
+    expect((await as(oldBob, "/v1/me")).status).toBe(401);
+  });
+});
