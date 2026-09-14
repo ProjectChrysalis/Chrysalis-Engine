@@ -18,7 +18,7 @@ import { ENGINE_VERSION, INSTALL_KIND, resolveHomeDir } from "./install.js";
 import { UserService } from "./users.js";
 import { SessionService } from "./sessions.js";
 import { bootstrapUserDir, ensureGitignoreEntries, ensureWorkspaceAgentsMd, migrateConnectionsIntoDataRoot, migrateCredentialsIntoDataRoot, migrateMcpIntoDataRoot, migrateSpeechIntoDataRoot, migrateWebSearchPreset, userPaths } from "./paths.js";
-import { initRepo, untrackBoundary, commitAll as gitCommitAll } from "./git.js";
+import { initRepo, untrackBoundary, commitAll as gitCommitAll, commitPaths as gitCommitPaths } from "./git.js";
 import { renameAppDir } from "./apps/manager.js";
 import { gcRepoIfChunky } from "./apps/git.js";
 import { adoptFormerlyShipped } from "./apps/store.js";
@@ -203,7 +203,11 @@ async function prepareAccounts(users: UserService, dataDir: string): Promise<voi
     }
     // git boundary: ignore creds/chat logs/runtime state, and untrack any that
     // older builds leaked into history (files stay on disk, index-only removal)
-    ensureGitignoreEntries(p.root);
+    // committed on its own: left pending, it reads to the agent as an edit
+    // nobody made
+    if (ensureGitignoreEntries(p.root)) {
+      await gitCommitPaths(p.root, u.username, "chore: ignore file covers runtime state and staged imports", [".gitignore"]);
+    }
     // workspace AGENTS.md teaches external coding agents the file contract
     if (ensureWorkspaceAgentsMd(dataDir, u.username)) {
       await gitCommitAll(p.root, u.username, "docs: workspace AGENTS.md (external coding agents)");
