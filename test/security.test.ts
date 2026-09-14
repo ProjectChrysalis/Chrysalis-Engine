@@ -842,12 +842,38 @@ describe("A1 public app frames never follow links out of dist", () => {
     fs.writeFileSync(path.join(repo, "manifest.json"), "{}");
     execFileSync("git", ["add", "-A"], { cwd: repo });
     execFileSync("git", ["-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "x"], { cwd: repo });
-    const dest = path.join(dir, "staged");
-    await gitClone(repo, dest);
-    stripVcs(dest);
-    const st = fs.lstatSync(path.join(dest, "dist", "leak.txt"));
-    expect(st.isSymbolicLink()).toBe(false);
+    const bare = path.join(dir, "served", "repo.git");
+    execFileSync("git", ["clone", "-q", "--bare", repo, bare]);
+    execFileSync("git", ["update-server-info"], { cwd: bare });
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => new Response(Bun.file(path.join(dir, "served", new URL(req.url).pathname))) });
+    try {
+      const dest = path.join(dir, "staged");
+      await gitClone(`http://127.0.0.1:${server.port}/repo.git`, dest);
+      stripVcs(dest);
+      const st = fs.lstatSync(path.join(dest, "dist", "leak.txt"));
+      expect(st.isSymbolicLink()).toBe(false);
+    } finally {
+      server.stop(true);
+    }
   }, 30_000);
+
+  it("git is only ever handed a repository address and a ref name", async () => {
+    const { gitClone, gitRemoteHead, isValidGitRef } = await import("../src/apps/git.js");
+    // a manifest's source is workspace-writable: a local path there would
+    // clone another account's workspace repository into this one
+    const victim = path.join(dir, "users", "admin");
+    fs.mkdirSync(victim, { recursive: true });
+    for (const url of [victim, `file://${victim}`, "ext::sh -c touch% /tmp/x", "-uhelp", "https://"]) {
+      await expect(gitRemoteHead(url), url).rejects.toThrow(/repository address/);
+      await expect(gitClone(url, path.join(dir, "never")), url).rejects.toThrow(/repository address/);
+    }
+    for (const ref of ["--upload-pack=touch /tmp/x", "-b", "../main", "main.lock", "a//b", ""]) {
+      expect(isValidGitRef(ref), ref).toBe(false);
+      await expect(gitRemoteHead("https://example.invalid/a/b", ref), ref).rejects.toThrow(/branch or tag/);
+    }
+    for (const ref of ["HEAD", "main", "release/1.2", "v1.0.0"]) expect(isValidGitRef(ref), ref).toBe(true);
+    expect(fs.existsSync(path.join(dir, "never"))).toBe(false);
+  });
 });
 
 describe("A2 the bridge's second lock (server side)", () => {

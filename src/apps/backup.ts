@@ -14,6 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Unzip, UnzipInflate, zip as zipFiles } from "fflate";
+import { isValidGitRef, isValidGitUrl } from "./git.js";
 
 /** Largest app a backup holds, uncompressed, and largest zip accepted. */
 export const BACKUP_MAX_BYTES = 512 * 1024 * 1024;
@@ -175,7 +176,7 @@ function readBackupMeta(root: string): BackupMeta | null {
     if (raw.format !== 1 || typeof raw.id !== "string") return null;
     const s = raw.source;
     const source =
-      s && typeof s.git === "string" && typeof s.ref === "string" && typeof s.baselineVersion === "string"
+      s && typeof s.git === "string" && isValidGitUrl(s.git) && typeof s.ref === "string" && isValidGitRef(s.ref) && typeof s.baselineVersion === "string"
         ? { git: s.git, ref: s.ref, baselineVersion: s.baselineVersion, ...(typeof s.head === "string" && /^[0-9a-f]{7,40}$/.test(s.head) ? { head: s.head } : {}) }
         : undefined;
     return {

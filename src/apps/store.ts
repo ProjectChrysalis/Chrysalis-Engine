@@ -15,7 +15,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { isValidGitUrl } from "./git.js";
+import { isValidGitRef, isValidGitUrl } from "./git.js";
 import { readApp } from "./manager.js";
 import { readBaseline, readInstallSource, writeInstallSource } from "./update.js";
 
@@ -99,7 +99,7 @@ export function parseCatalog(raw: unknown): StoreEntry[] {
     const repository = typeof e.repository === "string" && /^https:\/\//.test(e.repository) && isValidGitUrl(e.repository) ? e.repository : null;
     const added = typeof e.added === "string" && /^\d{4}-\d{2}-\d{2}$/.test(e.added) ? e.added : null;
     if (!id || !name || !description || !author || !repository || !added || seen.has(id)) continue;
-    const ref = typeof e.ref === "string" && /^[\w./-]{1,100}$/.test(e.ref) && !e.ref.includes("..") ? e.ref : undefined;
+    const ref = typeof e.ref === "string" && isValidGitRef(e.ref) ? e.ref : undefined;
     const tags = Array.isArray(e.tags)
       ? e.tags.filter((t): t is string => typeof t === "string" && /^[a-z0-9][a-z0-9 -]{0,31}$/.test(t)).slice(0, 8)
       : [];

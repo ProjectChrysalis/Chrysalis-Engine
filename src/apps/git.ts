@@ -45,6 +45,17 @@ export function isValidGitUrl(url: string): boolean {
   return /^https?:\/\/[^\s/]+\/[^\s]+$|^git@[^\s/]+:[^\s]+$/.test(url);
 }
 
+/** A branch, tag or HEAD, spelled so it can only ever be read as a ref: it
+ *  starts with a word character, so git never takes it for an option. */
+export function isValidGitRef(ref: string): boolean {
+  return /^\w[\w./-]{0,199}$/.test(ref) && !ref.includes("..") && !ref.includes("//") && !ref.endsWith("/") && !ref.endsWith(".lock");
+}
+
+function checkRemote(url: string, ref?: string): void {
+  if (!isValidGitUrl(url)) throw new Error(`not a repository address: ${url}`);
+  if (ref !== undefined && !isValidGitRef(ref)) throw new Error(`not a branch or tag name: ${ref}`);
+}
+
 function needsSystemGit(url: string): Error {
   return new Error(`${url} is an SSH address, which needs git installed on this computer. Use the repository's https:// address instead.`);
 }
@@ -150,9 +161,10 @@ export async function readDirAt(repoRoot: string, commit: string, dir: string, e
 /** The commit a ref points at on the remote, without touching any local
  *  state: the cheap half of an update check. */
 export async function gitRemoteHead(url: string, ref = "HEAD"): Promise<string | null> {
+  checkRemote(url, ref);
   let sha: string | undefined;
   if (systemGit()) {
-    const out = await runGit(["ls-remote", url, ref], { timeoutMs: 30_000 });
+    const out = await runGit(["ls-remote", "--", url, ref], { timeoutMs: 30_000 });
     sha = out.split("\n").find((l) => l.trim())?.trim().split(/\s+/)[0];
   } else {
     if (url.startsWith("git@")) throw needsSystemGit(url);
@@ -222,6 +234,7 @@ const NO_SYMLINKS = ["-c", "core.symlinks=false"];
  *  be tricked into gigabytes of pack. Self-hosted dumb-HTTP servers can't do
  *  shallow; with git installed those fall back to a full clone. */
 export async function gitClone(url: string, dest: string, ref?: string): Promise<string> {
+  checkRemote(url, ref);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   const branch = ref && ref !== "HEAD" ? ref : undefined;
   if (!systemGit()) {
@@ -233,10 +246,10 @@ export async function gitClone(url: string, dest: string, ref?: string): Promise
   }
   const branchArgs = branch ? ["--branch", branch] : [];
   try {
-    await runGit([...NO_SYMLINKS, "clone", "--depth", "1", "--single-branch", ...branchArgs, url, dest]);
+    await runGit([...NO_SYMLINKS, "clone", "--depth", "1", "--single-branch", ...branchArgs, "--", url, dest]);
   } catch (e) {
     if (!/dumb http|shallow/i.test(String((e as Error).message))) throw e;
-    await runGit([...NO_SYMLINKS, "clone", ...branchArgs, url, dest]);
+    await runGit([...NO_SYMLINKS, "clone", ...branchArgs, "--", url, dest]);
   }
   return (await runGit(["rev-parse", "HEAD"], { cwd: dest, timeoutMs: 15_000 })).trim();
 }

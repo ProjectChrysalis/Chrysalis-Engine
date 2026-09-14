@@ -13,7 +13,7 @@ import { McpRegistry, WEB_SEARCH_PRESET, readStdioApprovals, stdioFingerprint, w
 import { listApps, readApp, createAppSkeleton, renameAppDir, appTree, validateAppManifest, hashAppTree, type AppInfo } from "../apps/manager.js";
 import { UPDATE_STRATEGIES, applyWrites, restoreWrites, forgetInstall, mergeTrees, moveInstall, readBaseline, readCodeTree, readInstallSource, readPendingUpgrade, recoverBaseline, satisfiesRange, seedDataTemplates, writeBaseline, writeInstallSource, writePendingUpgrade, type InstallSource } from "../apps/update.js";
 import { OFFICIAL_SOURCES, createCatalog, isOfficialSource, normalizeGitUrl } from "../apps/store.js";
-import { gitClone, gitRemoteHead, isValidGitUrl, remoteManifest, stripVcs } from "../apps/git.js";
+import { gitClone, gitRemoteHead, isValidGitRef, isValidGitUrl, remoteManifest, stripVcs } from "../apps/git.js";
 import { BACKUP_MAX_BYTES, BACKUP_META_DIR, BackupError, buildBackup, extractBackup, locateBackup, type BackupMeta } from "../apps/backup.js";
 import { bootstrapUserDir } from "../paths.js";
 import type { UserService, UserRecord } from "../users.js";
@@ -3131,6 +3131,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     // the commit the preview showed: confirm installs THAT tree or nothing
     const reviewedHead = typeof body.head === "string" ? body.head.trim() : "";
     if (!isValidGitUrl(gitUrl)) return c.json({ error: "give a git repository URL (https://… or git@…)" }, 400);
+    if (!isValidGitRef(ref)) return c.json({ error: "ref must be a branch or tag name" }, 400);
     // the Store names the install folder; without it the repository's name is used
     const requestedId = typeof body.id === "string" ? body.id.trim().toLowerCase() : "";
     if (requestedId && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(requestedId)) {
