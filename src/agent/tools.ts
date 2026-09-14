@@ -209,7 +209,7 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
       // SKIP dirs: git internals, runtime state, the agent's own transcripts
       // (noise). auth.json files are skipped wherever they appear — grep
       // results must never surface credentials.
-      const SKIP = new Set([".git", "assets-store", "store", "node_modules", "agent"]);
+      const SKIP = new Set([".git", "assets-store", "store", "node_modules", "agent", ".staging"]);
       const BIN_EXT = /\.(png|jpe?g|gif|webp|zip|gz|wav|mp3|ogg|woff2?|ttf)$/i;
       const results: string[] = [];
       const walk = (dir: string, depth: number): void => {

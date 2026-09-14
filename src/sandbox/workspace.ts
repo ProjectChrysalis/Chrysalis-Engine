@@ -10,7 +10,7 @@ import { agentReadDenied, agentWriteDenied } from "../paths.js";
 
 /** Directories never mounted into the sandbox (derived artifacts, runtime
  *  state, git internals, agent transcripts). Matched on any path segment. */
-const MOUNT_SKIP_DIRS = new Set([".git", "node_modules", "dist", "agent", "assets-store", "store"]);
+const MOUNT_SKIP_DIRS = new Set([".git", "node_modules", "dist", "agent", "assets-store", "store", ".staging"]);
 /** Files above this are not mounted (the VFS is in-memory). */
 export const MAX_MOUNT_FILE = 2 * 1024 * 1024;
 /** Total mounted bytes before the tree is marked truncated. */

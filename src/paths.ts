@@ -92,6 +92,8 @@ export function gitBoundaryIgnored(relPath: string): boolean {
     /^connections\.json$/i.test(norm) ||
     /^speech\.json$/i.test(norm) ||
     ["agent", "assets-store", "store"].includes(first.toLowerCase()) ||
+    // app imports and updates unpack a repository here before it is reviewed
+    (first.toLowerCase() === "apps" && segs[1] === ".staging") ||
     segs.includes("node_modules") ||
     segs.includes("dist")
   );
@@ -109,7 +111,7 @@ export function ensureGitignoreEntries(root: string): boolean {
     cur = "";
   }
   const lines = cur.split("\n").map((l) => l.trim());
-  const needs = ["auth.json", "mcp.json", "agent/", "assets-store/", "store/", "node_modules/", "dist/", "/connections.json", "/speech.json"].filter((e) => !lines.includes(e));
+  const needs = ["auth.json", "mcp.json", "agent/", "assets-store/", "store/", "node_modules/", "dist/", "/connections.json", "/speech.json", "apps/.staging/"].filter((e) => !lines.includes(e));
   if (needs.length === 0) return false;
   const head = cur ? cur.replace(/\n*$/, "\n") : "# runtime state + credentials never enter git\n";
   fs.writeFileSync(gi, head + needs.join("\n") + "\n", "utf8");
@@ -174,6 +176,8 @@ mcp.json
 agent/
 assets-store/
 store/
+# app imports and updates unpack a repository here before it is reviewed
+apps/.staging/
 `;
 
 /**

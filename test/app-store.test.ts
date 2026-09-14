@@ -377,6 +377,12 @@ describe("installing from the store", () => {
     // dropping a host is not a review
     await republish("feed", (work) => fs.writeFileSync(manifestFile(work), withHosts(["cards.example"])), "someone");
     expect(((await (await call(`/v1/apps/${id}/update`, { method: "POST", body: "{}" })).json()) as { status: string }).status).toBe("applied");
+
+    // the repository unpacked for review never lands in the workspace history
+    const touched = await new Promise<string>((resolve, reject) =>
+      execFile("git", ["log", "--name-only", "--format="], { cwd: p.root }, (err, out) => (err ? reject(err) : resolve(out))));
+    expect(touched).toContain(`apps/${id}/plugins/api/manifest.json`);
+    expect(touched).not.toContain(".staging");
   }, 60_000);
 
   it("importing a plugin's repository again updates that plugin in place", async () => {
