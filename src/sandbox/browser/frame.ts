@@ -37,6 +37,11 @@ const WIRE_HTTP_FETCH = `importScripts(\`\${assetBaseUrl}/pyodide.asm.js\`);
     },
   });`;
 
+const GIT_POINTER = `git() {
+  echo "git: not a command in this shell. Use your git tool with the same arguments, in its own call: {\\"args\\": \\"$*\\"}" >&2
+  return 127
+}`;
+
 interface MountFile {
   path: string;
   b64: string;
@@ -137,6 +142,9 @@ async function boot(): Promise<WasmshSession> {
         allowedHosts: cfg.internet && cfg.token ? TOP_LEVEL_DOMAINS.map((tld) => `*.${tld}`) : [],
         timeoutMs: 0,
       });
+      // the workspace history lives with the engine, not in this VFS: a git
+      // typed here says where it went instead of "command not found"
+      await s.run(GIT_POINTER);
       session = s;
       return s;
     })().catch((e) => {

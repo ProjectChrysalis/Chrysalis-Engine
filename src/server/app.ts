@@ -3364,7 +3364,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         ? ["", "These kept my version because no text merge was possible. Check whether they need the update's change:", ...kept.map((x) => `- apps/${info.id}/${x.path} (${x.reason})`)]
         : []),
       "",
-      ...(before ? [`My version from before the update is commit ${before.slice(0, 10)} in the workspace history.`] : []),
+      ...(before ? [`My version from before the update is commit ${before.slice(0, 10)} in the workspace history: the git tool's show ${before.slice(0, 10)}:apps/${info.id}/<path> prints a file as it was, and diff ${before.slice(0, 10)} -- apps/${info.id} shows everything the update changed.`] : []),
       ...(link ? [`Where the update comes from: ${link}`] : []),
       "When the files are merged, rebuild the app and check it loads.",
     ].join("\n");

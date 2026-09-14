@@ -303,19 +303,18 @@ describe("agent tools", () => {
     expect(weird).toContain("--:--:--");
   });
 
-  it("git tool folds log/commit/restore; plan mode keeps log but refuses writes", async () => {
+  it("git tool takes command-line arguments; plan mode keeps reads but refuses writes", async () => {
     const p = bootstrapUserDir(dataDir, "alice");
     const tools = buildUserTools("alice", p, { dataDir: p.root });
     const git = tools.find((t) => t.name === "git")!;
     await tools.find((t) => t.name === "write_file")!.execute("t1", { path: "apps/roleplay/data/note.txt", content: "hi" });
-    expect(JSON.stringify(await git.execute("t2", { action: "log", limit: 5 }))).toContain("agent: write");
+    expect(JSON.stringify(await git.execute("t2", { args: "log --oneline -n 5" }))).toContain("agent: write");
 
     const plan = buildUserTools("alice", p, { dataDir: p.root, mode: "plan" });
     const gitPlan = plan.find((t) => t.name === "git")!;
-    expect(JSON.stringify(await gitPlan.execute("t3", { action: "log" }))).toContain("agent: write");
-    await expect(gitPlan.execute("t4", { action: "commit", message: "x" })).rejects.toThrow(/Plan mode/);
-    await expect(gitPlan.execute("t5", { action: "restore", path: "apps/roleplay/data/note.txt", commit: "abc" }))
-      .rejects.toThrow(/Plan mode/);
+    expect(JSON.stringify(await gitPlan.execute("t3", { args: "git show HEAD --stat" }))).toContain("apps/roleplay/data/note.txt");
+    await expect(gitPlan.execute("t4", { args: "commit -m x" })).rejects.toThrow(/Plan mode/);
+    await expect(gitPlan.execute("t5", { args: "restore --source HEAD -- apps/roleplay/data/note.txt" })).rejects.toThrow(/Plan mode/);
   });
 });
 

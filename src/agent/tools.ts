@@ -13,6 +13,7 @@ import { agentReadDenied, agentWriteDenied, safeResolve } from "../paths.js";
 import type { SandboxRunner } from "../sandbox/index.js";
 import { makePathGuard } from "../sandbox/workspace.js";
 import * as git from "../git.js";
+import { GIT_COMMANDS, runGitCli } from "./git-cli.js";
 import { createAppSkeleton, readApp } from "../apps/manager.js";
 import { hasPackages, installApp, uninstallApp } from "../apps/packages.js";
 import { builderVersion } from "../builder/assets.js";
@@ -289,39 +290,15 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
     name: "git",
     label: "Git",
     description:
-      "Workspace repo history. action 'log' shows recent commits; 'commit' {message} stages and commits everything (file tools already commit themselves — use this after bash changes); 'restore' {path, commit} puts a file back to an earlier commit and records it (UNDO).",
+      `Git for the workspace repository, with the command line's own arguments (no leading "git"): ${GIT_COMMANDS}. Examples: "status", "diff HEAD~3 -- apps/roleplay/src", "log --oneline -n 10 -- apps/roleplay", "show abc1234:apps/roleplay/src/App.tsx", "restore --source abc1234 -- apps/roleplay/src/App.tsx", "revert abc1234", "commit -m \"what changed\"". File tools commit on their own; commit after bash changes. There is one line of history (main) and no staging area, branches or remotes. It runs here, not in the bash shell.`,
     parameters: Type.Object({
-      action: Type.Union([Type.Literal("log"), Type.Literal("commit"), Type.Literal("restore")]),
-      message: Type.Optional(Type.String({ description: "commit: message (type(scope): what — why)" })),
-      limit: Type.Optional(Type.Number({ description: "log: how many commits (default 20)" })),
-      path: Type.Optional(Type.String({ description: "restore: file path" })),
-      commit: Type.Optional(Type.String({ description: "restore: commit oid (first 8+ chars)" })),
+      args: Type.String({ description: "The git arguments, as typed after `git` on a command line" }),
     }),
     async execute(_id, params) {
-      const { action } = params as { action: "log" | "commit" | "restore" };
-      if (action !== "log" && opts.mode === "plan") throw new Error("Plan mode: no commits or restores.");
-      if (action === "commit") {
-        const message = (params as { message?: string }).message;
-        if (!message?.trim()) throw new Error("commit needs a message.");
-        const oid = await git.commitAll(p.root, username, message.trim(), true);
-        return oid
-          ? textResult(`Committed ${oid.slice(0, 8)}: ${message.trim()}`)
-          : textResult("Nothing to commit — working tree clean. Your changes may already be committed (file tools auto-commit, app routes sweep); action 'log' shows them.");
-      }
-      if (action === "restore") {
-        const { path: rel, commit } = params as { path?: string; commit?: string };
-        if (!rel || !commit) throw new Error("restore needs path and commit.");
-        const commits = await git.log(p.root, 500);
-        const target = commits.find((c) => c.oid.startsWith(commit));
-        if (!target) throw new Error(`Commit not found: ${commit}`);
-        await git.restoreFile(p.root, rel.replace(/\\/g, "/"), target.oid, username);
-        return textResult(`Restored ${rel} from ${target.oid.slice(0, 8)} and committed.`);
-      }
-      const limit = (params as { limit?: number }).limit ?? 20;
-      const commits = await git.log(p.root, limit);
-      return textResult(
-        commits.map((c) => `${c.oid.slice(0, 8)} ${new Date(c.timestamp).toISOString().slice(0, 16)} ${c.author}: ${c.message}`).join("\n") || "(no commits)",
-      );
+      const { args } = params as { args?: unknown };
+      if (typeof args !== "string" || !args.trim()) throw new Error(`git needs arguments. Supported: ${GIT_COMMANDS}.`);
+      const out = await runGitCli({ dir: p.root, username, readOnly: opts.mode === "plan" }, args);
+      return textResult(out || "(no output)", { args });
     },
   };
 
