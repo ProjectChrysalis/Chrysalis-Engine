@@ -1,5 +1,12 @@
 <p align="center"><img src="client/public/chrysalis_logo.png" width="128" alt="Chrysalis" /></p>
 
+<p align="center">
+  <a href="https://github.com/ProjectChrysalis/Chrysalis-Engine/stargazers"><img src="https://img.shields.io/github/stars/ProjectChrysalis/Chrysalis-Engine?style=flat&logo=github&label=Stars" alt="GitHub stars" /></a>
+  <a href="https://discord.gg/maFVqyeD4Q"><img src="https://img.shields.io/discord/1548807690380255262?logo=discord&logoColor=white&label=Discord&color=5865F2" alt="Discord" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/ProjectChrysalis/Chrysalis-Engine?label=License" alt="License" /></a>
+  <a href="https://github.com/ProjectChrysalis/Chrysalis-Engine/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/ProjectChrysalis/Chrysalis-Engine/ci.yml?branch=main&label=CI" alt="CI status" /></a>
+</p>
+
 # Chrysalis
 
 **The AI frontend you can reshape just by asking.**
