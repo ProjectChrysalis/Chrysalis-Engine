@@ -99,6 +99,8 @@ export function listWorkspaceFiles(root: string): { files: WorkspaceFileInfo[]; 
     } catch {
       return;
     }
+    // cloned repositories mount last: past the size cap they are what gets cut
+    if (!rel) entries.sort((a, b) => Number(a.name === "repos") - Number(b.name === "repos"));
     for (const e of entries) {
       if (truncated) return;
       const r = rel ? `${rel}/${e.name}` : e.name;

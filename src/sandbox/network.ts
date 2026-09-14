@@ -16,6 +16,7 @@ import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import path from "node:path";
+import type { HttpClient } from "isomorphic-git";
 import { isPrivateAddress } from "../net-guard.js";
 
 export interface SandboxSettings {
@@ -135,6 +136,8 @@ function checkTarget(url: URL): void {
 }
 
 interface Hop {
+  url: URL;
+  method: string;
   status: number;
   headers: http.IncomingHttpHeaders;
   body: http.IncomingMessage;
@@ -144,11 +147,37 @@ function request(url: URL, method: string, headers: Record<string, string>, body
   return new Promise((resolve, reject) => {
     const lib = url.protocol === "https:" ? https : http;
     const req = lib.request(url, { method, headers: { ...headers, "accept-encoding": "identity" }, lookup: guardedLookup, signal }, (res) =>
-      resolve({ status: res.statusCode ?? 502, headers: res.headers, body: res }),
+      resolve({ url, method, status: res.statusCode ?? 502, headers: res.headers, body: res }),
     );
     req.on("error", reject);
     req.end(body && body.byteLength ? Buffer.from(body) : undefined);
   });
+}
+
+/** A request to a public address, following redirects and checking every
+ *  hop. Throws with a message a command can print. */
+async function guardedRequest(url: URL, method: string, headers: Record<string, string>, body: Uint8Array | null, signal: AbortSignal): Promise<Hop> {
+  checkTarget(url);
+  let hop = await request(url, method, headers, body, signal);
+  for (let n = 0; hop.status >= 300 && hop.status < 400 && typeof hop.headers.location === "string"; n++) {
+    hop.body.resume();
+    if (n >= MAX_REDIRECTS) throw new Error(`more than ${MAX_REDIRECTS} redirects`);
+    const next = new URL(hop.headers.location, url);
+    checkTarget(next);
+    // a redirect that changes the method drops the body with it
+    if (hop.status === 303 || ((hop.status === 301 || hop.status === 302) && method === "POST")) {
+      method = method === "HEAD" ? "HEAD" : "GET";
+      body = null;
+      delete headers["content-type"];
+    }
+    if (next.origin !== url.origin) {
+      delete headers.authorization;
+      delete headers.cookie;
+    }
+    url = next;
+    hop = await request(url, method, headers, body, signal);
+  }
+  return hop;
 }
 
 export interface ProxyInput {
@@ -167,11 +196,9 @@ export async function proxySandboxRequest(input: ProxyInput): Promise<Response> 
   let url: URL;
   try {
     url = new URL(input.url);
-    checkTarget(url);
   } catch (e) {
     return fail((e as Error).message);
   }
-  let method = /^[A-Z]{1,16}$/.test(input.method) ? input.method : "GET";
   const headers: Record<string, string> = {};
   for (const [k, v] of input.headers) {
     const name = k.toLowerCase();
@@ -180,30 +207,11 @@ export async function proxySandboxRequest(input: ProxyInput): Promise<Response> 
   // the sandbox's HTTP runs through XHR, which cannot set a User-Agent, and
   // many sites refuse a request without one
   headers["user-agent"] ??= "chrysalis-sandbox/1.0";
-  let body = method === "GET" || method === "HEAD" ? null : input.body;
-  const signal = AbortSignal.timeout(TIMEOUT_MS);
+  const method = /^[A-Z]{1,16}$/.test(input.method) ? input.method : "GET";
 
   let hop: Hop;
   try {
-    hop = await request(url, method, headers, body, signal);
-    for (let n = 0; hop.status >= 300 && hop.status < 400 && typeof hop.headers.location === "string"; n++) {
-      hop.body.resume();
-      if (n >= MAX_REDIRECTS) return fail(`more than ${MAX_REDIRECTS} redirects`);
-      const next = new URL(hop.headers.location, url);
-      checkTarget(next);
-      // a redirect that changes the method drops the body with it
-      if (hop.status === 303 || ((hop.status === 301 || hop.status === 302) && method === "POST")) {
-        method = method === "HEAD" ? "HEAD" : "GET";
-        body = null;
-        delete headers["content-type"];
-      }
-      if (next.origin !== url.origin) {
-        delete headers.authorization;
-        delete headers.cookie;
-      }
-      url = next;
-      hop = await request(url, method, headers, body, signal);
-    }
+    hop = await guardedRequest(url, method, headers, method === "GET" || method === "HEAD" ? null : input.body, AbortSignal.timeout(TIMEOUT_MS));
   } catch (e) {
     return fail((e as Error).message);
   }
@@ -213,9 +221,9 @@ export async function proxySandboxRequest(input: ProxyInput): Promise<Response> 
     if (DROP_RESPONSE.has(k) || v === undefined) continue;
     out.set(k, Array.isArray(v) ? v.join(", ") : v);
   }
-  out.set("x-sandbox-final-url", url.href);
+  out.set("x-sandbox-final-url", hop.url.href);
   const status = hop.status < 200 || hop.status > 599 ? 502 : hop.status;
-  if (method === "HEAD" || status === 204 || status === 205 || status === 304) {
+  if (hop.method === "HEAD" || status === 204 || status === 205 || status === 304) {
     hop.body.resume();
     return new Response(null, { status, headers: out });
   }
@@ -241,6 +249,36 @@ export async function proxySandboxRequest(input: ProxyInput): Promise<Response> 
   });
   return new Response(stream, { status, headers: out });
 }
+
+/** Largest single response a clone reads (the pack arrives as one). */
+const MAX_CLONE_RESPONSE_BYTES = 512 * 1024 * 1024;
+const CLONE_TIMEOUT_MS = 5 * 60_000;
+
+/** The HTTP client the agent's git clone uses: the same reach as the
+ *  sandbox's curl, so a repository address cannot point it at this machine
+ *  or its network. */
+export const guardedGitHttp: HttpClient = {
+  async request({ url, method = "GET", headers = {}, body }) {
+    const chunks: Uint8Array[] = [];
+    if (body) for await (const chunk of body) chunks.push(chunk);
+    const hop = await guardedRequest(new URL(url), method, { ...headers, "user-agent": "git/chrysalis" }, chunks.length ? Buffer.concat(chunks) : null, AbortSignal.timeout(CLONE_TIMEOUT_MS));
+    const source = hop.body;
+    async function* capped(): AsyncGenerator<Uint8Array> {
+      let read = 0;
+      for await (const chunk of source as AsyncIterable<Buffer>) {
+        read += chunk.byteLength;
+        if (read > MAX_CLONE_RESPONSE_BYTES) {
+          source.destroy();
+          throw new Error(`the repository is larger than ${MAX_CLONE_RESPONSE_BYTES / 1024 / 1024} MB`);
+        }
+        yield new Uint8Array(chunk);
+      }
+    }
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(hop.headers)) if (v !== undefined) out[k] = Array.isArray(v) ? v.join(", ") : v;
+    return { url: hop.url.href, method: hop.method, statusCode: hop.status, statusMessage: source.statusMessage ?? "", headers: out, body: capped() };
+  },
+};
 
 /** The git arguments a sandbox shell request carries: one base64 line per
  *  argument (see SHELL_PRELUDE). */

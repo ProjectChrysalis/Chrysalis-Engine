@@ -44,7 +44,7 @@ import { sandboxConfigOf } from "../config.js";
 import { BrowserSandbox } from "../sandbox/browser.js";
 import { sandboxAsset, sandboxFrameCsp, sandboxVersion, wasmshAsset } from "../sandbox/assets.js";
 import { workspaceFs, type FsOp as WorkspaceFsOp } from "../sandbox/workspace.js";
-import { decodeGitArgs, initNetTokens, issueNetToken, netTokenUser, proxySandboxRequest, readSandboxEpoch, readSandboxSettings, writeSandboxSettings } from "../sandbox/network.js";
+import { decodeGitArgs, guardedGitHttp, initNetTokens, issueNetToken, netTokenUser, proxySandboxRequest, readSandboxEpoch, readSandboxSettings, writeSandboxSettings } from "../sandbox/network.js";
 import { SANDBOX_GIT_HOST } from "../sandbox/browser/prelude.js";
 import { GitCliError, runGitArgs } from "../agent/git-cli.js";
 import { log } from "../logger.js";
@@ -784,7 +784,13 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     }
     try {
       const out = await runGitArgs(
-        { dir: userPaths(dataDir, username).root, username, readOnly: false, cwd: norm.slice("/workspace".length).replace(/^\//, "") },
+        {
+          dir: userPaths(dataDir, username).root,
+          username,
+          readOnly: false,
+          cwd: norm.slice("/workspace".length).replace(/^\//, ""),
+          http: readSandboxSettings(userPaths(dataDir, username).sandbox).internet ? guardedGitHttp : undefined,
+        },
         decodeGitArgs(new TextDecoder().decode(capped.bytes)),
       );
       return reply(out && !out.endsWith("\n") ? `${out}\n` : out, "", 0);

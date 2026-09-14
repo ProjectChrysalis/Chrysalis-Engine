@@ -6,12 +6,14 @@
  * The workspace has one line of history that the engine commits to on its
  * own (file tools, app routes, restores), so there is no staging area,
  * branch or remote to manage. Reads: status, diff, log, show. Writes:
- * commit, restore (checkout -- path), revert.
+ * commit, restore (checkout -- path), revert. clone copies another
+ * repository's files into repos/, outside that history.
  */
 import fs from "node:fs";
 import path from "node:path";
-import git from "isomorphic-git";
+import git, { type HttpClient } from "isomorphic-git";
 import { createTwoFilesPatch, structuredPatch } from "diff";
+import { isValidGitRef, stripVcs } from "../apps/git.js";
 import * as repo from "../git.js";
 import { agentReadDenied, agentWriteDenied, gitBoundaryIgnored } from "../paths.js";
 import { makePathGuard } from "../sandbox/workspace.js";
@@ -29,6 +31,8 @@ export interface GitCliOptions {
   readOnly: boolean;
   /** Workspace-relative folder pathspecs are relative to (a shell's cd). */
   cwd?: string;
+  /** How clone reaches the internet; absent while the user has it off. */
+  http?: HttpClient;
 }
 
 export class GitCliError extends Error {}
@@ -549,6 +553,52 @@ async function lsFiles(o: GitCliOptions, args: string[]): Promise<string> {
   return [...files.keys()].sort().join("\n");
 }
 
+/** Where clones go: outside the workspace history, so a repository's files
+ *  never land in the user's commits. */
+const CLONES = "repos";
+
+async function clone(o: GitCliOptions, args: string[]): Promise<string> {
+  refuseInPlanMode(o, "clone");
+  const loose: string[] = [];
+  let branch: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "-b" || a === "--branch") branch = args[++i] ?? fail(`${a} needs a branch or tag`);
+    else if (a.startsWith("--branch=")) branch = a.slice("--branch=".length);
+    else if (a === "--depth") i++;
+    else if (/^--depth=\d+$|^--(single-branch|no-tags|quiet|progress)$|^-q$|^--$/.test(a)) continue;
+    else if (a.startsWith("-")) fail(`clone: unsupported option ${a}`);
+    else loose.push(a);
+  }
+  const [url, target, extra] = loose;
+  if (!url || extra) return fail("clone takes a repository address and an optional folder: clone https://github.com/owner/repo [repos/<name>]");
+  if (!/^https:\/\/[^\s/@]+\/\S+$/.test(url)) return fail(`clone takes an https:// address (the one a repository page shows under Code): ${url}`);
+  if (branch !== undefined && !isValidGitRef(branch)) return fail(`not a branch or tag name: ${branch}`);
+  if (!o.http) return fail("clone: internet access is off (Settings, Agent)");
+  const name = /([^/]+?)(?:\.git)?\/*$/.exec(new URL(url).pathname)?.[1];
+  const dest = target === undefined ? `${CLONES}/${name}` : normalizeSpec(target, o.cwd);
+  if (!name || !dest.startsWith(`${CLONES}/`) || dest.split("/").length !== 2) {
+    return fail(`clones go in a folder of their own under ${CLONES}/, outside the workspace history: clone ${url} ${CLONES}/<name>`);
+  }
+  const abs = path.join(o.dir, dest);
+  makePathGuard(o.dir).assertWritable(abs, dest);
+  if (fs.existsSync(abs)) return fail(`${dest} already exists: read it, delete it to clone again, or clone into another ${CLONES}/<name>`);
+  let head: string;
+  try {
+    await git.clone({ fs, http: o.http, dir: abs, url, ref: branch, singleBranch: true, depth: 1, noTags: true });
+    head = await git.resolveRef({ fs, dir: abs, ref: "HEAD" });
+  } catch (e) {
+    fs.rmSync(abs, { recursive: true, force: true });
+    const message = (e as Error).message;
+    return fail(/HTTP Error: 40[134]/.test(message) ? `clone: ${url} was not found, or is private` : `clone: ${message}`);
+  }
+  const checkedOut = await git.currentBranch({ fs, dir: abs }).catch(() => undefined);
+  stripVcs(abs);
+  let files = 0;
+  for (const entry of fs.readdirSync(abs, { recursive: true, withFileTypes: true })) if (entry.isFile()) files++;
+  return `Cloned ${url} (${checkedOut ?? branch ?? "HEAD"} at ${short(head)}) into ${dest}: ${files} files, without its .git history. ${CLONES}/ stays out of the workspace history; read, grep or copy from it.`;
+}
+
 const UNSUPPORTED: Record<string, string> = {
   add: "there is no staging area: commit -m takes every change at once",
   stage: "there is no staging area: commit -m takes every change at once",
@@ -561,15 +611,14 @@ const UNSUPPORTED: Record<string, string> = {
   cherry: "the workspace has one line of history (main)",
   "cherry-pick": "the workspace has one line of history (main): restore files from the commit instead",
   push: "the workspace is local: there is no remote",
-  pull: "the workspace is local: there is no remote",
-  fetch: "the workspace is local: there is no remote",
-  clone: "cloning is not available; apps come from the Store or Import app",
+  pull: "the workspace is local: there is no remote; clone a repository again into a new repos/<name> for a newer copy",
+  fetch: "the workspace is local: there is no remote; clone a repository again into a new repos/<name> for a newer copy",
   init: "the workspace repository already exists",
   rm: "delete the file, then commit",
   mv: "move the file, then commit",
 };
 
-export const GIT_COMMANDS = "status, diff, log, show, ls-tree, ls-files, commit, restore, checkout <commit> -- <path>, revert";
+export const GIT_COMMANDS = "status, diff, log, show, ls-tree, ls-files, commit, restore, checkout <commit> -- <path>, revert, clone <https-url> [repos/<name>]";
 
 /** Run one git command line against the workspace repository. */
 export function runGitCli(o: GitCliOptions, input: string): Promise<string> {
@@ -592,6 +641,7 @@ export async function runGitArgs(o: GitCliOptions, args: string[]): Promise<stri
     case "revert": out = await revert(o, rest); break;
     case "ls-tree": out = await lsTree(o, rest); break;
     case "ls-files": out = await lsFiles(o, rest); break;
+    case "clone": out = await clone(o, rest); break;
     case "rev-parse": out = (await Promise.all(rest.filter((r) => !r.startsWith("-")).map((r) => resolveRev(o.dir, r)))).join("\n"); break;
     default:
       return fail(UNSUPPORTED[cmd] ? `git ${cmd}: ${UNSUPPORTED[cmd]}` : `git ${cmd} is not available. Supported: ${GIT_COMMANDS}.`);

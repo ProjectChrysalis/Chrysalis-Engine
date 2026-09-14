@@ -2,12 +2,15 @@
  * The agent's git command line over the workspace repository: the reads a
  * review needs, the writes an undo needs, and the files it must not touch.
  */
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import * as repo from "../src/git.js";
+import http from "isomorphic-git/http/node";
 import { runGitCli, splitArgs } from "../src/agent/git-cli.js";
+import { guardedGitHttp } from "../src/sandbox/network.js";
+import { serveRepo } from "./fixtures/git-http.js";
 
 let dir: string;
 const write = (rel: string, body: string) => {
@@ -128,3 +131,54 @@ describe("agent git command line", () => {
     expect(await run("help")).toContain("Supported");
   });
 });
+
+describe("agent git clone", () => {
+  let remote: ReturnType<typeof serveRepo>;
+  const fixtures = fs.mkdtempSync(path.join(os.tmpdir(), "git-clone-"));
+  // the test server is on loopback, which the real client refuses; its own test covers that
+  const https = (url: string) => url.replace("http://", "https://");
+  const client = { request: (req: Parameters<typeof http.request>[0]) => http.request({ ...req, url: req.url.replace("https://", "http://") }) };
+  const clone = (args: string, o: { readOnly?: boolean; cwd?: string; net?: boolean } = {}) =>
+    runGitCli({ dir, username: "alice", readOnly: o.readOnly ?? false, cwd: o.cwd, http: o.net === false ? undefined : client }, args);
+
+  beforeAll(() => {
+    remote = serveRepo(fixtures, { "README.md": "# Remote\n", "src/index.ts": "export {}\n" });
+  });
+  afterAll(() => {
+    remote.stop();
+    fs.rmSync(fixtures, { recursive: true, force: true });
+  });
+
+  it("copies a repository's files into repos/, outside the workspace history", async () => {
+    const out = await clone(`clone --depth 1 ${https(remote.url)}`);
+    expect(out).toContain(`into repos/remote: 2 files`);
+    expect(out).toContain(remote.head.slice(0, 8));
+    expect(read("repos/remote/src/index.ts")).toBe("export {}\n");
+    expect(fs.existsSync(path.join(dir, "repos/remote/.git"))).toBe(false);
+    expect(fs.existsSync(path.join(dir, "repos/remote/link"))).toBe(false);
+    expect(await run("status")).toContain("working tree clean");
+    expect(await run("commit -m x")).toContain("nothing to commit");
+
+    expect(await clone(`clone ${https(remote.url)} copy`, { cwd: "repos" })).toContain("into repos/copy");
+    await expect(clone(`clone ${https(remote.url)}`)).rejects.toThrow(/already exists/);
+  });
+
+  it("refuses what it should not do", async () => {
+    const url = https(remote.url);
+    await expect(clone(`clone ${url} apps/remote`)).rejects.toThrow(/under repos\//);
+    await expect(clone(`clone ${url} repos/a/b`)).rejects.toThrow(/under repos\//);
+    await expect(clone(`clone ${url}`, { net: false })).rejects.toThrow(/internet access is off/);
+    await expect(clone(`clone ${url}`, { readOnly: true })).rejects.toThrow(/Plan mode/);
+    await expect(clone("clone git@github.com:owner/repo.git")).rejects.toThrow(/https:\/\//);
+    await expect(clone("clone https://user:secret@example.com/repo")).rejects.toThrow(/https:\/\//);
+    await expect(clone(`clone -b --upload-pack=x ${url}`)).rejects.toThrow(/not a branch/);
+    expect(fs.existsSync(path.join(dir, "repos"))).toBe(false);
+  });
+
+  it("clones only from public addresses", async () => {
+    const out = runGitCli({ dir, username: "alice", readOnly: false, http: guardedGitHttp }, `clone ${remote.url.replace("http://", "https://")}`);
+    await expect(out).rejects.toThrow(/local network address/);
+    expect(fs.existsSync(path.join(dir, "repos/remote"))).toBe(false);
+  });
+});
+

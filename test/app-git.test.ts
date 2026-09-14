@@ -5,12 +5,13 @@
  * GitLab and Codeberg speak). The test machine's git only builds fixtures.
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileHistory, gitClone, gitRemoteHead, mergeFile, readDirAt, showFile } from "../src/apps/git.js";
 import { commitAll, initRepo } from "../src/git.js";
+import { serveRepo } from "./fixtures/git-http.js";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "appgit-"));
 beforeAll(() => {
@@ -20,9 +21,6 @@ afterAll(() => {
   delete process.env.CHRYSALIS_NO_SYSTEM_GIT;
   fs.rmSync(tmp, { recursive: true, force: true });
 });
-
-const sh = (args: string[], cwd?: string) =>
-  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" });
 
 function gitMergeFile(ours: string, base: string, theirs: string, favorOurs = false): { merged: string; conflicts: number } {
   const dir = fs.mkdtempSync(path.join(tmp, "mf-"));
@@ -86,52 +84,15 @@ describe("workspace history", () => {
 });
 
 describe("clone and update check over smart HTTP", () => {
-  let server: ReturnType<typeof Bun.serve>;
+  let remote: ReturnType<typeof serveRepo>;
   let url: string;
   let head: string;
 
   beforeAll(() => {
-    const work = path.join(tmp, "work");
-    fs.mkdirSync(work);
-    sh(["init", "-q", "-b", "main"], work);
-    fs.writeFileSync(path.join(work, "manifest.json"), '{"name":"Remote"}');
-    fs.symlinkSync("/etc/passwd", path.join(work, "link"));
-    sh(["add", "-A"], work);
-    sh(["commit", "-qm", "first"], work);
-    head = sh(["rev-parse", "HEAD"], work).trim();
-    const bare = path.join(tmp, "remote.git");
-    sh(["clone", "-q", "--bare", work, bare]);
-
-    // git's smart HTTP protocol, served by `git upload-pack`
-    server = Bun.serve({
-      port: 0,
-      hostname: "127.0.0.1",
-      async fetch(req) {
-        const u = new URL(req.url);
-        const run = (args: string[], body?: Uint8Array) =>
-          new Promise<Buffer>((resolve) => {
-            const child = spawn("git", args, { env: { ...process.env, GIT_PROTOCOL: req.headers.get("git-protocol") ?? "" } });
-            const chunks: Buffer[] = [];
-            child.stdout.on("data", (d: Buffer) => chunks.push(d));
-            child.on("close", () => resolve(Buffer.concat(chunks)));
-            child.stdin.end(body ? Buffer.from(body) : undefined);
-          });
-        if (u.pathname.endsWith("/info/refs")) {
-          const adv = await run(["upload-pack", "--stateless-rpc", "--advertise-refs", bare]);
-          const line = "# service=git-upload-pack\n";
-          const pkt = (4 + line.length).toString(16).padStart(4, "0") + line + "0000";
-          return new Response(Buffer.concat([Buffer.from(pkt), adv]), { headers: { "content-type": "application/x-git-upload-pack-advertisement" } });
-        }
-        if (u.pathname.endsWith("/git-upload-pack")) {
-          const out = await run(["upload-pack", "--stateless-rpc", bare], new Uint8Array(await req.arrayBuffer()));
-          return new Response(out, { headers: { "content-type": "application/x-git-upload-pack-result" } });
-        }
-        return new Response("not found", { status: 404 });
-      },
-    });
-    url = `http://127.0.0.1:${server.port}/remote.git`;
+    remote = serveRepo(tmp, { "manifest.json": '{"name":"Remote"}' });
+    ({ url, head } = remote);
   });
-  afterAll(() => server.stop(true));
+  afterAll(() => remote.stop());
 
   it("finds the remote head", async () => {
     expect(await gitRemoteHead(url)).toBe(head);
