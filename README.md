@@ -109,16 +109,18 @@ chrysalis --help
 
 Chrysalis keeps your data in its own folder, so an update never touches it.
 
-- Downloads (Windows, macOS, Linux, portable): click **Update to X** at the
-  bottom of the launcher. Chrysalis downloads it, restarts, and reloads the page.
+- Downloads (Windows, macOS, Linux, portable): when a new version is out, an
+  **Update to X** button appears at the bottom of the **Where to?** page (the
+  page every new tab opens on) and in **Settings > Server**. Click it: Chrysalis
+  downloads the update, restarts, and reloads the page.
 - Android: install the new APK over the old one.
 - Bun: `bun add -g chrysalis-engine@latest`.
 - Docker: `docker compose pull && docker compose up -d` (the `:staging` tag for
   staging), or `git pull && docker compose up -d --build` to build it yourself.
 - From source: `git pull && bun install && (cd client-agent && bun install) && bun run build:client`, then restart.
 
-Apps you have changed are never overwritten: the launcher offers each update
-and merges it with your edits. To move an app to another device, or keep a copy
+Apps you have changed are never overwritten: the **Where to?** page marks apps
+with an update, and updating merges it with your edits. To move an app to another device, or keep a copy
 before uninstalling, use **Export app** in its info pane, then **Import app >
 Backup file** on the other side. The backup carries the app's data and keeps
 updating from where it came from.
