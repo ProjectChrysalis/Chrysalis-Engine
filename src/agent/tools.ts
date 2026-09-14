@@ -72,6 +72,16 @@ function fileDiff(rel: string, before: string, after: string): string | undefine
   return body.length > MAX_DIFF_CHARS ? `${body.slice(0, MAX_DIFF_CHARS)}\n… (diff truncated)` : body;
 }
 
+/** The git tool's earlier shape ({action: log|commit|restore}), which chats
+ *  started before it took arguments still repeat from their history. */
+function legacyGitArgs(p: { action?: unknown; message?: unknown; limit?: unknown; path?: unknown; commit?: unknown }): string | null {
+  const q = (v: unknown) => `'${String(v).replace(/'/g, `'\\''`)}'`;
+  if (p.action === "log") return `log --oneline -n ${Number(p.limit) > 0 ? Math.floor(Number(p.limit)) : 20}`;
+  if (p.action === "commit" && typeof p.message === "string") return `commit -m ${q(p.message)}`;
+  if (p.action === "restore" && typeof p.path === "string" && typeof p.commit === "string") return `restore --source ${q(p.commit)} -- ${q(p.path)}`;
+  return null;
+}
+
 export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOptions = { dataDir: "." }): AgentTool[] {
   const guard = makePathGuard(p.root);
 
@@ -295,8 +305,9 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
       args: Type.String({ description: "The git arguments, as typed after `git` on a command line" }),
     }),
     async execute(_id, params) {
-      const { args } = params as { args?: unknown };
-      if (typeof args !== "string" || !args.trim()) throw new Error(`git needs arguments. Supported: ${GIT_COMMANDS}.`);
+      const given = params as { args?: unknown; action?: unknown; message?: unknown; limit?: unknown; path?: unknown; commit?: unknown };
+      const args = typeof given.args === "string" ? given.args : legacyGitArgs(given);
+      if (!args?.trim()) throw new Error(`git needs arguments. Supported: ${GIT_COMMANDS}.`);
       const out = await runGitCli({ dir: p.root, username, readOnly: opts.mode === "plan" }, args);
       return textResult(out || "(no output)", { args });
     },

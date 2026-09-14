@@ -315,6 +315,14 @@ describe("agent tools", () => {
     expect(JSON.stringify(await gitPlan.execute("t3", { args: "git show HEAD --stat" }))).toContain("apps/roleplay/data/note.txt");
     await expect(gitPlan.execute("t4", { args: "commit -m x" })).rejects.toThrow(/Plan mode/);
     await expect(gitPlan.execute("t5", { args: "restore --source HEAD -- apps/roleplay/data/note.txt" })).rejects.toThrow(/Plan mode/);
+
+    // chats from before the tool took arguments repeat its old shape
+    expect(JSON.stringify(await git.execute("t6", { action: "log", limit: 5 }))).toContain("agent: write");
+    const [written] = await isomorphicGit.log({ fs, dir: p.root, depth: 1 });
+    await tools.find((t) => t.name === "write_file")!.execute("t7", { path: "apps/roleplay/data/note.txt", content: "it's changed" });
+    await git.execute("t8", { action: "commit", message: "it's a no-op" });
+    expect(JSON.stringify(await git.execute("t9", { action: "restore", path: "apps/roleplay/data/note.txt", commit: written!.oid.slice(0, 8) }))).toContain("restored");
+    expect(fs.readFileSync(path.join(p.root, "apps/roleplay/data/note.txt"), "utf8")).toBe("hi");
   });
 });
 
