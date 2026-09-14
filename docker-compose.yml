@@ -1,5 +1,7 @@
 services:
   chrysalis:
+    # the published image; `docker compose up -d --build` builds this checkout instead
+    image: ghcr.io/projectchrysalis/chrysalis-engine:latest
     build: .
     container_name: chrysalis
     restart: unless-stopped

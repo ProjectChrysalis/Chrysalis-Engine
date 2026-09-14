@@ -33,7 +33,7 @@ Nothing else needs to be installed.
 | macOS (Intel) | `Chrysalis-<version>-macos-x64.tar.gz` | Unpack, run `./chrysalis` in Terminal |
 | Linux | `Chrysalis-<version>-linux-x64.tar.gz` (or `-arm64`) | Unpack, run `./chrysalis` |
 | Android 9+ | `Chrysalis-<version>-android-arm64.apk` | Install, open the app |
-| Docker | `ghcr.io/projectchrysalis/chrysalis-engine` | `docker compose up -d` (see below) |
+| Docker | `ghcr.io/projectchrysalis/chrysalis-engine` | `docker compose up -d` with this repository's `docker-compose.yml` |
 
 Want new features before they are stable? The
 [staging pre-release](https://github.com/ProjectChrysalis/Chrysalis-Engine/releases/tag/staging-latest)
@@ -113,8 +113,8 @@ Chrysalis keeps your data in its own folder, so an update never touches it.
   bottom of the launcher. Chrysalis downloads it, restarts, and reloads the page.
 - Android: install the new APK over the old one.
 - Bun: `bun add -g chrysalis-engine@latest`.
-- Docker: `git pull && docker compose up -d --build`, or pull
-  `ghcr.io/projectchrysalis/chrysalis-engine:latest` (`:staging` for staging).
+- Docker: `docker compose pull && docker compose up -d` (the `:staging` tag for
+  staging), or `git pull && docker compose up -d --build` to build it yourself.
 - From source: `git pull && bun install && (cd client-agent && bun install) && bun run build:client`, then restart.
 
 Apps you have changed are never overwritten: the launcher offers each update
