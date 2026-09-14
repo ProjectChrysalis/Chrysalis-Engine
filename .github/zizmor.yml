@@ -1,0 +1,4 @@
+rules:
+  # the "$/" form for local reusable workflows is not needed here
+  self-repository:
+    disable: true

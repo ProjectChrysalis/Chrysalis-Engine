@@ -5,3 +5,6 @@ updates:
     target-branch: staging
     schedule:
       interval: monthly
+    # new releases wait a week, so a hijacked release is usually pulled first
+    cooldown:
+      default-days: 7
