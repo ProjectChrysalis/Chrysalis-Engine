@@ -152,10 +152,18 @@ function PhoneQr(props: { urls: string[] }) {
 function updateHow(info: ServerInfo, staging: boolean): string {
   if (info.container) return staging ? tr("Pull the staging image and recreate the container. Your data stays in its volume.") : tr("Pull the latest image and recreate the container. Your data stays in its volume.")
   if (info.installKind === "source") return tr("Update with git pull, bun install and bun run build:client, then restart Chrysalis.")
-  if (info.installKind === "npm") return tr("Update with bun install -g chrysalis-engine, then restart Chrysalis.")
+  if (info.installKind === "npm") return tr("Update with bun add -g chrysalis-engine@latest, then restart Chrysalis.")
   if (info.installKind === "android") return tr("Install the new app from the release page. Your data stays.")
   if (info.portable) return tr("Download it from the release page, then move config.yaml and the data folder into the new copy before deleting this one.")
   return tr("Download it from the release page and replace this copy. Your data stays in its own folder.")
+}
+
+async function engineHealth(): Promise<{ version?: string; instance?: string } | null> {
+  try {
+    return (await (await fetch("/v1/health")).json()) as { version?: string; instance?: string }
+  } catch {
+    return null
+  }
 }
 
 /** Install a release this copy can update itself to, then wait for the
@@ -165,6 +173,8 @@ function useInstallUpdate(release: EngineRelease) {
   const [err, setErr] = useState("")
   const start = async () => {
     setErr("")
+    // the engine that answers after the restart must be a different one
+    const before = await engineHealth()
     try {
       let state = await serverApi.installUpdate()
       while (state.phase === "downloading" || state.phase === "installing") {
@@ -182,14 +192,23 @@ function useInstallUpdate(release: EngineRelease) {
       }
     }
     setPhase("restarting")
-    for (;;) {
+    const deadline = Date.now() + 5 * 60_000
+    while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 1500))
-      try {
-        const health = (await (await fetch("/v1/health")).json()) as { version?: string }
-        if (health.version === release.version) break
-      } catch { /* still restarting */ }
+      const health = await engineHealth()
+      if (!health?.instance || health.instance === before?.instance) continue
+      if (health.version === release.version) {
+        window.location.reload()
+        return
+      }
+      // a restarted engine on another version: the old one came back
+      const state = await serverApi.updateState().catch(() => null)
+      setPhase("idle")
+      setErr(state?.phase === "failed" && state.error ? state.error : tr("Chrysalis restarted without the update."))
+      return
     }
-    window.location.reload()
+    setPhase("idle")
+    setErr(tr("Chrysalis has not come back after five minutes. Check the window or log where it runs."))
   }
   const label = phase === "downloading" ? tr("Downloading…") : phase === "installing" ? tr("Installing…") : phase === "restarting" ? tr("Restarting…") : tr("Update to {version}", { version: release.version })
   return { start, busy: phase !== "idle", label, err }
@@ -227,17 +246,29 @@ function InstallButton(props: { release: EngineRelease }) {
 
 function ReleaseRow(props: { info: ServerInfo }) {
   const release = useResource(() => serverApi.release())
+  const last = useResource(() => serverApi.updateState())
   const r = release.data
+  const failed = last.data?.phase === "failed" && last.data.error ? <p className="text-12 leading-4 text-danger">{tr("The last update did not work: {error}", { error: last.data.error })}</p> : null
   if (!r?.newer) {
     const label = r ? tr("Chrysalis {version}, the latest version", { version: props.info.version }) : tr("Chrysalis {version}", { version: props.info.version })
-    return <p className="text-12 text-ink-faint">{label}</p>
+    return (
+      <div className="flex flex-col gap-1">
+        <p className="text-12 text-ink-faint">{label}</p>
+        {failed}
+      </div>
+    )
   }
+  const incompatible = r.incompatibleApps?.length
+    ? <p className="text-12 leading-4 text-warning">{tr("These apps say they need a different version of Chrysalis and may stop working after the update: {apps}", { apps: r.incompatibleApps.map((a) => `${a.name} (${a.needs})`).join(", ") })}</p>
+    : null
   return (
     <div className="flex flex-col gap-1.5 rounded-lg border border-line px-3 py-2">
       <div className="flex items-center gap-2 text-13">
         <span className="min-w-0 flex-1 text-ink">{tr("Chrysalis {version} is available", { version: r.version })}</span>
         <a className="text-accent underline" href={r.url} target="_blank" rel="noreferrer">{tr("Release page")}</a>
       </div>
+      {failed}
+      {incompatible}
       {r.asset ? <InstallRow release={r} /> : <p className="text-12 leading-4 text-ink-muted">{updateHow(props.info, props.info.version.includes("-staging"))}</p>}
     </div>
   )

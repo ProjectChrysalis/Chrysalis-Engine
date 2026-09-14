@@ -164,6 +164,26 @@ export async function gitRemoteHead(url: string, ref = "HEAD"): Promise<string |
   return sha && /^[0-9a-f]{7,40}$/.test(sha) ? sha : null;
 }
 
+/** The version and engine range the manifest at `commit` of a GitHub
+ *  repository names, read without cloning, so an update can be described
+ *  before it is fetched. Null for other hosts or when it cannot be read; the
+ *  update checks the real manifest either way. */
+export async function remoteManifest(url: string, commit: string, fetcher: typeof fetch = fetch): Promise<{ version?: string; engine?: string } | null> {
+  const repo = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i.exec(url.trim());
+  if (!repo || !/^[0-9a-f]{40}$/.test(commit)) return null;
+  try {
+    const res = await fetcher(`https://raw.githubusercontent.com/${repo[1]}/${repo[2]}/${commit}/manifest.json`, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const raw = (await res.json()) as { version?: unknown; engine?: unknown };
+    return {
+      ...(typeof raw.version === "string" ? { version: raw.version } : {}),
+      ...(typeof raw.engine === "string" ? { engine: raw.engine } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Pack a workspace repo's loose objects when they pile up. isomorphic-git
  *  never gc's: every chat save mints a fresh blob + commit, so months of use
  *  leave tens of thousands of loose objects that make statusMatrix and commit
@@ -245,78 +265,3 @@ function removeSymlinks(dir: string): void {
   }
 }
 
-/** Replace `appDir`'s contents with `staging`'s, keeping UPDATE_KEEP entries
- *  and the app's user-imported plugins (they were installed INTO this app on
- *  purpose — an upstream update must not delete them; an upstream plugin with
- *  the same folder name loses to the user's import). Every step is
- *  reversible: the pre-update tree sits in a backup until the swap lands, and
- *  any failure puts it back. */
-export async function swapAppContents(appDir: string, staging: string): Promise<void> {
-  const backup = appDir + ".__update_backup";
-  fs.rmSync(backup, { recursive: true, force: true });
-  fs.mkdirSync(backup, { recursive: true });
-  // pull imported plugins aside first so they never enter the backup flow
-  const carry = path.join(appDir, ".__plugin_carry");
-  fs.rmSync(carry, { recursive: true, force: true });
-  const carried: string[] = [];
-  const pluginsDir = path.join(appDir, "plugins");
-  if (fs.existsSync(pluginsDir)) {
-    fs.mkdirSync(carry, { recursive: true });
-    for (const entry of fs.readdirSync(pluginsDir)) {
-      try {
-        const m = JSON.parse(fs.readFileSync(path.join(pluginsDir, entry, "manifest.json"), "utf8")) as { origin?: string };
-        if (m.origin === "imported") {
-          fs.renameSync(path.join(pluginsDir, entry), path.join(carry, entry));
-          carried.push(entry);
-        }
-      } catch { /* not a plugin dir — leave it to the normal swap */ }
-    }
-  }
-  const restoreCarry = () => {
-    fs.mkdirSync(pluginsDir, { recursive: true });
-    for (const entry of carried) {
-      try { fs.renameSync(path.join(carry, entry), path.join(pluginsDir, entry)); } catch { /* keep going */ }
-    }
-    fs.rmSync(carry, { recursive: true, force: true });
-  };
-  const moved: string[] = [];
-  try {
-    for (const entry of fs.readdirSync(appDir)) {
-      if (UPDATE_KEEP.has(entry) || entry === ".__plugin_carry") continue;
-      fs.renameSync(path.join(appDir, entry), path.join(backup, entry));
-      moved.push(entry);
-    }
-  } catch (e) {
-    // nothing destructive happened yet — move everything straight back
-    for (const entry of moved) {
-      try { fs.renameSync(path.join(backup, entry), path.join(appDir, entry)); } catch { /* keep going */ }
-    }
-    fs.rmSync(backup, { recursive: true, force: true });
-    restoreCarry();
-    throw e;
-  }
-  try {
-    for (const entry of fs.readdirSync(staging)) {
-      // UPDATE_KEEP entries stay OURS: skipping them in the backup loop is
-      // only half the job — letting the incoming tree replace data/ would
-      // delete user files that upstream doesn't ship
-      if (UPDATE_KEEP.has(entry)) continue;
-      fs.rmSync(path.join(appDir, entry), { recursive: true, force: true });
-      fs.renameSync(path.join(staging, entry), path.join(appDir, entry));
-    }
-    if (carried.length > 0) restoreCarry();
-    fs.rmSync(backup, { recursive: true, force: true });
-  } catch (e) {
-    // half-swapped: clear the new tree, restore the backup over it
-    try {
-      for (const entry of fs.readdirSync(appDir)) {
-        if (!UPDATE_KEEP.has(entry)) fs.rmSync(path.join(appDir, entry), { recursive: true, force: true });
-      }
-      for (const entry of fs.readdirSync(backup)) {
-        fs.renameSync(path.join(backup, entry), path.join(appDir, entry));
-      }
-      restoreCarry();
-    } catch { /* best effort — the workspace git history still holds the app */ }
-    throw e;
-  }
-}

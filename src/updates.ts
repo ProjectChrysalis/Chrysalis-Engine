@@ -14,6 +14,8 @@ export interface ReleaseAsset {
   name: string;
   url: string;
   size: number;
+  /** hex SHA-256 the release publishes for the file, when it does */
+  sha256?: string;
 }
 
 export interface ReleaseInfo {

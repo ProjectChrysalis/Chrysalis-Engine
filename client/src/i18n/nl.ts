@@ -329,7 +329,7 @@ const dict = {
   "Update": "Bijwerken",
   "Update available": "Update beschikbaar",
   "Update plugin": "Plugin bijwerken",
-  "Update with bun install -g chrysalis-engine, then restart Chrysalis.": "Werk bij met bun install -g chrysalis-engine en start Chrysalis opnieuw.",
+  "Update with bun add -g chrysalis-engine@latest, then restart Chrysalis.": "Werk bij met bun add -g chrysalis-engine@latest en start Chrysalis opnieuw.",
   "Update with git pull, bun install and bun run build:client, then restart Chrysalis.": "Werk bij met git pull, bun install en bun run build:client, en start Chrysalis opnieuw.",
   "Updated to v{version}.": "Bijgewerkt naar v{version}.",
   "Updates the installed copy{version}. Its permissions become the ones below.": "Werkt de geïnstalleerde kopie{version} bij. De rechten worden die hieronder.",
@@ -424,6 +424,11 @@ const dict = {
   "Update to {version}": "Bijwerken naar {version}",
   "Downloading…": "Downloaden…",
   "Restarting…": "Opnieuw starten…",
+  "Chrysalis restarted without the update.": "Chrysalis is opnieuw gestart zonder de update.",
+  "Chrysalis has not come back after five minutes. Check the window or log where it runs.": "Chrysalis is na vijf minuten niet terug. Kijk in het venster of de log waar het draait.",
+  "These apps say they need a different version of Chrysalis and may stop working after the update: {apps}": "Deze apps geven aan een andere versie van Chrysalis nodig te hebben en werken na de update misschien niet meer: {apps}",
+  "The last update did not work: {error}": "De laatste update is niet gelukt: {error}",
+  "Some of its data was not upgraded yet and will be tried again when the app opens: {plugins}": "Een deel van de gegevens is nog niet bijgewerkt en wordt opnieuw geprobeerd als de app opent: {plugins}",
 }
 
 export default dict

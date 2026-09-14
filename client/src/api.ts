@@ -340,6 +340,8 @@ export interface EngineRelease {
   newer: boolean
   /** present when this copy can install the release itself */
   asset?: { name: string; url: string; size: number }
+  /** installed apps whose manifest names an engine range this release is outside */
+  incompatibleApps?: { name: string; needs: string }[]
 }
 
 export interface EngineUpdateState {

@@ -110,7 +110,7 @@ Chrysalis keeps your data in its own folder, so an update never touches it.
 - Downloads (Windows, macOS, Linux, portable): click **Update to X** at the
   bottom of the launcher. Chrysalis downloads it, restarts, and reloads the page.
 - Android: install the new APK over the old one.
-- Bun: `bun install -g chrysalis-engine`.
+- Bun: `bun add -g chrysalis-engine@latest`.
 - Docker: `git pull && docker compose up -d --build`, or pull
   `ghcr.io/projectchrysalis/chrysalis-engine:latest` (`:staging` for staging).
 - From source: `git pull && bun install && (cd client-agent && bun install) && bun run build:client`, then restart.

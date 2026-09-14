@@ -20,7 +20,7 @@ export interface EngineLock {
 
 const lockPath = (dataDir: string): string => path.join(dataDir, "engine.lock");
 
-function readLock(dataDir: string): EngineLock | null {
+export function readLock(dataDir: string): EngineLock | null {
   try {
     const raw = JSON.parse(fs.readFileSync(lockPath(dataDir), "utf8")) as Partial<EngineLock>;
     if (typeof raw.instance !== "string" || typeof raw.url !== "string") return null;

@@ -329,7 +329,7 @@ const dict = {
   "Update": "Aggiorna",
   "Update available": "Aggiornamento disponibile",
   "Update plugin": "Aggiorna plugin",
-  "Update with bun install -g chrysalis-engine, then restart Chrysalis.": "Aggiorna con bun install -g chrysalis-engine, poi riavvia Chrysalis.",
+  "Update with bun add -g chrysalis-engine@latest, then restart Chrysalis.": "Aggiorna con bun add -g chrysalis-engine@latest, poi riavvia Chrysalis.",
   "Update with git pull, bun install and bun run build:client, then restart Chrysalis.": "Aggiorna con git pull, bun install e bun run build:client, poi riavvia Chrysalis.",
   "Updated to v{version}.": "Aggiornato a v{version}.",
   "Updates the installed copy{version}. Its permissions become the ones below.": "Aggiorna la copia installata{version}. I suoi permessi diventano quelli qui sotto.",
@@ -424,6 +424,11 @@ const dict = {
   "Update to {version}": "Aggiorna a {version}",
   "Downloading…": "Download in corso…",
   "Restarting…": "Riavvio in corso…",
+  "Chrysalis restarted without the update.": "Chrysalis si è riavviato senza l'aggiornamento.",
+  "Chrysalis has not come back after five minutes. Check the window or log where it runs.": "Chrysalis non è tornato dopo cinque minuti. Controlla la finestra o il log dove è in esecuzione.",
+  "These apps say they need a different version of Chrysalis and may stop working after the update: {apps}": "Queste app indicano di aver bisogno di un'altra versione di Chrysalis e potrebbero smettere di funzionare dopo l'aggiornamento: {apps}",
+  "The last update did not work: {error}": "L'ultimo aggiornamento non è riuscito: {error}",
+  "Some of its data was not upgraded yet and will be tried again when the app opens: {plugins}": "Una parte dei dati non è ancora stata aggiornata e verrà ritentata all'apertura dell'app: {plugins}",
 }
 
 export default dict

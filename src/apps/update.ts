@@ -137,21 +137,59 @@ export function writeInstallSource(upstreamRoot: string, appId: string, source: 
   fs.writeFileSync(sourcePath(upstreamRoot, appId), JSON.stringify(source) + "\n", "utf8");
 }
 
-/** An app was deleted: its baseline and install source go with it, so a new
- *  app under the same id starts with neither. */
+/** Data upgrades that did not finish after an update: each plugin whose
+ *  onAppUpdate failed, with the version its data still has. Retried, from
+ *  that version, until they succeed. */
+export interface PendingUpgrade {
+  /** plugin id → the version its onAppUpdate still has to upgrade from */
+  plugins: Record<string, string>;
+}
+
+function upgradePath(upstreamRoot: string, appId: string): string {
+  return `${baselinePath(upstreamRoot, appId)}.upgrade.json`;
+}
+
+export function readPendingUpgrade(upstreamRoot: string, appId: string): PendingUpgrade | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(upgradePath(upstreamRoot, appId), "utf8")) as { plugins?: unknown };
+    const plugins: Record<string, string> = {};
+    for (const [id, from] of Object.entries(raw.plugins && typeof raw.plugins === "object" ? raw.plugins : {})) {
+      if (typeof from === "string") plugins[id] = from;
+    }
+    return Object.keys(plugins).length ? { plugins } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Record what is still to upgrade; an empty list clears the record. */
+export function writePendingUpgrade(upstreamRoot: string, appId: string, plugins: Record<string, string>): void {
+  const file = upgradePath(upstreamRoot, appId);
+  if (!Object.keys(plugins).length) {
+    fs.rmSync(file, { force: true });
+    return;
+  }
+  fs.mkdirSync(upstreamRoot, { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ plugins }) + "\n", "utf8");
+}
+
+/** An app was deleted: its baseline, install source and unfinished upgrade go
+ *  with it, so a new app under the same id starts with none of them. */
 export function forgetInstall(upstreamRoot: string, appId: string): void {
   const dir = baselinePath(upstreamRoot, appId);
-  for (const target of [dir, `${dir}.next`, sourcePath(upstreamRoot, appId)]) {
+  for (const target of [dir, `${dir}.next`, sourcePath(upstreamRoot, appId), upgradePath(upstreamRoot, appId)]) {
     fs.rmSync(target, { recursive: true, force: true });
   }
 }
 
-/** An app was renamed: its baseline and install source follow it. */
+/** An app was renamed: its baseline, install source and unfinished upgrade
+ *  follow it. */
 export function moveInstall(upstreamRoot: string, fromId: string, toId: string): void {
   forgetInstall(upstreamRoot, toId);
   const pairs: [string, string][] = [
     [baselinePath(upstreamRoot, fromId), baselinePath(upstreamRoot, toId)],
     [sourcePath(upstreamRoot, fromId), sourcePath(upstreamRoot, toId)],
+    [upgradePath(upstreamRoot, fromId), upgradePath(upstreamRoot, toId)],
   ];
   for (const [from, to] of pairs) {
     if (fs.existsSync(from)) fs.renameSync(from, to);
@@ -264,6 +302,25 @@ export function applyWrites(appDir: string, writes: Map<string, Buffer | null>):
     else {
       fs.mkdirSync(path.dirname(full), { recursive: true });
       fs.writeFileSync(full, body);
+    }
+  }
+}
+
+/** Undo applyWrites for `rels`: each path gets back what `before` held, and a
+ *  path `before` did not have loses the file written there. Anything else
+ *  found at such a path (a folder of the user's) was not written by the update
+ *  and stays. */
+export function restoreWrites(appDir: string, rels: Iterable<string>, before: Tree): void {
+  const root = path.resolve(appDir);
+  for (const rel of rels) {
+    const full = path.resolve(root, rel);
+    if (!full.startsWith(root + path.sep) || outsideCode(rel)) continue;
+    const body = before.get(rel);
+    if (body) {
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, body);
+    } else if (fs.lstatSync(full, { throwIfNoEntry: false })?.isFile()) {
+      fs.rmSync(full);
     }
   }
 }

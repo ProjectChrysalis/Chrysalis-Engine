@@ -329,7 +329,7 @@ const dict = {
   "Update": "更新",
   "Update available": "有可用更新",
   "Update plugin": "更新插件",
-  "Update with bun install -g chrysalis-engine, then restart Chrysalis.": "运行 bun install -g chrysalis-engine 更新，然后重启 Chrysalis。",
+  "Update with bun add -g chrysalis-engine@latest, then restart Chrysalis.": "运行 bun add -g chrysalis-engine@latest 更新，然后重启 Chrysalis。",
   "Update with git pull, bun install and bun run build:client, then restart Chrysalis.": "运行 git pull、bun install 和 bun run build:client 更新，然后重启 Chrysalis。",
   "Updated to v{version}.": "已更新到 v{version}。",
   "Updates the installed copy{version}. Its permissions become the ones below.": "更新已安装的副本{version}。其权限将变为下列内容。",
@@ -424,6 +424,11 @@ const dict = {
   "Update to {version}": "更新到 {version}",
   "Downloading…": "正在下载…",
   "Restarting…": "正在重启…",
+  "Chrysalis restarted without the update.": "Chrysalis 已重新启动，但没有应用更新。",
+  "Chrysalis has not come back after five minutes. Check the window or log where it runs.": "五分钟后 Chrysalis 仍未恢复。请查看它运行所在的窗口或日志。",
+  "These apps say they need a different version of Chrysalis and may stop working after the update: {apps}": "这些应用声明需要其他版本的 Chrysalis，更新后可能无法正常工作：{apps}",
+  "The last update did not work: {error}": "上次更新未成功：{error}",
+  "Some of its data was not upgraded yet and will be tried again when the app opens: {plugins}": "部分数据尚未升级，将在打开应用时重试：{plugins}",
 }
 
 export default dict

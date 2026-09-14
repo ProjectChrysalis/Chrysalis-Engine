@@ -8,12 +8,12 @@ import os from "node:os";
 import path from "node:path";
 import nodeCrypto from "node:crypto";
 import { PluginStoreService } from "../plugins/store.js";
-import { discoverPlugins, discoverAppPlugins, runPluginHook, runPluginRoute, runPluginTool, readPluginExport, syncSchedules, stopSchedules, invalidatePluginCache, collectSiblingTools, collectSiblingLlmHooks, mergeToolBridges, type LoadedPlugin, type PluginRuntimeDeps, type PluginToolBridge } from "../plugins/runtime.js";
+import { discoverPlugins, discoverAppPlugins, runPluginHook, runPluginHookOutcome, runPluginRoute, runPluginTool, readPluginExport, syncSchedules, stopSchedules, invalidatePluginCache, collectSiblingTools, collectSiblingLlmHooks, mergeToolBridges, type LoadedPlugin, type PluginRuntimeDeps, type PluginToolBridge } from "../plugins/runtime.js";
 import { McpRegistry, WEB_SEARCH_PRESET, readStdioApprovals, stdioFingerprint, writeStdioApproval, type CredentialMap, type McpServerConfig } from "../mcp/registry.js";
 import { listApps, readApp, createAppSkeleton, renameAppDir, appTree, validateAppManifest, hashAppTree, type AppInfo } from "../apps/manager.js";
-import { UPDATE_STRATEGIES, applyWrites, forgetInstall, mergeTrees, moveInstall, readBaseline, readCodeTree, readInstallSource, recoverBaseline, satisfiesRange, seedDataTemplates, writeBaseline, writeInstallSource, type InstallSource } from "../apps/update.js";
+import { UPDATE_STRATEGIES, applyWrites, restoreWrites, forgetInstall, mergeTrees, moveInstall, readBaseline, readCodeTree, readInstallSource, readPendingUpgrade, recoverBaseline, satisfiesRange, seedDataTemplates, writeBaseline, writeInstallSource, writePendingUpgrade, type InstallSource } from "../apps/update.js";
 import { OFFICIAL_SOURCES, createCatalog, isOfficialSource, normalizeGitUrl } from "../apps/store.js";
-import { gitClone, gitRemoteHead, isValidGitUrl, stripVcs, swapAppContents } from "../apps/git.js";
+import { gitClone, gitRemoteHead, isValidGitUrl, remoteManifest, stripVcs } from "../apps/git.js";
 import { BACKUP_MAX_BYTES, BACKUP_META_DIR, BackupError, buildBackup, extractBackup, locateBackup, type BackupMeta } from "../apps/backup.js";
 import { bootstrapUserDir } from "../paths.js";
 import type { UserService, UserRecord } from "../users.js";
@@ -3136,6 +3136,16 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     if (requestedId && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(requestedId)) {
       return c.json({ error: "id must be lowercase letters, digits, - or _ (at most 64)" }, 400);
     }
+    // an installed app gets new versions through its update, which merges
+    // them with the user's edits and upgrades its data; importing over it
+    // would do neither
+    const installedFrom = listApps(p.apps).find((a) => {
+      const from = installSourceOf(p, a)?.git;
+      return !!from && normalizeGitUrl(from) === normalizeGitUrl(gitUrl);
+    });
+    if (installedFrom) {
+      return c.json({ error: `${installedFrom.manifest.name} is already installed from this repository. Update it from the launcher to get its newest version.`, installed: installedFrom.id }, 409);
+    }
     const slug = requestedId || (gitUrl.split(/[/:]/).pop() ?? "app").replace(/\.git$/, "").toLowerCase().replace(/[^a-z0-9-]/g, "") || "app";
     const staging = path.join(p.apps, ".staging", slug);
 
@@ -3196,29 +3206,16 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       }
     }
 
+    // another app (from elsewhere) already has this folder name: install beside it
     let id = slug;
-    const existing = fs.existsSync(path.join(p.apps, id)) ? readApp(p.apps, id) : null;
-    const existingSource = existing ? installSourceOf(p, existing)?.git : undefined;
-    if (existing && (!existingSource || normalizeGitUrl(existingSource) !== normalizeGitUrl(gitUrl))) {
+    if (fs.existsSync(path.join(p.apps, id))) {
       let n = 2;
       while (fs.existsSync(path.join(p.apps, `${slug}-${n}`))) n++;
       id = `${slug}-${n}`;
     }
     const dest = path.join(p.apps, id);
     fs.rmSync(path.join(staging, ".staged-head"), { force: true });
-    if (existing) {
-      // re-importing the same source = update in place: SAME safety rails as
-      // the update endpoint — data/, derived dirs and imported plugins ride
-      // across (a plain rm+rename would wipe the user's live app data)
-      try {
-        await swapAppContents(dest, staging);
-      } catch (e) {
-        return c.json({ error: `update failed: ${(e as Error).message}` }, 500);
-      }
-    } else {
-      fs.rmSync(dest, { recursive: true, force: true });
-      fs.renameSync(staging, dest);
-    }
+    fs.renameSync(staging, dest);
     // stamp provenance so update checks know where this copy came from;
     // contentHash records the pristine code state — a mismatch later means
     // "modified since install" and the update UI warns before resetting
@@ -3235,7 +3232,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     writeBaseline(p.appUpstream, id, manifest.version, readCodeTree(dest));
     writeInstallSource(p.appUpstream, id, { git: gitUrl, ref });
     invalidatePluginCache();
-    await git.commitAll(p.root, u.username, `app(${id}): ${existing ? "updated" : "imported"} from ${gitUrl}`);
+    await git.commitAll(p.root, u.username, `app(${id}): imported from ${gitUrl}`);
     bus.emit(u.username, "app_changed", { app: id });
     return c.json({ ok: true, id, head });
   });
@@ -3308,14 +3305,22 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const localHead = info.manifest.source?.head ?? null;
     try {
       const remoteHead = await gitRemoteHead(source.git, source.ref);
+      const upToDate = !remoteHead || remoteHead === localHead;
+      // what the new version is and whether this engine can run it, named
+      // before the Update button rather than after it fails
+      const incoming = !upToDate && remoteHead ? await remoteManifest(source.git, remoteHead) : null;
       return c.json({
         supported: true,
         repository: source.git,
         version: info.manifest.version,
         localHead,
         remoteHead,
-        upToDate: !remoteHead || remoteHead === localHead,
+        upToDate,
         modified,
+        available: incoming?.version ?? null,
+        engine: incoming?.engine ?? null,
+        engineOk: incoming?.engine ? satisfiesRange(incoming.engine, ENGINE_VERSION) : true,
+        engineVersion: ENGINE_VERSION,
       });
     } catch (e) {
       return c.json({ supported: true, repository: source.git, error: (e as Error).message }, 200);
@@ -3341,22 +3346,71 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     ].join("\n");
   };
 
-  /** Run each app plugin's onAppUpdate once the code has moved. */
-  const runAppUpdateHooks = async (u: UserRecord, p: UserPaths, appId: string, from: string, to: string): Promise<void> => {
+  /** A data upgrade may walk every chat an app has: it gets minutes and room
+   *  a request never does, on a sandbox of its own. */
+  const UPGRADE_LIMITS = { executionTimeoutMs: 5 * 60_000, memoryLimitBytes: 512 * 1024 * 1024 };
+
+  /** Run the app plugins' onAppUpdate for the code now on disk. A plugin whose
+   *  earlier upgrade failed upgrades from the version its data still has. What
+   *  fails is recorded and retried, and returned so the person updating sees
+   *  it. */
+  const runAppUpdateHooks = async (u: UserRecord, p: UserPaths, appId: string, from: string | null, to: string): Promise<{ plugin: string; error: string }[]> => {
     const deps = getAppDeps(u, appId);
+    const pending = readPendingUpgrade(p.appUpstream, appId)?.plugins ?? {};
+    const stillPending: Record<string, string> = {};
+    const failed: { plugin: string; error: string }[] = [];
     for (const plugin of enabledAppPlugins(p.apps, appId, p.settings)) {
-      await runPluginHook(plugin, "onAppUpdate", { from, to }, deps);
+      const since = pending[plugin.id] ?? from;
+      if (since === null || !plugin.source.includes("onAppUpdate")) continue;
+      const outcome = await runPluginHookOutcome(plugin, "onAppUpdate", { from: since, to }, deps, UPGRADE_LIMITS);
+      if (outcome.ok) continue;
+      stillPending[plugin.id] = since;
+      failed.push({ plugin: plugin.manifest.name, error: outcome.error });
     }
+    writePendingUpgrade(p.appUpstream, appId, stillPending);
+    return failed;
   };
+
+  /** Data upgrades left unfinished by an update, retried once per start before
+   *  the app's first request, which waits for them. */
+  const upgradeRetries = new Map<string, Promise<void>>();
+  const retryPendingUpgrade = (u: UserRecord, p: UserPaths, appId: string): Promise<void> => {
+    const key = `${u.username}/${appId}`;
+    let retry = upgradeRetries.get(key);
+    if (!retry) {
+      retry = (async () => {
+        if (!readPendingUpgrade(p.appUpstream, appId)) return;
+        const failed = await runAppUpdateHooks(u, p, appId, null, readApp(p.apps, appId)?.manifest.version ?? "0.0.0");
+        if (failed.length) log.warn(`[apps] ${u.username}/${appId}: data upgrade still failing: ${failed.map((f) => `${f.plugin}: ${f.error}`).join("; ")}`);
+        else log.info(`[apps] ${u.username}/${appId}: finished its data upgrade`);
+      })().catch((e) => log.warn(`[apps] ${u.username}/${appId}: data upgrade retry failed: ${(e as Error).message}`));
+      upgradeRetries.set(key, retry);
+    }
+    return retry;
+  };
+
+  /** Apps an update is being applied to. One at a time per app: two would
+   *  clone into the same staging folder and write the same files. */
+  const updatingApps = new Set<string>();
 
   // Update an app as a merge: the files you changed keep your changes, the
   // ones you did not take the new version, and overlapping edits come back
   // as conflicts with nothing written until a strategy is picked. Your
   // workspace is committed first, so every outcome can be walked back.
   app.post("/v1/apps/:id/update", async (c) => {
+    const id = c.req.param("id");
+    const key = `${c.get("user").username}/${id}`;
+    if (updatingApps.has(key)) return c.json({ error: "this app is already being updated" }, 409);
+    updatingApps.add(key);
+    try {
+      return await updateApp(c, id);
+    } finally {
+      updatingApps.delete(key);
+    }
+  });
+  const updateApp = async (c: Context<AppEnv>, id: string) => {
     const u = c.get("user");
     const p = c.get("paths");
-    const id = c.req.param("id");
     const info = readApp(p.apps, id);
     if (!info) return c.json({ error: "app not found" }, 404);
     const source = installSourceOf(p, info);
@@ -3476,9 +3530,10 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       if (base) writeBaseline(p.appUpstream, id, from, base);
     }
     const theirs = readCodeTree(incoming);
+    const ours = readCodeTree(info.dir);
     let result: Awaited<ReturnType<typeof mergeTrees>>;
     try {
-      result = await mergeTrees(base, readCodeTree(info.dir), theirs, strategy, { base: `v${from}`, theirs: `v${to}` });
+      result = await mergeTrees(base, ours, theirs, strategy, { base: `v${from}`, theirs: `v${to}` });
     } catch (e) {
       dropStaging();
       return c.json({ error: `merge failed: ${(e as Error).message}` }, 500);
@@ -3488,23 +3543,50 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       return c.json({ status: "conflicts", from, to, merged: result.merged, conflicts: result.conflicts });
     }
 
-    applyWrites(info.dir, result.writes);
+    // all or nothing: a write that fails (a full disk, a file another program
+    // holds) puts every file this update touched back the way it was
+    const manifestPath = path.join(info.dir, "manifest.json");
+    const manifestBefore = fs.readFileSync(manifestPath);
+    try {
+      applyWrites(info.dir, result.writes);
+      // the incoming manifest wins for content fields; provenance stays ours
+      const next = { ...incomingManifest, origin: "imported" as const, source: { git: source.git, ref: source.ref, head } };
+      fs.writeFileSync(manifestPath, JSON.stringify(next, null, 2) + "\n", "utf8");
+      writeBaseline(p.appUpstream, id, to, theirs);
+    } catch (e) {
+      let restored = true;
+      try {
+        restoreWrites(info.dir, result.writes.keys(), ours);
+        fs.writeFileSync(manifestPath, manifestBefore);
+      } catch {
+        restored = false;
+      }
+      dropStaging();
+      const why = (e as Error).message;
+      log.warn(`[apps] ${u.username}/${id}: update to v${to} could not be written: ${why}`);
+      return c.json({
+        error: restored
+          ? `The update could not be written (${why}), so nothing changed.`
+          : `The update could not be written (${why}) and the app could not be put back by itself. Your version is in the workspace history${before ? ` as commit ${before.slice(0, 10)}` : ""}: ask the agent to restore apps/${id} from it.`,
+      }, 500);
+    }
     seedDataTemplates(incoming, info.dir);
-    // the incoming manifest wins for content fields; provenance stays ours
-    const next = { ...incomingManifest, origin: "imported" as const, source: { git: source.git, ref: source.ref, head } };
-    fs.writeFileSync(path.join(info.dir, "manifest.json"), JSON.stringify(next, null, 2) + "\n", "utf8");
-    writeBaseline(p.appUpstream, id, to, theirs);
     dropStaging();
     fs.rmSync(path.join(info.dir, "dist"), { recursive: true, force: true });
-    if (depsChanged) {
-      fs.rmSync(path.join(info.dir, "node_modules"), { recursive: true, force: true });
-      if (config.apps.packageDownloads) await installApp(info.dir);
+    const warnings: string[] = [];
+    // installed over the old packages: if the install fails, the app keeps
+    // the ones it had instead of none
+    if (depsChanged && config.apps.packageDownloads) {
+      const installed = await installApp(info.dir);
+      if (!installed.ok) warnings.push(`Its packages did not install (${installed.log.split("\n").filter(Boolean).slice(-2).join(" ")}). Open the app to try again.`);
     }
     grantBundledPlugins(p, id, info.dir, source.git);
     if (source.restored && sameTree(readCodeTree(info.dir), theirs)) writeInstallSource(p.appUpstream, id, { git: source.git, ref: source.ref });
     invalidatePluginCache();
     evictAgents(u.username);
-    await runAppUpdateHooks(u, p, id, from, to);
+    const upgradeFailed = await runAppUpdateHooks(u, p, id, from, to);
+    // what failed now is retried before the app's next request
+    upgradeRetries.delete(`${u.username}/${id}`);
     const note = !result.conflicts.length ? "" : strategy === "agent" ? `, ${result.conflicts.length} conflicts left for the agent` : strategy === "mine" ? `, your side kept in ${result.conflicts.length} conflicts` : "";
     await git.commitAll(p.root, u.username, `app(${id}): updated v${from} → v${to}${strategy === "theirs" ? ", your edits replaced" : ""}${note}`);
     bus.emit(u.username, "app_changed", { app: id, updated: true });
@@ -3516,9 +3598,11 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       strategy,
       merged: result.merged,
       conflicts: result.conflicts,
+      ...(upgradeFailed.length ? { upgradeFailed } : {}),
+      ...(warnings.length ? { warnings } : {}),
       ...(strategy === "agent" && result.conflicts.length ? { agentPrompt: mergeBrief(info, from, to, result.conflicts, before, link) } : {}),
     });
-  });
+  };
 
   // ---------- app plugin management ----------
   app.get("/v1/apps/:id/plugins", (c) => {    const p = c.get("paths");
@@ -4190,6 +4274,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
   ): Promise<{ status: number; payload: unknown; contentType?: string } | null> => {
     const p = userPaths(dataDir, u.username);
     if (appId === "active" || !readApp(p.apps, appId)) return { status: 404, payload: { error: "app not found" } };
+    await retryPendingUpgrade(u, p, appId);
     const deps = getAppDeps(u, appId);
     // pending changes that predate this route (agent writes, shell edits) —
     // committed under their own label after the route so a sweep never
@@ -4388,7 +4473,19 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
     } catch (e) {
       return c.json({ error: (e as Error).message }, 403);
     }
-    return c.json({ release: await latestRelease() });
+    const release = await latestRelease();
+    if (!release?.newer) return c.json({ release });
+    // apps that say which engine they need and would not get it: named before
+    // the update, not discovered after it
+    const incompatibleApps: { name: string; needs: string }[] = [];
+    for (const account of users.list()) {
+      for (const info of listApps(userPaths(dataDir, account.username).apps)) {
+        const needs = info.manifest.engine;
+        if (!needs || satisfiesRange(needs, release.version)) continue;
+        if (!incompatibleApps.some((a) => a.name === info.manifest.name && a.needs === needs)) incompatibleApps.push({ name: info.manifest.name, needs });
+      }
+    }
+    return c.json({ release: { ...release, incompatibleApps } });
   });
   app.get("/v1/admin/server/update", (c) => {
     try {

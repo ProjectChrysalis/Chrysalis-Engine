@@ -122,7 +122,7 @@ if (typeof fn === "function") { out = fn(env.ctx, env.host); }`);
 }
 
 port.on("message", async (msg) => {
-  const { id, source, hook, ctx, storeSnapshot = {}, llmResults = {}, netResults = {}, netAllowed = false, maxStoreBytes = 1024 * 1024, storeAllowed = true, llmAllowed = true, fsAllowed = false, fsRoot = null, zipAllowed = false, zipBase64 = null, siblingToolDefs = null, embedResults = {} } = msg;
+  const { id, source, hook, ctx, storeSnapshot = {}, llmResults = {}, netResults = {}, netAllowed = false, maxStoreBytes = 1024 * 1024, storeAllowed = true, llmAllowed = true, fsAllowed = false, fsRoot = null, zipAllowed = false, zipBase64 = null, siblingToolDefs = null, embedResults = {}, executionTimeoutMs = 10_000, memoryLimitBytes = 64 * 1024 * 1024 } = msg;
   const logs = [];
   const llmRequests = [];
   const netRequests = [];
@@ -355,8 +355,8 @@ try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: f
     const result = await runSandboxed(
       async ({ evalCode }) => evalCode(harnessCode(hook), "harness.mjs"),
       {
-        executionTimeout: 10_000,
-        memoryLimit: 64 * 1024 * 1024,
+        executionTimeout: executionTimeoutMs,
+        memoryLimit: memoryLimitBytes,
         maxStackSize: 1024 * 1024,
         env: { ctx, host },
         nodeModules: { "plugin.js": source, "guard.js": guard },

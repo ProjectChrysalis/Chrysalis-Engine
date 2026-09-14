@@ -224,7 +224,7 @@ describe("shareable plugins (git import, scoped to an app)", () => {
     expect(av.upToDate).toBe(true);
     expect(av.modified).toBe(true);
 
-    // a dependency-changing update drops the stale node_modules (vite apps)
+    // a dependency-changing update installs over the packages the app has
     {
       const work = path.join(repoDir, "work");
       const m2 = JSON.parse(fs.readFileSync(path.join(work, "manifest.json"), "utf8")) as { version: string };
@@ -237,10 +237,10 @@ describe("shareable plugins (git import, scoped to an app)", () => {
       fs.rmSync(path.join(repoDir, "repo.git"), { recursive: true, force: true });
       await git(["clone", "--bare", work, path.join(repoDir, "repo.git")]);
       await git(["update-server-info"], path.join(repoDir, "repo.git"));
-      // stale install marker that must NOT survive a dep-changing update
-      const stale = path.join(appDir, "node_modules", "stale-pkg");
-      fs.mkdirSync(stale, { recursive: true });
-      fs.writeFileSync(path.join(stale, "index.js"), "old");
+      // an installed package: an update whose install fails must not leave the app with none
+      const installed = path.join(appDir, "node_modules", "installed-pkg");
+      fs.mkdirSync(installed, { recursive: true });
+      fs.writeFileSync(path.join(installed, "index.js"), "old");
       // first pass WITHOUT confirmation: reports the dependency diff, swaps nothing
       const preview = await call(`/v1/apps/${appId}/update`, { method: "POST" });
       expect(preview.status).toBe(200);
@@ -250,18 +250,22 @@ describe("shareable plugins (git import, scoped to an app)", () => {
       expect(pv2.deps?.removed).toEqual([]);
       const manifestStill = JSON.parse(fs.readFileSync(path.join(appDir, "manifest.json"), "utf8")) as { version: string };
       expect(manifestStill.version).toBe("2.0.0"); // untouched until confirmed
-      expect(fs.existsSync(stale)).toBe(true);
-      // confirmed pass: swaps, drops the stale install for reinstall
+      expect(fs.existsSync(installed)).toBe(true);
+      // confirmed pass: applies the update
       const upd2 = await call(`/v1/apps/${appId}/update`, { method: "POST", body: JSON.stringify({ confirmDeps: true }) });
       expect(upd2.status).toBe(200);
-      expect(fs.existsSync(stale)).toBe(false); // dropped for reinstall
+      expect((JSON.parse(fs.readFileSync(path.join(appDir, "manifest.json"), "utf8")) as { version: string }).version).toBe("2.1.0");
       expect(fs.readFileSync(path.join(appDir, "data", "keep.txt"), "utf8")).toBe("user data");
     }
 
-    // re-importing the same git source must NOT wipe the user's data either
+    // importing the same repository again is refused: new versions come
+    // through the update, which merges edits and upgrades data
     fs.writeFileSync(path.join(appDir, "data", "keep2.txt"), "more user data");
+    const before = fs.readFileSync(path.join(appDir, "manifest.json"), "utf8");
     const reimp = await call("/v1/apps/import", { method: "POST", body: JSON.stringify({ gitUrl: repoUrl, confirm: true }) });
-    expect(reimp.status).toBe(200);
+    expect(reimp.status).toBe(409);
+    expect(((await reimp.json()) as { installed?: string }).installed).toBe(appId);
+    expect(fs.readFileSync(path.join(appDir, "manifest.json"), "utf8")).toBe(before);
     expect(fs.existsSync(path.join(appDir, "data", "keep2.txt"))).toBe(true);
     expect(fs.existsSync(path.join(appDir, "plugins", pluginId))).toBe(true);
   }, 90_000);
@@ -331,6 +335,104 @@ describe("shareable plugins (git import, scoped to an app)", () => {
     const settings = JSON.parse(fs.readFileSync(path.join(root, "settings.json"), "utf8")) as { disabledPlugins?: string[] };
     expect(settings.disabledPlugins ?? []).not.toContain(`${appId}__${pid}`);
   }, 90_000);
+});
+
+describe("app updates stay whole", () => {
+  /** Commit the work tree as the repository's new head. */
+  const publish = async (message: string) => {
+    const work = path.join(repoDir, "work");
+    await git(["add", "-A"], work);
+    await git(["commit", "-m", message], work);
+    fs.rmSync(path.join(repoDir, "repo.git"), { recursive: true, force: true });
+    await git(["clone", "--bare", work, path.join(repoDir, "repo.git")]);
+    await git(["update-server-info"], path.join(repoDir, "repo.git"));
+  };
+  const setVersion = (version: string) => {
+    const file = path.join(repoDir, "work", "manifest.json");
+    fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, "utf8")), version }));
+  };
+  const install = async () => {
+    const res = await call("/v1/apps/import", { method: "POST", body: JSON.stringify({ gitUrl: repoUrl, confirm: true }) });
+    const id = ((await res.json()) as { id: string }).id;
+    return { id, dir: path.join(userPaths(dataDir, "root").root, "apps", id) };
+  };
+
+  it("puts every file back when writing the update fails partway", async () => {
+    fs.writeFileSync(path.join(repoDir, "work", "a.txt"), "one\n");
+    await publish("a");
+    const { id, dir } = await install();
+    fs.writeFileSync(path.join(repoDir, "work", "a.txt"), "two\n");
+    fs.mkdirSync(path.join(repoDir, "work", "src"), { recursive: true });
+    fs.writeFileSync(path.join(repoDir, "work", "src", "new.ts"), "export {}\n");
+    setVersion("2.0.0");
+    await publish("v2");
+    // something local sits where the update writes a file
+    fs.mkdirSync(path.join(dir, "src", "new.ts"), { recursive: true });
+
+    const res = await call(`/v1/apps/${id}/update`, { method: "POST" });
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { error: string }).error).toMatch(/nothing changed/);
+    expect(fs.readFileSync(path.join(dir, "a.txt"), "utf8")).toBe("one\n");
+    expect((JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8")) as { version: string }).version).toBe("1.0.0");
+  }, 60_000);
+
+  it("applies one update of an app at a time", async () => {
+    const { id } = await install();
+    setVersion("2.0.0");
+    await publish("v2");
+    const replies = await Promise.all([1, 2].map(() => call(`/v1/apps/${id}/update`, { method: "POST" })));
+    expect(replies.map((r) => r.status).sort()).toEqual([200, 409]);
+  }, 60_000);
+
+  it("reports a data upgrade that fails, and finishes it before the app's next request", async () => {
+    const { id, dir } = await install();
+    const plugin = path.join(repoDir, "work", "plugins", "migrator");
+    fs.mkdirSync(plugin, { recursive: true });
+    fs.writeFileSync(path.join(plugin, "manifest.json"), JSON.stringify({ name: "Migrator", version: "1.0.0", permissions: ["routes", "fs"] }));
+    fs.writeFileSync(path.join(plugin, "plugin.js"), `
+      export function onAppUpdate(ctx, host) {
+        host.fs.read("ready.txt");
+        host.fs.write("upgraded.txt", ctx.from + ">" + ctx.to);
+        return {};
+      }
+      export function handleRoute(req) { return req.path === "/ping" ? { status: 200, json: { ok: true } } : null; }
+    `);
+    setVersion("2.0.0");
+    await publish("v2 with a data upgrade");
+
+    // a community update asking for new permissions is reviewed first
+    const review = (await (await call(`/v1/apps/${id}/update`, { method: "POST" })).json()) as { needsDepConfirm?: boolean; head?: string };
+    expect(review.needsDepConfirm).toBe(true);
+    const applied = (await (await call(`/v1/apps/${id}/update`, { method: "POST", body: JSON.stringify({ confirmDeps: true, head: review.head }) })).json()) as {
+      status: string;
+      upgradeFailed?: { plugin: string; error: string }[];
+    };
+    expect(applied.status).toBe("applied");
+    expect(applied.upgradeFailed?.map((f) => f.plugin)).toEqual(["Migrator"]);
+    expect(fs.existsSync(path.join(dir, "data", "upgraded.txt"))).toBe(false);
+
+    fs.writeFileSync(path.join(dir, "data", "ready.txt"), "yes");
+    const ping = await call(`/v1/apps/${id}/ping`);
+    expect(ping.status).toBe(200);
+    expect(fs.readFileSync(path.join(dir, "data", "upgraded.txt"), "utf8")).toBe("1.0.0>2.0.0");
+    expect(fs.existsSync(path.join(userPaths(dataDir, "root").appUpstream, `${id}.upgrade.json`))).toBe(false);
+  }, 60_000);
+});
+
+describe("remote manifest", () => {
+  it("reads a GitHub repository's manifest at a commit, and nothing elsewhere", async () => {
+    const { remoteManifest } = await import("../src/apps/git.js");
+    const commit = "a".repeat(40);
+    const asked: string[] = [];
+    const fetcher = (async (url: string) => {
+      asked.push(url);
+      return Response.json({ version: "2.0.0", engine: ">=9.0.0", name: "X" });
+    }) as unknown as typeof fetch;
+    expect(await remoteManifest("https://github.com/owner/app.git", commit, fetcher)).toEqual({ version: "2.0.0", engine: ">=9.0.0" });
+    expect(asked).toEqual([`https://raw.githubusercontent.com/owner/app/${commit}/manifest.json`]);
+    expect(await remoteManifest("https://gitlab.com/owner/app", commit, fetcher)).toBeNull();
+    expect(await remoteManifest("https://github.com/owner/app", "main", fetcher)).toBeNull();
+  });
 });
 
 describe("app divergence (modified since install)", () => {

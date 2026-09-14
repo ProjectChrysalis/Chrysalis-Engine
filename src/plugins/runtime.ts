@@ -30,7 +30,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { sandbox, type SandboxResponse } from "./sandbox.js";
+import { PluginSandbox, sandbox, type SandboxResponse } from "./sandbox.js";
 import type { PluginStoreService } from "./store.js";
 import type { UserModelService, GenerateRequest, GenerateResult } from "../models.js";
 import { log } from "../logger.js";
@@ -814,12 +814,49 @@ export interface PluginManifest {
 
 const MAX_PASSES = 3;
 
+/** Limits for a hook allowed to take long (an app's data upgrade). */
+export interface HookLimits {
+  executionTimeoutMs: number;
+  memoryLimitBytes: number;
+}
+
+export type HookOutcome = { ok: true; out: Record<string, unknown> | null } | { ok: false; error: string };
+
+/** Run a hook and say whether it worked. With limits, it runs on a sandbox of
+ *  its own, so a long call neither waits behind nor holds up other plugins. */
+export async function runPluginHookOutcome(
+  plugin: LoadedPlugin,
+  hook: PluginHook | string,
+  ctx: Record<string, unknown>,
+  deps: PluginRuntimeDeps,
+  limits?: HookLimits,
+): Promise<HookOutcome> {
+  const box = limits ? new PluginSandbox() : sandbox;
+  try {
+    return await hookPasses(box, plugin, hook, ctx, deps, limits);
+  } finally {
+    if (limits) await box.dispose();
+  }
+}
+
 export async function runPluginHook(
   plugin: LoadedPlugin,
   hook: PluginHook | string,
   ctx: Record<string, unknown>,
   deps: PluginRuntimeDeps,
 ): Promise<Record<string, unknown> | null> {
+  const outcome = await hookPasses(sandbox, plugin, hook, ctx, deps);
+  return outcome.ok ? outcome.out : null;
+}
+
+async function hookPasses(
+  box: PluginSandbox,
+  plugin: LoadedPlugin,
+  hook: PluginHook | string,
+  ctx: Record<string, unknown>,
+  deps: PluginRuntimeDeps,
+  limits?: HookLimits,
+): Promise<HookOutcome> {
   const storeOk = hasCapAny(plugin, "store", deps);
   const caps = passCaps(plugin, deps);
   const storeSnapshot = snapshotOf(plugin, deps);
@@ -828,7 +865,7 @@ export async function runPluginHook(
   let current: Record<string, unknown> = ctx;
 
   for (let pass = 0; pass < MAX_PASSES; pass++) {
-    const r = await sandbox.eval({
+    const r = await box.eval({
       source: plugin.source,
       hook,
       ctx: current as unknown,
@@ -841,6 +878,7 @@ export async function runPluginHook(
       netResults: results.net,
       fsAllowed: hasCapAny(plugin, "fs", deps) && !!plugin.fsRoot,
       fsRoot: plugin.fsRoot ?? null,
+      ...(limits ?? {}),
     });
 
     applyStoreWrites(plugin, r, deps);
@@ -851,18 +889,19 @@ export async function runPluginHook(
         log.warn(`[plugin:${plugin.id}] store writes attempted without permission — discarded`);
       }
       log.warn(`[plugin:${plugin.id}] ${hook} failed: ${r.error}`);
-      return null; // crash-isolated: pass original ctx through
+      return { ok: false, error: r.error ?? "failed" }; // crash-isolated: the caller keeps its own ctx
     }
 
-    if (!passWants(r, caps)) return (r.out as Record<string, unknown> | null) ?? null;
+    const out = (r.out as Record<string, unknown> | null) ?? null;
+    if (!passWants(r, caps)) return { ok: true, out };
     if (pass === MAX_PASSES - 1) {
       log.warn(`[plugin:${plugin.id}] ${hook}: exceeded ${MAX_PASSES} passes; using last good ctx`);
-      return (r.out as Record<string, unknown> | null) ?? null;
+      return { ok: true, out };
     }
     results = await runPassRequests(plugin, r, deps, caps, "hook");
-    current = (r.out as Record<string, unknown>) ?? current;
+    current = out ?? current;
   }
-  return null;
+  return { ok: true, out: null };
 }
 
 

@@ -329,7 +329,7 @@ const dict = {
   "Update": "업데이트",
   "Update available": "업데이트 있음",
   "Update plugin": "플러그인 업데이트",
-  "Update with bun install -g chrysalis-engine, then restart Chrysalis.": "bun install -g chrysalis-engine으로 업데이트한 뒤 Chrysalis를 다시 시작하세요.",
+  "Update with bun add -g chrysalis-engine@latest, then restart Chrysalis.": "bun add -g chrysalis-engine@latest으로 업데이트한 뒤 Chrysalis를 다시 시작하세요.",
   "Update with git pull, bun install and bun run build:client, then restart Chrysalis.": "git pull, bun install, bun run build:client 순서로 업데이트한 뒤 Chrysalis를 다시 시작하세요.",
   "Updated to v{version}.": "v{version}(으)로 업데이트했습니다.",
   "Updates the installed copy{version}. Its permissions become the ones below.": "설치된 사본{version}을(를) 업데이트합니다. 권한은 아래 항목으로 바뀝니다.",
@@ -424,6 +424,11 @@ const dict = {
   "Update to {version}": "{version}(으)로 업데이트",
   "Downloading…": "다운로드 중…",
   "Restarting…": "다시 시작하는 중…",
+  "Chrysalis restarted without the update.": "Chrysalis가 업데이트 없이 다시 시작되었습니다.",
+  "Chrysalis has not come back after five minutes. Check the window or log where it runs.": "5분이 지나도 Chrysalis가 돌아오지 않았습니다. 실행 중인 창이나 로그를 확인하세요.",
+  "These apps say they need a different version of Chrysalis and may stop working after the update: {apps}": "다음 앱은 다른 버전의 Chrysalis가 필요하다고 하며 업데이트 후 작동하지 않을 수 있습니다: {apps}",
+  "The last update did not work: {error}": "마지막 업데이트가 실패했습니다: {error}",
+  "Some of its data was not upgraded yet and will be tried again when the app opens: {plugins}": "일부 데이터가 아직 업그레이드되지 않았으며 앱을 열 때 다시 시도합니다: {plugins}",
 }
 
 export default dict

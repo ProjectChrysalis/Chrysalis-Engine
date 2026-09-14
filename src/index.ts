@@ -33,7 +33,8 @@ import { log, logToFile } from "./logger.js";
 import { writeStdioApproval, type McpServerConfig } from "./mcp/registry.js";
 import { bindLegacyKeys } from "./connections.js";
 import { releaseLock, runningEngine, writeLock } from "./lock.js";
-import { cleanUpAfterUpdate, runReplacement } from "./self-update.js";
+import { cleanUpAfterUpdate, dropEngineFiles, runReplacement, updateState } from "./self-update.js";
+import { dataFormatProblem, recordDataFormat } from "./data-format.js";
 
 // The engine runs unsupervised — an unhandled socket error must not take the
 // user's app dark. Network-grade errors (a client vanished mid-read, a
@@ -123,6 +124,8 @@ async function resetPassword(dataDir: string, username: string | undefined): Pro
   if (!username) fail("usage: chrysalis reset-password <user>");
   const live = await runningEngine(dataDir);
   if (live) fail(`Chrysalis is running (${live.url}). Stop it first, then run this again.`);
+  const newer = dataFormatProblem(dataDir);
+  if (newer) fail(newer);
   const users = new UserService(dataDir);
   const user = users.getFolded(username);
   if (!user) fail(`no account named "${username}". Accounts: ${users.list().map((u) => u.username).join(", ") || "none yet"}`);
@@ -244,10 +247,17 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
 
   const live = await runningEngine(dataDir);
   if (live) fail(`Chrysalis is already running with this data folder: ${live.url} (pid ${live.pid})`);
+  const newer = dataFormatProblem(dataDir);
+  if (newer) fail(newer);
 
   log.info(`Chrysalis ${ENGINE_VERSION} (${INSTALL_KIND})`);
+  // the first run after an update keeps what undoing it needs until the
+  // parent has seen this version serve; every other start drops leftovers
+  const firstRunAfterUpdate = process.env.CHRYSALIS_UPDATED === "1";
+  const cameBackFromUpdate = updateState().phase === "failed";
   try {
     cleanUpAfterUpdate();
+    if (!firstRunAfterUpdate) dropEngineFiles(dataDir);
   } catch { /* best effort */ }
   for (const w of loaded.warnings) log.warn(w);
 
@@ -262,6 +272,7 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
     log.info("==========================================================");
   }
   await prepareAccounts(users, dataDir);
+  recordDataFormat(dataDir, ENGINE_VERSION);
 
   // first run: no account exists yet. The first visitor holding this token
   // creates the admin account in the browser. A launcher that opens the
@@ -300,7 +311,7 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
     await new Promise((r) => setTimeout(r, 1500));
     log.info("restarting into the new version");
     await stopServing();
-    runReplacement();
+    runReplacement({ dataDir });
   };
   const app = buildApp({ users, sessions, config, dataDir, bus, sandbox, instance, setupToken, settings, restart });
   bus.attach(users, sessions);
@@ -325,9 +336,9 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
   if (setupLink) log.info("First run: open the link above to create your account.");
   log.info("----------------------------------------------------------");
   // after an update the browser is already open, waiting for this start
-  const updated = process.env.CHRYSALIS_UPDATED === "1";
+  const updated = firstRunAfterUpdate || cameBackFromUpdate;
   delete process.env.CHRYSALIS_UPDATED;
-  if (updated) log.info(`Updated to Chrysalis ${ENGINE_VERSION}`);
+  if (firstRunAfterUpdate) log.info(`Updated to Chrysalis ${ENGINE_VERSION}`);
   if (config.openBrowser && !updated && (INSTALL_KIND === "binary" || INSTALL_KIND === "npm") && !process.env.container) {
     openBrowser(setupLink ?? urls.local);
   }

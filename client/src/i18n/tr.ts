@@ -329,7 +329,7 @@ const dict = {
   "Update": "Güncelle",
   "Update available": "Güncelleme var",
   "Update plugin": "Eklentiyi güncelle",
-  "Update with bun install -g chrysalis-engine, then restart Chrysalis.": "bun install -g chrysalis-engine ile güncelleyin, ardından Chrysalis'i yeniden başlatın.",
+  "Update with bun add -g chrysalis-engine@latest, then restart Chrysalis.": "bun add -g chrysalis-engine@latest ile güncelleyin, ardından Chrysalis'i yeniden başlatın.",
   "Update with git pull, bun install and bun run build:client, then restart Chrysalis.": "git pull, bun install ve bun run build:client ile güncelleyin, sonra Chrysalis'i yeniden başlatın.",
   "Updated to v{version}.": "v{version} sürümüne güncellendi.",
   "Updates the installed copy{version}. Its permissions become the ones below.": "Kurulu kopyayı{version} günceller. İzinleri aşağıdakiler olur.",
@@ -424,6 +424,11 @@ const dict = {
   "Update to {version}": "{version} sürümüne güncelle",
   "Downloading…": "İndiriliyor…",
   "Restarting…": "Yeniden başlatılıyor…",
+  "Chrysalis restarted without the update.": "Chrysalis güncelleme olmadan yeniden başladı.",
+  "Chrysalis has not come back after five minutes. Check the window or log where it runs.": "Chrysalis beş dakika sonra geri gelmedi. Çalıştığı pencereye veya günlüğe bakın.",
+  "These apps say they need a different version of Chrysalis and may stop working after the update: {apps}": "Bu uygulamalar farklı bir Chrysalis sürümüne ihtiyaç duyduklarını belirtiyor ve güncellemeden sonra çalışmayabilir: {apps}",
+  "The last update did not work: {error}": "Son güncelleme başarısız oldu: {error}",
+  "Some of its data was not upgraded yet and will be tried again when the app opens: {plugins}": "Verilerinin bir kısmı henüz yükseltilmedi, uygulama açıldığında yeniden denenecek: {plugins}",
 }
 
 export default dict

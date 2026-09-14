@@ -1364,6 +1364,9 @@ type UpdateReply = {
   head?: string
   deps?: { added: { name: string; spec: string }[]; changed: { name: string; spec: string; was: string }[]; removed: string[]; nonRegistry: string[] }
   permissions?: { id: string; name: string; added: string[] }[]
+  /** plugins whose data upgrade failed; it is tried again when the app opens */
+  upgradeFailed?: { plugin: string; error: string }[]
+  warnings?: string[]
 }
 
 function AppDetail(props: {
@@ -1404,7 +1407,7 @@ function AppDetail(props: {
     | { state: "available"; version: string | null; remoteHead: string | null; modified: boolean | null; engine: string | null; engineVersion: string | null }
     | { state: "updating" }
     | { state: "conflicts"; from: string; to: string; conflicts: Conflict[] }
-    | { state: "applied"; to: string; strategy: UpdateStrategy; merged: number; conflicts: number }
+    | { state: "applied"; to: string; strategy: UpdateStrategy; merged: number; conflicts: number; problems: string[] }
     | {
         state: "dep-review"
         strategy: UpdateStrategy
@@ -1480,7 +1483,11 @@ function AppDetail(props: {
         setUpdates({ state: "current" })
         return
       }
-      setUpdates({ state: "applied", to: r.to ?? "", strategy, merged: r.merged?.length ?? 0, conflicts: r.conflicts?.length ?? 0 })
+      const problems = [
+        ...(r.upgradeFailed?.length ? [tr("Some of its data was not upgraded yet and will be tried again when the app opens: {plugins}", { plugins: r.upgradeFailed.map((f) => `${f.plugin} (${f.error})`).join(", ") })] : []),
+        ...(r.warnings ?? []),
+      ]
+      setUpdates({ state: "applied", to: r.to ?? "", strategy, merged: r.merged?.length ?? 0, conflicts: r.conflicts?.length ?? 0, problems })
       if (r.agentPrompt) props.onAskAgent(r.agentPrompt)
     } catch (e: any) {
       setUpdates({ state: "error", message: e.message ?? String(e) })
@@ -1627,6 +1634,7 @@ function AppDetail(props: {
           {updates.conflicts && updates.strategy === "mine" ? " " + tr("Where they overlapped, your version stayed.") : ""}
           {updates.conflicts && updates.strategy === "theirs" ? " " + tr("Your overlapping edits are in git history.") : ""}
           {updates.conflicts && updates.strategy === "agent" ? " " + tr("The agent is merging the overlaps.") : ""}
+          {updates.problems.map((problem) => <p key={problem} className="mt-1 text-danger">{problem}</p>)}
         </div> : null}
       {updates.state === "current" ? <div className="border-b border-line px-4 py-1.5 text-11 text-ink-faint">
           {tr("Up to date.")}

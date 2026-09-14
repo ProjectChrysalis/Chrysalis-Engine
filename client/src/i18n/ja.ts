@@ -329,7 +329,7 @@ const dict = {
   "Update": "更新",
   "Update available": "更新があります",
   "Update plugin": "プラグインを更新",
-  "Update with bun install -g chrysalis-engine, then restart Chrysalis.": "bun install -g chrysalis-engine で更新し、Chrysalis を再起動してください。",
+  "Update with bun add -g chrysalis-engine@latest, then restart Chrysalis.": "bun add -g chrysalis-engine@latest で更新し、Chrysalis を再起動してください。",
   "Update with git pull, bun install and bun run build:client, then restart Chrysalis.": "git pull、bun install、bun run build:client で更新し、Chrysalis を再起動してください。",
   "Updated to v{version}.": "v{version} に更新しました。",
   "Updates the installed copy{version}. Its permissions become the ones below.": "インストール済みのコピー{version}を更新します。権限は下記のものになります。",
@@ -424,6 +424,11 @@ const dict = {
   "Update to {version}": "{version} に更新",
   "Downloading…": "ダウンロード中…",
   "Restarting…": "再起動中…",
+  "Chrysalis restarted without the update.": "Chrysalis はアップデートされずに再起動しました。",
+  "Chrysalis has not come back after five minutes. Check the window or log where it runs.": "5 分経っても Chrysalis が戻りません。実行中のウィンドウまたはログを確認してください。",
+  "These apps say they need a different version of Chrysalis and may stop working after the update: {apps}": "次のアプリは別のバージョンの Chrysalis を必要としており、アップデート後に動作しなくなる可能性があります: {apps}",
+  "The last update did not work: {error}": "前回のアップデートは失敗しました: {error}",
+  "Some of its data was not upgraded yet and will be tried again when the app opens: {plugins}": "一部のデータはまだアップグレードされていません。アプリを開いたときに再試行します: {plugins}",
 }
 
 export default dict

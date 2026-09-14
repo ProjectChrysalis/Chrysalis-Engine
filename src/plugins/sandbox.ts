@@ -17,6 +17,8 @@ const WORKER_PATH =
   CHRYSALIS_SANDBOX_WORKER.startsWith("./") ? CHRYSALIS_SANDBOX_WORKER :
   path.join(import.meta.dir, CHRYSALIS_SANDBOX_WORKER);
 const CALL_TIMEOUT_MS = 20_000; // includes worker boot; sandbox itself caps at 10s
+/** Room on top of a call's own execution limit for boot and the round trip. */
+const CALL_OVERHEAD_MS = 10_000;
 
 export interface SandboxRequest {
   source: string;
@@ -36,6 +38,11 @@ export interface SandboxRequest {
   zipBase64?: string;
   /** Safe reads may be repeated once when the WASM runtime aborts during teardown. */
   retryOnPoison?: boolean;
+  /** Execution and memory limits for this call, above the 10 s and 64 MB
+   *  defaults. Only for work that is allowed to be long, on its own sandbox:
+   *  a worker runs one call at a time. */
+  executionTimeoutMs?: number;
+  memoryLimitBytes?: number;
 }
 
 export interface SandboxResponse {
@@ -82,7 +89,7 @@ class SandboxWorkerHandle {
     this.pending.clear();
   }
 
-  call(req: SandboxRequest, timeoutMs = CALL_TIMEOUT_MS): Promise<SandboxResponse> {
+  call(req: SandboxRequest, timeoutMs = req.executionTimeoutMs ? req.executionTimeoutMs + CALL_OVERHEAD_MS : CALL_TIMEOUT_MS): Promise<SandboxResponse> {
     const id = this.nextId++;
     return new Promise<SandboxResponse>((resolve) => {
       let settled = false;

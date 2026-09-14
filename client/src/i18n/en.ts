@@ -331,7 +331,7 @@ const en = {
   "Update": "",
   "Update available": "",
   "Update plugin": "",
-  "Update with bun install -g chrysalis-engine, then restart Chrysalis.": "",
+  "Update with bun add -g chrysalis-engine@latest, then restart Chrysalis.": "",
   "Update with git pull, bun install and bun run build:client, then restart Chrysalis.": "",
   "Updated to v{version}.": "",
   "Updates the installed copy{version}. Its permissions become the ones below.": "",
@@ -426,6 +426,11 @@ const en = {
   "Update to {version}": "",
   "Downloading…": "",
   "Restarting…": "",
+  "Chrysalis restarted without the update.": "",
+  "Chrysalis has not come back after five minutes. Check the window or log where it runs.": "",
+  "These apps say they need a different version of Chrysalis and may stop working after the update: {apps}": "",
+  "The last update did not work: {error}": "",
+  "Some of its data was not upgraded yet and will be tried again when the app opens: {plugins}": "",
 } as const
 
 export default en
