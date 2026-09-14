@@ -1,6 +1,8 @@
 <p align="center"><img src="client/public/chrysalis_logo.png" width="128" alt="Chrysalis" /></p>
 
 <p align="center">
+  <a href="https://github.com/ProjectChrysalis/Chrysalis-Engine/releases/latest"><img src="https://img.shields.io/github/v/release/ProjectChrysalis/Chrysalis-Engine?label=Release" alt="Latest release" /></a>
+  <a href="https://www.npmjs.com/package/chrysalis-engine"><img src="https://img.shields.io/npm/v/chrysalis-engine?logo=npm&label=npm" alt="npm version" /></a>
   <a href="https://github.com/ProjectChrysalis/Chrysalis-Engine/stargazers"><img src="https://img.shields.io/github/stars/ProjectChrysalis/Chrysalis-Engine?style=flat&logo=github&label=Stars" alt="GitHub stars" /></a>
   <a href="https://discord.gg/maFVqyeD4Q"><img src="https://img.shields.io/discord/1548807690380255262?logo=discord&logoColor=white&label=Discord&color=5865F2" alt="Discord" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/ProjectChrysalis/Chrysalis-Engine?label=License" alt="License" /></a>

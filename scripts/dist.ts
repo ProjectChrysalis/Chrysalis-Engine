@@ -198,6 +198,15 @@ if (wantNpm) {
   fs.chmodSync(path.join(npm, "chrysalis.js"), 0o755);
   fs.cpSync(resources, path.join(npm, "resources"), { recursive: true });
   fs.copyFileSync(path.join(repo, "LICENSE"), path.join(npm, "LICENSE"));
+  // the registry page shows this README away from the repo, so relative
+  // images and links point back into it
+  const repoUrl = pkg.repository ?? "https://github.com/ProjectChrysalis/Chrysalis-Engine";
+  const readme = fs
+    .readFileSync(path.join(repo, "README.md"), "utf8")
+    .replace(/src="(?!https?:|#)([^"]+)"/g, `src="${repoUrl}/raw/main/$1"`)
+    .replace(/href="(?!https?:|#|mailto:)([^"]+)"/g, `href="${repoUrl}/blob/main/$1"`)
+    .replace(/\]\((?!https?:|#|mailto:)([^)]+)\)/g, `](${repoUrl}/blob/main/$1)`);
+  fs.writeFileSync(path.join(npm, "README.md"), readme);
   fs.writeFileSync(
     path.join(npm, "package.json"),
     JSON.stringify(
@@ -210,7 +219,7 @@ if (wantNpm) {
         type: "module",
         bin: { chrysalis: "chrysalis.js" },
         engines: { bun: ">=1.4.0" },
-        files: ["chrysalis.js", "plugins", "resources", "*.wasm", "LICENSE"],
+        files: ["chrysalis.js", "plugins", "resources", "*.wasm", "LICENSE", "README.md"],
       },
       null,
       2,
