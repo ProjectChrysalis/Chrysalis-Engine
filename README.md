@@ -9,6 +9,8 @@ apps you want from the built-in Store, and every one of them is files the
 built-in agent can change while you watch. Ask for a feature and it builds it.
 Your chats, characters and keys are stored on your device.
 
+<p align="center"><img src="https://github.com/ProjectChrysalis/projectchrysalis.github.io/raw/main/assets/showcase.gif" alt="Chrysalis showcase: the agent editing the roleplay app live, character search, building a visual novel app, tool calling, mobile layout and model providers" /></p>
+
 ## Install
 
 Pick the download for your system from the
