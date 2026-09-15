@@ -7,6 +7,7 @@ import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { checkProgram, cleanUpAfterUpdate, installUpdate, pickAsset, platformTarget, restoreEngineFiles, restoreProgram, runReplacement, saveEngineFiles, swapProgram } from "../src/self-update.js";
 import { dataFormatProblem, recordDataFormat } from "../src/data-format.js";
+import { forgetRelease, latestRelease } from "../src/updates.js";
 
 const asset = (name: string, url = `https://github.com/o/r/releases/download/v1/${name}`) => ({ name, browser_download_url: url, size: 10 });
 
@@ -311,4 +312,79 @@ describe("installing a release", () => {
     expect(fs.readFileSync(path.join(dir, "chrysalis"), "utf8")).toContain("1.0.0");
     expect(fs.existsSync(path.join(dir, ".update"))).toBe(false);
   }, 30_000);
+});
+
+/** The release side of updating: which release GitHub names, whether it is
+ *  newer, and which archive on it belongs to this computer. Driven through
+ *  the fetcher seam, so no request ever leaves the machine. */
+describe("asking GitHub which release is newest", () => {
+  const stable = {
+    tag_name: "v9.9.9",
+    html_url: "https://github.com/ProjectChrysalis/Chrysalis-Engine/releases/tag/v9.9.9",
+    name: "Chrysalis 9.9.9",
+    assets: [
+      { name: `Chrysalis-9.9.9-${platformTarget()}.tar.gz`, browser_download_url: `https://github.com/o/r/releases/download/v9.9.9/Chrysalis-9.9.9-${platformTarget()}.tar.gz`, size: 42, state: "uploaded", digest: `sha256:${"ab".repeat(32)}` },
+    ],
+  };
+  const fetcher = (body: unknown, status = 200) => {
+    const calls: string[] = [];
+    const f = (async (url: string) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+    return { f, calls };
+  };
+
+  beforeEach(() => forgetRelease());
+  afterEach(() => forgetRelease());
+
+  it("reads the newest stable release and names its page", async () => {
+    const { f, calls } = fetcher(stable);
+    const release = await latestRelease(f, "1.0.0");
+    expect(calls[0]).toContain("/releases/latest");
+    expect(release?.version).toBe("9.9.9");
+    expect(release?.newer).toBe(true);
+    expect(release?.url).toBe(stable.html_url);
+    // the archive to download is pickAsset's job, tested on its own: a source
+    // or container copy runs without SELF_UPDATE and never offers one
+  });
+
+  it("keeps the release, but not newer, when it is this version", async () => {
+    const { f } = fetcher(stable);
+    const release = await latestRelease(f, "9.9.9");
+    expect(release?.newer).toBe(false);
+  });
+
+  it("follows the staging pre-release when this build is staging", async () => {
+    const { f, calls } = fetcher({ ...stable, tag_name: undefined, name: "Staging 9.9.9-staging.4" });
+    const release = await latestRelease(f, "9.9.9-staging.3");
+    expect(calls[0]).toContain("/releases/tags/staging-latest");
+    expect(release?.version).toBe("9.9.9-staging.4");
+    expect(release?.newer).toBe(true);
+    // any other staging build is newer, so the same one is the only "no"
+    forgetRelease();
+    const same = await latestRelease(fetcher({ ...stable, tag_name: undefined, name: "Staging 9.9.9-staging.4" }).f, "9.9.9-staging.4");
+    expect(same?.newer).toBe(false);
+  });
+
+  it("remembers the answer, so reopening Settings does not ask again", async () => {
+    const { f, calls } = fetcher(stable);
+    await latestRelease(f, "1.0.0");
+    await latestRelease(f, "1.0.0");
+    expect(calls.length).toBe(1);
+    forgetRelease();
+    await latestRelease(f, "1.0.0");
+    expect(calls.length).toBe(2);
+  });
+
+  it("says nothing when the release cannot be read", async () => {
+    const down = (async () => {
+      throw new Error("offline");
+    }) as unknown as typeof fetch;
+    expect(await latestRelease(down, "1.0.0")).toBeNull();
+    forgetRelease();
+    expect(await latestRelease(fetcher({}, 500).f, "1.0.0")).toBeNull();
+    forgetRelease();
+    expect(await latestRelease(fetcher({ tag_name: "v9.9.9" }, 200).f, "1.0.0")).toBeNull();
+  });
 });
