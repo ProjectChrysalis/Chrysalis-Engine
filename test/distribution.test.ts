@@ -540,10 +540,25 @@ describe("chrysalis makes itself a command", () => {
     expect(block).toContain("log.warn");
   });
 
-  it("only removes a link that points at this program", () => {
-    const block = src.slice(src.indexOf("async function unlinkCli"), src.indexOf("async function unlinkCli") + 600);
+  it("only ever finds, and so only ever removes, a link pointing at us", () => {
+    const block = src.slice(src.indexOf("function existingCliLink"), src.indexOf("function existingCliLink") + 800);
     expect(block).toContain("readlinkSync");
     expect(block).toContain("process.execPath");
+    // and uninstall acts on exactly what that found
+    const unlink = src.slice(src.indexOf("async function unlinkCli"), src.indexOf("async function unlinkCli") + 400);
+    expect(unlink).toContain("existingCliLink(dataDir)");
+  });
+
+  it("puts the link where the shell will actually look", () => {
+    // ~/.local/bin is not on the default macOS PATH; a link nobody searches
+    // for is the same as no link at all
+    expect(src).toContain("function cliCandidates");
+    expect(src).toContain("/usr/local/bin");
+    expect(src).toContain("onPath(d) && writableDir(d)");
+  });
+
+  it("does not bother inside a container", () => {
+    expect(src).toContain('INSTALL_KIND === "binary" && !IN_CONTAINER');
   });
 
   it("refuses a body its shell already mangled, instead of sending it", () => {

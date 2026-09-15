@@ -16,7 +16,7 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { hasPackages, installApp } from "./apps/packages.js";
 import { ConfigError, dataDirOf, envNameOf, flagNameOf, loadConfig, parseFlags, sandboxConfigOf, SETTINGS, type LoadedConfig } from "./config.js";
-import { ENGINE_VERSION, INSTALL_KIND, resolveHomeDir } from "./install.js";
+import { ENGINE_VERSION, INSTALL_KIND, IN_CONTAINER, resolveHomeDir } from "./install.js";
 import { UserService } from "./users.js";
 import { SessionService } from "./sessions.js";
 import { bootstrapUserDir, ensureGitignoreEntries, ensureNotesDir, ensureWorkspaceAgentsMd, migrateConnectionsIntoDataRoot, migrateCredentialsIntoDataRoot, migrateMcpIntoDataRoot, migrateSpeechIntoDataRoot, migrateWebSearchPreset, userPaths } from "./paths.js";
@@ -194,20 +194,21 @@ async function installCli(dataDir: string, remove: boolean): Promise<void> {
     console.log("The Android app has no terminal to put anything on.");
     return;
   }
-  const link = cliLinkPath(dataDir);
+  const link = existingCliLink(dataDir) ?? cliLinkPath(dataDir);
   if (remove) {
     const gone = await unlinkCli(dataDir);
-    console.log(gone ? `Removed ${link}.` : `Nothing of ours at ${link}.`);
+    console.log(gone ? `Removed ${link}.` : `Nothing of ours to remove.`);
     if (gone && process.platform === "win32") console.log("The folder stays on your PATH; nothing is in it.");
     return;
   }
   await linkCli(dataDir);
-  console.log(`Wrote ${link}.`);
-  console.log(onPath(path.dirname(link))
+  const made = existingCliLink(dataDir) ?? link;
+  console.log(`Wrote ${made}.`);
+  console.log(onPath(path.dirname(made))
     ? "It is on your PATH: `chrysalis workspace` works anywhere."
     : process.platform === "win32"
       ? "Its folder is on your PATH. Open a NEW terminal, then `chrysalis workspace` works anywhere."
-      : `Your PATH does not include ${path.dirname(link)} yet. Add this to your shell's startup file:\n\n  export PATH="$HOME/.local/bin:$PATH"`);
+      : `Your PATH does not include ${path.dirname(made)} yet. Add this to your shell's startup file:\n\n  export PATH="${path.dirname(made).replace(os.homedir(), "$HOME")}:$PATH"`);
 }
 
 /**
@@ -241,17 +242,10 @@ async function linkCli(dataDir: string): Promise<boolean> {
 }
 
 /** Undo linkCli — but only our own link, never something else answering to
- *  the name. */
+ *  the name, and wherever a past run happened to put it. */
 async function unlinkCli(dataDir: string): Promise<boolean> {
-  const link = cliLinkPath(dataDir);
-  if (!fs.existsSync(link)) return false;
-  if (process.platform !== "win32") {
-    try {
-      if (fs.readlinkSync(link) !== process.execPath) return false;
-    } catch {
-      return false;
-    }
-  }
+  const link = existingCliLink(dataDir);
+  if (!link) return false;
   fs.rmSync(link, { force: true });
   return true;
 }
@@ -263,16 +257,55 @@ const onPath = (dir: string): boolean =>
  *  Windows the launcher goes beside the data folder, and on macOS and Linux
  *  the link goes in ~/.local/bin, so the program's own directory says nothing
  *  about whether the name resolves. */
+/** Somewhere a link could go, best first. ~/.local/bin is the Linux
+ *  convention and usually on PATH there; on macOS it is NOT on the default
+ *  PATH and /usr/local/bin is, so a link placed by convention alone would sit
+ *  in a folder the shell never looks in and the name still would not resolve. */
+function cliCandidates(): string[] {
+  const home = os.homedir();
+  return process.platform === "darwin"
+    ? ["/usr/local/bin", "/opt/homebrew/bin", path.join(home, ".local", "bin"), path.join(home, "bin")]
+    : [path.join(home, ".local", "bin"), path.join(home, "bin"), "/usr/local/bin"];
+}
+
+/** Can we put a file in there without asking anyone for permission? */
+function writableDir(dir: string): boolean {
+  try {
+    fs.accessSync(fs.existsSync(dir) ? dir : path.dirname(dir), fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function cliLinkPath(dataDir: string): string {
-  return process.platform === "win32"
-    ? path.join(dataDir, "bin", "chrysalis.cmd")
-    : path.join(os.homedir(), ".local", "bin", "chrysalis");
+  if (process.platform === "win32") return path.join(dataDir, "bin", "chrysalis.cmd");
+  const candidates = cliCandidates();
+  // a folder the shell already searches AND we can write to beats convention:
+  // a link nothing looks at is the same as no link
+  const usable = candidates.find((d) => onPath(d) && writableDir(d));
+  return path.join(usable ?? candidates.find((d) => writableDir(d)) ?? candidates[0]!, "chrysalis");
+}
+
+/** A link of ours that already exists, wherever a past run put it. */
+function existingCliLink(dataDir: string): string | null {
+  if (process.platform === "win32") {
+    const shim = path.join(dataDir, "bin", "chrysalis.cmd");
+    return fs.existsSync(shim) ? shim : null;
+  }
+  for (const dir of cliCandidates()) {
+    const link = path.join(dir, "chrysalis");
+    try {
+      if (fs.readlinkSync(link) === process.execPath) return link;
+    } catch { /* absent, or not a link of ours */ }
+  }
+  return null;
 }
 
 /** Does typing `chrysalis` reach us right now? */
 function cliOnPath(dataDir: string): boolean {
-  const link = cliLinkPath(dataDir);
-  return fs.existsSync(link) && onPath(path.dirname(link));
+  const link = existingCliLink(dataDir);
+  return link !== null && onPath(path.dirname(link));
 }
 
 function selfCommand(dataDir: string): string {
@@ -554,8 +587,11 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
   // so the first start does it for them. Once: the marker is written before
   // the attempt, so `uninstall-cli` stays undone and a failure is not retried
   // forever. Never fatal — this is a convenience, not part of serving.
+  // Not in a container: there is no terminal of the user's to put it on, the
+  // filesystem is thrown away, and `docker compose exec` already names the
+  // program directly.
   const cliMarker = path.join(dataDir, ".cli-linked");
-  if (INSTALL_KIND === "binary" && !fs.existsSync(cliMarker)) {
+  if (INSTALL_KIND === "binary" && !IN_CONTAINER && !fs.existsSync(cliMarker)) {
     try {
       fs.writeFileSync(cliMarker, `${new Date().toISOString()}\n`, "utf8");
       const done = await linkCli(dataDir);
