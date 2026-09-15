@@ -23,7 +23,7 @@ final class Payload {
     }
 
     private static final String ASSET = "resources.zip";
-    private static final String PREF_VERSION = "payload_version";
+    private static final String PREF_INSTALLED_AT = "payload_installed_at";
 
     private Payload() {}
 
@@ -31,12 +31,23 @@ final class Payload {
         return new File(context.getFilesDir(), "resources");
     }
 
-    /** Unpack the resources if this app version has not done so yet. */
+    /** When this APK was installed. Every staging build of one version shares
+     *  its version code, so a newer build with the same code is still a new
+     *  payload; the install time, not the version, says whether it is stale. */
+    private static long installedAt(Context context) {
+        try {
+            return context.getPackageManager().getPackageInfo(context.getPackageName(), 0).lastUpdateTime;
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    /** Unpack the resources if this APK install has not done so yet. */
     static void ensure(Context context, Progress progress) throws IOException {
         SharedPreferences prefs = context.getSharedPreferences("launcher", Context.MODE_PRIVATE);
         File target = resourcesDir(context);
-        long version = BuildConfig.VERSION_CODE;
-        if (prefs.getLong(PREF_VERSION, -1) == version && new File(target, "client/dist/index.html").isFile()) return;
+        long installedAt = installedAt(context);
+        if (prefs.getLong(PREF_INSTALLED_AT, -1) == installedAt && new File(target, "client/dist/index.html").isFile()) return;
 
         File staging = new File(context.getFilesDir(), "resources.unpacking");
         deleteTree(staging);
@@ -73,7 +84,7 @@ final class Payload {
         if (target.exists() && !target.renameTo(old)) throw new IOException("could not replace " + target);
         if (!staging.renameTo(target)) throw new IOException("could not move resources into place");
         deleteTree(old);
-        prefs.edit().putLong(PREF_VERSION, version).apply();
+        prefs.edit().putLong(PREF_INSTALLED_AT, installedAt).apply();
     }
 
     static void deleteTree(File file) {
