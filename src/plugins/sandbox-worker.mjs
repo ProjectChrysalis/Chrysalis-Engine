@@ -215,7 +215,12 @@ try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: f
         // ZIP-BOMB GUARD: fflate's filter runs from the central directory
         // BEFORE any decompression — reject oversized archives without ever
         // inflating them, and skip entries we would not return anyway.
-        const MAX_FILES = 5000;
+        // Entry COUNT is a denial-of-service guard, not the size guard — the
+        // uncompressed-bytes cap below is what bounds the work. 5000 was low
+        // enough that an ordinary library (a card, a chat and a sidecar per
+        // conversation adds up fast) was refused outright, with the whole
+        // import lost to one error about entry count.
+        const MAX_FILES = 60000;
         const MAX_TOTAL_UNCOMPRESSED = 256 * 1024 * 1024; // 256MB across all entries
         let count = 0;
         let total = 0;
@@ -225,7 +230,7 @@ try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: f
             if (f.name.startsWith("/") || f.name.split("/").includes("..")) return false; // zip-slip
             count++;
             total += f.originalSize;
-            if (count > MAX_FILES) throw new Error(`zip has too many entries (> ${MAX_FILES})`);
+            if (count > MAX_FILES) throw new Error(`zip has too many entries (over ${MAX_FILES}) — import it in parts`);
             if (total > MAX_TOTAL_UNCOMPRESSED) throw new Error(`zip expands beyond ${MAX_TOTAL_UNCOMPRESSED} bytes uncompressed — rejecting (zip bomb guard)`);
             return true;
           },

@@ -702,63 +702,77 @@ export async function runPluginRoute(
   // and the stash rides into the next pass's ctx verbatim
   let stash: Record<string, unknown> | undefined;
   const zipOk = hasCapAny(plugin, "zip", deps) && !!req.zipBase64;
-  // ?siblingtools=1: expose the tool DEFINITIONS a wantsTools:true llm request
-  // from this plugin would carry (defs only — execution stays host-side), so a
-  // route can show its callers exactly what the model would receive
-  let siblingToolDefs: GenerateRequest["tools"] | null = null;
-  if (req.query.siblingtools === "1" && deps.siblingTools) {
-    const bridge = await deps.siblingTools(plugin);
-    siblingToolDefs = bridge ? [...(bridge.tools ?? [])] : [];
-  }
-  for (let pass = 0; pass < MAX_ROUTE_PASSES; pass++) {
-    const r = await sandbox.eval({
-      source: plugin.source,
-      hook: "__route",
-      // zipBase64 already rides the message for the host-side zip service —
-      // keep the multi-MB string OUT of the guest's ctx (64MB heap)
-      ctx: { ...req, zipBase64: undefined, ...(stash ? { stash } : {}) } as unknown as Record<string, unknown>,
-      storeSnapshot: snapshotOf(plugin, deps),
-      storeAllowed: hasCapAny(plugin, "store", deps),
-      llmAllowed: caps.llm,
-      fsAllowed: hasCapAny(plugin, "fs", deps) && !!plugin.fsRoot,
-      fsRoot: plugin.fsRoot ?? null,
-      zipAllowed: zipOk,
-      ...(zipOk ? { zipBase64: req.zipBase64! } : {}),
-      llmResults: results.llm,
-      netAllowed: caps.net,
-      netResults: results.net,
-      embedResults: results.embed,
-      ...(siblingToolDefs ? { siblingToolDefs } : {}),
-      retryOnPoison: req.method === "GET" || req.method === "HEAD",
-    });
-    printLogs(plugin, r);
-    applyStoreWrites(plugin, r, deps);
-    if (!r.ok) {
-      log.warn(`[plugin:${plugin.id}] route ${req.method} ${req.path} failed: ${r.error}`);
-      // the plugin id belongs in the response too: the app page (and the
-      // agent reading its console) must know WHICH plugin failed to parse,
-      // not just that one did
-      return { status: 500, json: { error: `plugin ${plugin.id} route failed: ${r.error}` } };
+  // Restoring a backup is the one route that is legitimately big and slow: the
+  // whole archive is handed to the guest as an entry map. On the shared
+  // sandbox's 64 MB heap and 10 s clock, a real library's backup ran out of
+  // one or the other and the import reported nothing but a sandbox error.
+  // It gets a sandbox of its own so the extra room is not on loan to every
+  // other plugin, and is disposed the moment the import is done.
+  const zipBox = zipOk ? new PluginSandbox() : null;
+  const box = zipBox ?? sandbox;
+  const zipLimits = zipOk ? { executionTimeoutMs: 120_000, memoryLimitBytes: 512 * 1024 * 1024 } : {};
+  try {
+    // ?siblingtools=1: expose the tool DEFINITIONS a wantsTools:true llm request
+    // from this plugin would carry (defs only — execution stays host-side), so a
+    // route can show its callers exactly what the model would receive
+    let siblingToolDefs: GenerateRequest["tools"] | null = null;
+    if (req.query.siblingtools === "1" && deps.siblingTools) {
+      const bridge = await deps.siblingTools(plugin);
+      siblingToolDefs = bridge ? [...(bridge.tools ?? [])] : [];
     }
-    const out = r.out as Record<string, unknown> | null;
-    if (out?.__llmPending === true && out.stash && typeof out.stash === "object") {
-      stash = out.stash as Record<string, unknown>;
-    }
-    const pending = out?.__llmPending === true || passWants(r, caps);
-    if (!pending || pass === MAX_ROUTE_PASSES - 1) {
-      if (!out || typeof out !== "object" || (out.json === undefined && out.text === undefined && out.status === undefined)) {
-        return null; // no route matched
+    for (let pass = 0; pass < MAX_ROUTE_PASSES; pass++) {
+      const r = await box.eval({
+        ...zipLimits,
+        source: plugin.source,
+        hook: "__route",
+        // zipBase64 already rides the message for the host-side zip service —
+        // keep the multi-MB string OUT of the guest's ctx (64MB heap)
+        ctx: { ...req, zipBase64: undefined, ...(stash ? { stash } : {}) } as unknown as Record<string, unknown>,
+        storeSnapshot: snapshotOf(plugin, deps),
+        storeAllowed: hasCapAny(plugin, "store", deps),
+        llmAllowed: caps.llm,
+        fsAllowed: hasCapAny(plugin, "fs", deps) && !!plugin.fsRoot,
+        fsRoot: plugin.fsRoot ?? null,
+        zipAllowed: zipOk,
+        ...(zipOk ? { zipBase64: req.zipBase64! } : {}),
+        llmResults: results.llm,
+        netAllowed: caps.net,
+        netResults: results.net,
+        embedResults: results.embed,
+        ...(siblingToolDefs ? { siblingToolDefs } : {}),
+        retryOnPoison: req.method === "GET" || req.method === "HEAD",
+      });
+      printLogs(plugin, r);
+      applyStoreWrites(plugin, r, deps);
+      if (!r.ok) {
+        log.warn(`[plugin:${plugin.id}] route ${req.method} ${req.path} failed: ${r.error}`);
+        // the plugin id belongs in the response too: the app page (and the
+        // agent reading its console) must know WHICH plugin failed to parse,
+        // not just that one did
+        return { status: 500, json: { error: `plugin ${plugin.id} route failed: ${r.error}` } };
       }
-      return {
-        status: typeof out.status === "number" ? out.status : 200,
-        ...(out.json !== undefined ? { json: out.json } : {}),
-        ...(out.text !== undefined ? { text: String(out.text) } : {}),
-        ...(typeof out.contentType === "string" ? { contentType: out.contentType } : {}),
-      };
+      const out = r.out as Record<string, unknown> | null;
+      if (out?.__llmPending === true && out.stash && typeof out.stash === "object") {
+        stash = out.stash as Record<string, unknown>;
+      }
+      const pending = out?.__llmPending === true || passWants(r, caps);
+      if (!pending || pass === MAX_ROUTE_PASSES - 1) {
+        if (!out || typeof out !== "object" || (out.json === undefined && out.text === undefined && out.status === undefined)) {
+          return null; // no route matched
+        }
+        return {
+          status: typeof out.status === "number" ? out.status : 200,
+          ...(out.json !== undefined ? { json: out.json } : {}),
+          ...(out.text !== undefined ? { text: String(out.text) } : {}),
+          ...(typeof out.contentType === "string" ? { contentType: out.contentType } : {}),
+        };
+      }
+      results = await runPassRequests(plugin, r, deps, caps, "route");
     }
-    results = await runPassRequests(plugin, r, deps, caps, "route");
+    return null;
+  } finally {
+    if (zipBox) await zipBox.dispose();
   }
-  return null;
 }
 
 function snapshotOf(plugin: LoadedPlugin, deps: PluginRuntimeDeps): Record<string, unknown> {
