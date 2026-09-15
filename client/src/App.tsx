@@ -414,6 +414,14 @@ function Shell(props: { theme: "light" | "dark"; onTheme: () => void }) {
                 onSettings={() => openSettings()}
                 app={active?.kind === "app" ? { id: active.id, name: active.name, onPlugins: () => openPlugins(active.id) } : null}
               />
+              <button
+                className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+                onClick={() => openSettings()}
+                title={tr("Settings")}
+                aria-label={tr("Settings")}
+              >
+                <IconSmall name="settings-gear" />
+              </button>
             </div>
           </header>
           <main
@@ -549,6 +557,7 @@ function UserMenu(props: {
               {props.username.slice(0, 1)}
             </span>}
         <span className="truncate text-12 leading-4">{props.username}</span>
+        <IconSmall name="chevron-down" className="shrink-0 text-ink-muted" />
       </Button>
       {open ? createPortal(
         <>
