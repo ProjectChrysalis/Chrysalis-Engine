@@ -946,6 +946,8 @@ export function buildAdminTools(
   const createUser: AgentTool = {
     name: "admin_create_user",
     label: "Create user",
+    // approvals share the single ask_user card, so one at a time
+    ...(server.ask ? { executionMode: "sequential" as const } : {}),
     description: "Create a new account on this instance, ready to sign in. Returns the password to pass on to the person (generated when you do not give one).",
     parameters: Type.Object({
       username: Type.String(),
@@ -989,6 +991,8 @@ export function buildAdminTools(
   const serverSettings: AgentTool = {
     name: "server_settings",
     label: "Server settings",
+    // approval goes through the same single ask card as admin_create_user
+    ...(server.ask ? { executionMode: "sequential" as const } : {}),
     description:
       "Read or change this Chrysalis server's settings (config.yaml): port, lan (other devices on the network), allowedHosts, ssl.enabled/certPath/keyPath, openBrowser, apps.packageDownloads, agent.shell, agent.shellTimeoutSeconds, defaultModel. action \"read\" shows the values, where the file is, and the addresses Chrysalis answers on. action \"change\" takes changes as { setting: value } and asks the user to approve before anything is saved; the user can decline.",
     parameters: Type.Object({

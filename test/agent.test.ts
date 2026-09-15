@@ -428,6 +428,43 @@ describe("agent loop + sessions (faux provider)", () => {
     expect(listSessions(p)[0]!.runs).toBe(2);
   }, 30_000);
 
+  it("several ask_user calls in one batch surface one question at a time", async () => {
+    const users = new UserService(dataDir);
+    users.create("admin", "admin", { password: "admin-pass-1" });
+    users.create("jo", "user", { password: "test-pass-1" });
+    const svc = makeSvc("jo");
+    const handle = fauxProvider({ models: [{ id: "faux-agent" }] });
+    const calls = [1, 2, 3].map((n) => ({
+      type: "toolCall" as const,
+      id: `ask${n}`,
+      name: "ask_user",
+      arguments: { question: `Q${n}` },
+    }));
+    handle.setResponses([fauxAssistantMessage(calls, { stopReason: "toolUse" }), fauxAssistantMessage("all answered")]);
+    svc.models.setProvider(handle.provider);
+
+    const p = userPaths(dataDir, "jo");
+    let inflight = 0;
+    let maxInflight = 0;
+    const asked: string[] = [];
+    const agent = await UserAgent.create("jo", svc, p, users, defaultInstanceConfig(), {
+      ask: async (q) => {
+        inflight += 1;
+        maxInflight = Math.max(maxInflight, inflight);
+        asked.push(q.question);
+        // a second question arriving before this one is answered would mean
+        // the batch runs in parallel and one card has overwritten another
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        inflight -= 1;
+        return `answer to ${q.question}`;
+      },
+    });
+    const result = await agent.run("ask me three things");
+    expect(asked).toEqual(["Q1", "Q2", "Q3"]);
+    expect(maxInflight).toBe(1);
+    expect(result.finalText).toContain("all answered");
+  }, 30_000);
+
   it("an empty model completion is surfaced instead of a silent turn", async () => {
     const users = new UserService(dataDir);
     users.create("admin", "admin", { password: "admin-pass-1" });

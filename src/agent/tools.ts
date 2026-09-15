@@ -89,6 +89,9 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
   const askUser: AgentTool = {
     name: "ask_user",
     label: "Ask the user",
+    // a question occupies the single pending-question UI until it is answered:
+    // concurrent calls would overwrite each other's card and hang the batch
+    executionMode: "sequential",
     description:
       "Ask the signed-in user a question and wait for their answer. Use when requirements are ambiguous, a decision is needed, or before anything destructive. options is an optional list of quick-pick choices.",
     parameters: Type.Object({
@@ -572,6 +575,8 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
   const shell = opts.acceptShell && opts.ask
     ? {
         ...bash,
+        // approvals share the ask_user UI, so gate one command at a time
+        executionMode: "sequential" as const,
         async execute(toolCallId: string, params: unknown, ...rest: unknown[]) {
           const command = typeof (params as { command?: unknown })?.command === "string" ? (params as { command: string }).command : "";
           const answer = await opts.ask!({
