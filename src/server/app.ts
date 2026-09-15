@@ -2085,6 +2085,38 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     return c.json({ files: results });
   });
 
+  // commands/: the user's own reusable prompts, one markdown file each. The
+  // composer lists them as /<filename>; picking one drops its text in the box.
+  // A workflow is mostly the prompts someone types again and again, so this is
+  // the cheapest way to let people bring theirs.
+  app.get("/v1/agent/commands", (c) => {
+    const p = c.get("paths");
+    const dir = path.join(p.root, "commands");
+    const out: { name: string; description: string; body: string }[] = [];
+    let names: string[];
+    try {
+      names = fs.readdirSync(dir).filter((n) => /\.(md|markdown|txt)$/i.test(n)).sort();
+    } catch {
+      return c.json({ commands: [] });
+    }
+    for (const file of names.slice(0, 100)) {
+      const name = file.replace(/\.(md|markdown|txt)$/i, "");
+      // the seeded explainer is not one of the user's commands
+      if (name.toLowerCase() === "readme") continue;
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,48}$/.test(name)) continue;
+      let body: string;
+      try {
+        body = fs.readFileSync(path.join(dir, file), "utf8");
+      } catch {
+        continue;
+      }
+      if (body.length > 32_000) body = body.slice(0, 32_000);
+      const first = body.split("\n").find((l) => l.trim()) ?? "";
+      out.push({ name, description: first.replace(/^#+\s*/, "").trim().slice(0, 120), body: body.trim() });
+    }
+    return c.json({ commands: out });
+  });
+
   app.get("/v1/agent/sessions", (c) => {
     const p = c.get("paths");
     return c.json({ sessions: listSessions(p) });

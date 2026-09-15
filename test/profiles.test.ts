@@ -281,3 +281,57 @@ describe("workspace instruction files", () => {
     }
   });
 });
+
+describe("what a coding agent of your own can reach", () => {
+  it("lists the user's commands/ prompts, skipping the seeded README", async () => {
+    const t = await createUser("cmd-user");
+    const p = userPaths(dataDir, "cmd-user");
+    fs.writeFileSync(path.join(p.root, "commands", "review.md"), "# Review the diff\n\nSay what would break.\n", "utf8");
+    fs.writeFileSync(path.join(p.root, "commands", "not a command.md"), "ignored\n", "utf8");
+    const res = await app.request("/v1/agent/commands", { headers: userH(t) });
+    expect(res.status).toBe(200);
+    const { commands } = (await res.json()) as { commands: { name: string; description: string; body: string }[] };
+    expect(commands.map((c) => c.name)).toEqual(["review"]);
+    expect(commands[0]!.description).toBe("Review the diff");
+    expect(commands[0]!.body).toContain("Say what would break.");
+  });
+
+  it("searches workspace files for the composer's @ picker", async () => {
+    const t = await createUser("at-user");
+    const p = userPaths(dataDir, "at-user");
+    fs.writeFileSync(path.join(p.root, "notes", "memory-rework.md"), "# Rework memory\n", "utf8");
+    const res = await app.request("/v1/agent/files?q=memory-rework", { headers: userH(t) });
+    const { files } = (await res.json()) as { files: string[] };
+    expect(files).toContain("notes/memory-rework.md");
+  });
+
+  it("keeps one user's commands and files out of another's", async () => {
+    const ta = await createUser("alice");
+    const tb = await createUser("bob");
+    fs.writeFileSync(path.join(userPaths(dataDir, "alice").root, "commands", "secret.md"), "# Alice only\n", "utf8");
+    const mine = (await (await app.request("/v1/agent/commands", { headers: userH(ta) })).json()) as { commands: { name: string }[] };
+    const theirs = (await (await app.request("/v1/agent/commands", { headers: userH(tb) })).json()) as { commands: { name: string }[] };
+    expect(mine.commands.map((c) => c.name)).toContain("secret");
+    expect(theirs.commands.map((c) => c.name)).not.toContain("secret");
+  });
+
+  it("a session minted by another process on this machine is accepted", async () => {
+    // this is what `chrysalis api` does: it can read the data folder, so it
+    // writes itself a session rather than needing a token it cannot recover
+    const t = await createUser("cli-user");
+    expect((await app.request("/v1/apps", { headers: userH(t) })).status).toBe(200);
+    const outside = new SessionService(dataDir);
+    const token = outside.create("cli-user");
+    const res = await app.request("/v1/apps", { headers: { cookie: `chrysalis_session=${token}` } });
+    expect(res.status).toBe(200);
+    // and a write, which is where a stale in-memory session list used to bite
+    const put = await app.request("/v1/settings/persona", {
+      method: "PUT",
+      headers: { cookie: `chrysalis_session=${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ persona: "Prefer small diffs." }),
+    });
+    expect(put.status).toBe(200);
+    outside.destroy(token);
+    expect((await app.request("/v1/apps", { headers: { cookie: `chrysalis_session=${token}` } })).status).toBe(401);
+  });
+});

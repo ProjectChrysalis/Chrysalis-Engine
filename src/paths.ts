@@ -188,7 +188,7 @@ apps/.staging/
  * the built-in agent directly. No secrets: the file is git-tracked. Its job:
  * teach the file-first contract + how to drive the engine.
  */
-const AGENTS_MD_VERSION = 11;
+const AGENTS_MD_VERSION = 12;
 const USER_AGENTS_MD_BODY = `# Chrysalis workspace
 
 Everything here is files you can edit like code — this user's whole Chrysalis world. The engine hot-reloads as you save.
@@ -203,6 +203,7 @@ Everything here is files you can edit like code — this user's whole Chrysalis 
 - An app is free to be anything: a chat studio, a visual novel, a game, a tool. Each carries its own \`AGENTS.md\` and \`data/README.md\` (its field-shape map) — read those before editing that app.
 - \`plugins/<id>/\` — top-level always-on plugins (same format as app plugins).
 - \`providers.json\` — custom model endpoints. \`settings.json\` — activeApp etc. (the Settings UI owns it; agents do not read or edit it).
+- \`commands/\` — reusable prompts, one markdown file each. \`review.md\` is \`/review\` in the composer, and the first line is its description. Yours; the engine never writes here.
 - \`notes/\` — plans, specs and reference material, yours to create and keep. The engine never writes here and never deletes anything in it. Every file is listed for the agent by name and first line, so write one per topic with a first line that says what it covers, and read the relevant note before starting work in that area.
 - \`persona.md\` — standing instructions that apply to EVERY request. Always in the agent's context (Settings > the agent instructions box writes it). Keep it short; put anything task-shaped in \`notes/\` instead.
 - In app \`data/\` trees, files starting with \`_\` are AI-only templates (never shown in the UI): copy \`_example.json\` to a real name to create the entity with the right shape.
@@ -242,10 +243,11 @@ export function bootstrapUserDir(dataDir: string, username: string): UserPaths {
   if (!fs.existsSync(gi)) fs.writeFileSync(gi, USER_GITIGNORE, "utf8");
   const am = path.join(p.root, "AGENTS.md");
   if (!fs.existsSync(am)) fs.writeFileSync(am, workspaceAgentsMd(), "utf8");
-  const notes = path.join(p.root, "notes");
-  if (!fs.existsSync(notes)) {
-    fs.mkdirSync(notes, { recursive: true });
-    fs.writeFileSync(path.join(notes, "README.md"), NOTES_README, "utf8");
+  for (const [name, readme] of [["notes", NOTES_README], ["commands", COMMANDS_README]] as const) {
+    const dir = path.join(p.root, name);
+    if (fs.existsSync(dir)) continue;
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "README.md"), readme, "utf8");
   }
   return p;
 }
@@ -292,17 +294,20 @@ export function ensureWorkspaceAgentsMd(dataDir: string, username: string): bool
   return true;
 }
 
-/** `notes/` is the user's: plans, specs, reference material. The engine seeds
- *  a README so the directory exists and says what it is for, then never
- *  writes there again. */
+/** `notes/` and `commands/` are the user's: plans and specs in one, reusable
+ *  prompts in the other. The engine seeds a README so each directory exists
+ *  and says what it is for, then never writes there again. */
 export function ensureNotesDir(dataDir: string, username: string): boolean {
   const p = userPaths(dataDir, username);
-  const dir = path.join(p.root, "notes");
-  const readme = path.join(dir, "README.md");
-  if (fs.existsSync(dir)) return false;
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(readme, NOTES_README, "utf8");
-  return true;
+  let seeded = false;
+  for (const [name, readme] of [["notes", NOTES_README], ["commands", COMMANDS_README]] as const) {
+    const dir = path.join(p.root, name);
+    if (fs.existsSync(dir)) continue;
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "README.md"), readme, "utf8");
+    seeded = true;
+  }
+  return seeded;
 }
 
 const NOTES_README = `# Notes
@@ -321,6 +326,25 @@ request, and reads the ones that matter before it starts work. So:
   which is always in full).
 
 Delete this README once you have notes of your own.
+`;
+
+const COMMANDS_README = `# Commands
+
+Prompts you run again and again, one markdown file each. Every file here shows
+up in the agent's composer as \`/<filename>\`, and picking it drops the file's
+text into the box for you to add to before sending.
+
+\`review.md\` becomes \`/review\`. The first line is the description shown beside
+the name in the menu, so make it say what the command does.
+
+A command is just text — whatever you would have typed. There is nothing to
+learn:
+
+    Check the diff for anything that would break a chat that is already open,
+    then tell me what you found. Do not change anything yet.
+
+Chrysalis seeds this one file and never writes here again. Delete it once you
+have commands of your own.
 `;
 
 /**

@@ -163,3 +163,22 @@ export function getSettings(): Promise<{ model: string | null; reasoning: string
 export function listMcp(): Promise<McpServer[]> {
   return api<{ servers: McpServer[] }>("GET", "/v1/mcp").then((r) => r.servers ?? [])
 }
+
+/** Workspace files for the composer's "@" picker. The engine does the walking
+ *  and the matching; `q` is a plain substring over the relative path. */
+export async function agentFiles(q: string): Promise<string[]> {
+  const r = await api<{ files?: string[] }>("GET", `/v1/agent/files?q=${encodeURIComponent(q)}`)
+  return r.files ?? []
+}
+
+export interface UserCommand {
+  name: string
+  description: string
+  body: string
+}
+
+/** The user's own prompts from commands/, shown in the composer as /<name>. */
+export async function agentCommands(): Promise<UserCommand[]> {
+  const r = await api<{ commands?: UserCommand[] }>("GET", "/v1/agent/commands")
+  return r.commands ?? []
+}

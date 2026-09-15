@@ -19,6 +19,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-ic
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AskBar } from "@/AskBar"
+import { FileMentions } from "@/FileMentions";
 import { SlashCommands } from "@/SlashCommands";
 import { cn, copyText } from "@/lib/utils";
 import {
@@ -409,6 +410,7 @@ const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
               aria-label="Message input"
             />
             <SlashCommands />
+            <FileMentions />
             <ComposerAction />
           </div>
         </ComposerPrimitive.AttachmentDropzone>

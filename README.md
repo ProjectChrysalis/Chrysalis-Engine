@@ -49,6 +49,14 @@ straight away with `killed`. `start.command`
 clears the download flag, signs the program for that Mac and starts it — use it
 again after each update. The Bun install above avoids this.
 
+## Bring your own tools
+
+Your whole Chrysalis is a folder of plain files under git. `chrysalis workspace`
+prints where it is; point your editor or coding agent at it and work normally —
+saves reach open pages on their own. `AGENTS.md` there explains the layout to
+whatever agent reads it. For the parts that are not files, `chrysalis api GET
+/v1/apps` calls the running engine's API from a terminal.
+
 ## First start
 
 Chrysalis opens your browser (or prints a link) with a one-time setup address.
