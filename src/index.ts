@@ -32,7 +32,7 @@ import { createSandbox } from "./sandbox/index.js";
 import { log, logToFile } from "./logger.js";
 import { writeStdioApproval, type McpServerConfig } from "./mcp/registry.js";
 import { bindLegacyKeys } from "./connections.js";
-import { releaseLock, runningEngine, writeLock } from "./lock.js";
+import { readLock, releaseLock, runningEngine, writeLock } from "./lock.js";
 import { cleanUpAfterUpdate, dropEngineFiles, runReplacement, updateState } from "./self-update.js";
 import { dataFormatProblem, recordDataFormat } from "./data-format.js";
 
@@ -60,6 +60,13 @@ Commands:
   start                    Run Chrysalis (the default)
   reset-password <user>    Give an account a new password (Chrysalis must be stopped)
   paths                    Show where the config file and data folder are
+  workspace [--user <u>]   Print what a coding agent needs: the workspace folder,
+                           the API address, and the apps installed in it
+  api <METHOD> <path> [json]
+                           Call the running engine's API as that account, so a
+                           coding agent can do anything the built-in one can
+                           (body from the argument or stdin; --user picks the
+                           account when there is more than one)
 
 Options:
   --home <folder>          Folder holding config.yaml (default: ${INSTALL_KIND === "source" ? "this checkout" : "your app-data folder"})
@@ -93,6 +100,17 @@ async function main(): Promise<void> {
     console.log(ENGINE_VERSION);
     return;
   }
+  // --user names the account for the host-side commands; it is not a setting,
+  // so it is lifted out before the unknown-option check below
+  let asUser: string | undefined;
+  for (let i = 0; i < flags.rest.length; i++) {
+    const a = flags.rest[i]!;
+    if (a !== "--user" && !a.startsWith("--user=")) continue;
+    asUser = a.startsWith("--user=") ? a.slice(7) : flags.rest[i + 1];
+    if (!asUser) fail("--user needs an account name");
+    flags.rest.splice(i, a.startsWith("--user=") ? 1 : 2);
+    break;
+  }
   const unknown = flags.rest.find((a) => a.startsWith("-"));
   if (unknown) fail(`unknown option ${unknown} (see chrysalis --help)`);
   const [command = "start", ...args] = flags.rest;
@@ -115,8 +133,129 @@ async function main(): Promise<void> {
       return;
     case "reset-password":
       return resetPassword(dataDir, args[0]);
+    case "workspace":
+      return printWorkspace(dataDir, asUser);
+    case "api":
+      return callApi(dataDir, args, asUser);
     default:
       fail(`unknown command "${command}" (see chrysalis --help)`);
+  }
+}
+
+/** The account a host-side command acts as. One account needs no saying; more
+ *  than one has to be named, because guessing would touch the wrong world. */
+function pickUser(dataDir: string, asked: unknown): string {
+  const users = new UserService(dataDir);
+  const all = users.list().filter((u) => u.enabled !== false);
+  if (typeof asked === "string" && asked) {
+    const found = users.getFolded(asked);
+    if (!found) fail(`no account named "${asked}". Accounts: ${all.map((u) => u.username).join(", ") || "none yet"}`);
+    return found.username;
+  }
+  if (!all.length) fail("no accounts yet — start Chrysalis and create one first");
+  if (all.length > 1) fail(`more than one account here: ${all.map((u) => u.username).join(", ")}. Say which with --user <name>.`);
+  return all[0]!.username;
+}
+
+/**
+ * Everything a coding agent needs to work on this Chrysalis, in one command.
+ *
+ * The workspace is the same plain files and the same git repository on every
+ * install — a downloaded build keeps it in the app-data folder rather than
+ * beside the program, which is the only reason it is hard to find. Nothing
+ * here is particular to running from source.
+ */
+function printWorkspace(dataDir: string, asUser: string | undefined): void {
+  const username = pickUser(dataDir, asUser);
+  const p = userPaths(dataDir, username);
+  const lock = readLock(dataDir);
+  const lines = [
+    `account:   ${username}`,
+    `workspace: ${p.root}`,
+    `contract:  ${path.join(p.root, "AGENTS.md")}`,
+    `engine:    ${lock ? `${lock.url}  (running)` : "not running — start Chrysalis to use `chrysalis api`"}`,
+  ];
+  let apps: { id: string; name: string }[] = [];
+  try {
+    apps = fs.readdirSync(p.apps, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+      .map((e) => {
+        let name = e.name;
+        try {
+          name = (JSON.parse(fs.readFileSync(path.join(p.apps, e.name, "manifest.json"), "utf8")) as { name?: string }).name ?? e.name;
+        } catch { /* unreadable manifest: the folder name will do */ }
+        return { id: e.name, name };
+      });
+  } catch { /* no apps yet */ }
+  let active = "";
+  try {
+    active = (JSON.parse(fs.readFileSync(p.settings, "utf8")) as { activeApp?: string }).activeApp ?? "";
+  } catch { /* no settings yet */ }
+  lines.push(`apps:      ${apps.length ? apps.map((a) => `${a.id}${a.id === active ? " (open)" : ""}`).join(", ") : "none"}`);
+  console.log(lines.join("\n"));
+  console.log(`
+Point your editor or coding agent at the workspace folder. It is a git
+repository of plain files: apps/<id>/{src,plugins,data}, plugins/, notes/,
+commands/. AGENTS.md there explains the layout and what belongs where — it is
+written for whatever agent reads it, not just the built-in one. Saves reach
+open pages on their own; app source rebuilds in the browser.
+
+Use \`chrysalis api\` for the parts that are not files — asking for an app's
+build errors, its console, reinstalling its dependencies:
+
+  chrysalis api GET  /v1/apps
+  chrysalis api GET  /v1/apps/${apps[0]?.id ?? "<app>"}/build
+  chrysalis api POST /v1/apps/${apps[0]?.id ?? "<app>"}/build '{}'`);
+}
+
+/**
+ * One verb, the whole local API. A coding agent on this machine already has
+ * the files; what it cannot do is talk to the engine, and that gap is why it
+ * could not check a build or read an app's console the way the built-in agent
+ * can. Authenticates by minting a session against the data folder it can
+ * already read, so it grants nothing that running this command did not.
+ */
+async function callApi(dataDir: string, args: string[], asUser: string | undefined): Promise<void> {
+  const [rawMethod, rawPath, ...rest] = args;
+  if (!rawMethod || !rawPath) {
+    fail("usage: chrysalis api <METHOD> <path> [json]\n       chrysalis api GET /v1/apps");
+  }
+  const method = rawMethod.toUpperCase();
+  if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].includes(method)) {
+    fail(`"${rawMethod}" is not an HTTP method. Try: chrysalis api GET /v1/apps`);
+  }
+  const apiPath = rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
+  const live = await runningEngine(dataDir);
+  if (!live) fail("Chrysalis is not running. Start it, then run this again.");
+  // a body on the command line, or piped in
+  let body = rest.join(" ").trim();
+  if (!body && !process.stdin.isTTY && method !== "GET" && method !== "HEAD") {
+    body = await new Response(process.stdin as unknown as ReadableStream).text().catch(() => "");
+  }
+  const username = pickUser(dataDir, asUser);
+  const sessions = new SessionService(dataDir);
+  const token = sessions.create(username);
+  try {
+    const res = await fetch(`${live.url}${apiPath}`, {
+      method,
+      headers: {
+        cookie: `chrysalis_session=${token}`,
+        ...(body ? { "content-type": "application/json" } : {}),
+      },
+      ...(body ? { body } : {}),
+      // a LAN engine serves its own certificate
+      ...({ tls: { rejectUnauthorized: false } } as Record<string, unknown>),
+    });
+    const text = await res.text();
+    // pretty-print json so a person reading over the agent's shoulder can
+    process.stdout.write(text && res.headers.get("content-type")?.includes("json")
+      ? `${JSON.stringify(JSON.parse(text), null, 2)}\n`
+      : text.endsWith("\n") || !text ? text : `${text}\n`);
+    if (!res.ok) process.exitCode = 1;
+  } catch (e) {
+    fail(`could not reach ${live.url}: ${(e as Error).message}`);
+  } finally {
+    sessions.destroy(token);
   }
 }
 
