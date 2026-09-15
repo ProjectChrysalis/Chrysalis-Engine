@@ -155,6 +155,18 @@ Settings:  config.yaml in your app-data folder (${exe} paths shows where).
 
 The first start prints a link that creates your account.
 Keep the resources folder next to ${exe}.
+
+Using your own editor or coding agent? Everything Chrysalis stores is plain
+files under git. In a terminal, in this folder:
+
+  ${exe === "chrysalis.exe" ? ".\\chrysalis.exe" : "./chrysalis"} workspace
+
+prints where they are and how to reach the running engine.
+
+This program is not on your PATH, so run it by name from this folder like that.
+To use it from anywhere instead, once:
+
+  ${exe === "chrysalis.exe" ? ".\\chrysalis.exe" : "./chrysalis"} install-cli
 `;
 
 for (const name of targets) {

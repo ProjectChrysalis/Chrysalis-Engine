@@ -11,7 +11,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { spawn } from "node:child_process";
+import os from "node:os";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { hasPackages, installApp } from "./apps/packages.js";
 import { ConfigError, dataDirOf, envNameOf, flagNameOf, loadConfig, parseFlags, sandboxConfigOf, SETTINGS, type LoadedConfig } from "./config.js";
 import { ENGINE_VERSION, INSTALL_KIND, resolveHomeDir } from "./install.js";
@@ -52,6 +54,8 @@ for (const evt of ["uncaughtException", "unhandledRejection"] as const) {
   });
 }
 
+const runCmd = promisify(execFile);
+
 const HELP = `Chrysalis ${ENGINE_VERSION}
 
 Usage: chrysalis [command] [options]
@@ -67,6 +71,8 @@ Commands:
                            coding agent can do anything the built-in one can
                            (body from the argument or stdin; --user picks the
                            account when there is more than one)
+  install-cli              Put chrysalis on your PATH so the two commands above
+                           work from anywhere (uninstall-cli undoes it)
 
 Options:
   --home <folder>          Folder holding config.yaml (default: ${INSTALL_KIND === "source" ? "this checkout" : "your app-data folder"})
@@ -137,6 +143,10 @@ async function main(): Promise<void> {
       return printWorkspace(dataDir, asUser);
     case "api":
       return callApi(dataDir, args, asUser);
+    case "install-cli":
+      return installCli(dataDir, false);
+    case "uninstall-cli":
+      return installCli(dataDir, true);
     default:
       fail(`unknown command "${command}" (see chrysalis --help)`);
   }
@@ -158,6 +168,103 @@ function pickUser(dataDir: string, asked: unknown): string {
 }
 
 /**
+ * Put `chrysalis` on the PATH, so the workspace and api commands are usable
+ * from wherever someone's editor or agent happens to be working — a download
+ * is a folder you unpacked, and typing its name in a terminal does nothing.
+ *
+ * On macOS and Linux that is a symlink in ~/.local/bin, which is on the PATH
+ * of every current shell and needs no privileges. On Windows it is a small
+ * .cmd next to this program's data, in a folder added to the account's PATH
+ * through the registry — never `setx`, which silently truncates a PATH over
+ * 1024 characters and has eaten many.
+ *
+ * Both point at this program where it stands, so an update (which replaces the
+ * file in place) keeps working, and moving the folder means running this again.
+ */
+async function installCli(dataDir: string, remove: boolean): Promise<void> {
+  if (INSTALL_KIND === "npm") {
+    console.log("Installed with bun/npm — `chrysalis` is already on your PATH.");
+    return;
+  }
+  if (INSTALL_KIND === "source") {
+    console.log("Running from a checkout — use `bun run src/index.ts <command>` here.");
+    return;
+  }
+  if (INSTALL_KIND === "android") {
+    console.log("The Android app has no terminal to put anything on.");
+    return;
+  }
+  const exe = process.execPath;
+  if (process.platform === "win32") {
+    const binDir = path.join(dataDir, "bin");
+    const shim = path.join(binDir, "chrysalis.cmd");
+    if (remove) {
+      fs.rmSync(shim, { force: true });
+      console.log(`Removed ${shim}.\nThe folder stays on your PATH; nothing is in it.`);
+      return;
+    }
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(shim, `@echo off\r\n"${exe}" %*\r\n`, "utf8");
+    // read-modify-write the account's PATH through the registry
+    const ps = `$d='${binDir.replace(/'/g, "''")}'; $p=[Environment]::GetEnvironmentVariable('Path','User'); if (($p -split ';') -notcontains $d) { [Environment]::SetEnvironmentVariable('Path', (($p.TrimEnd(';') + ';' + $d).TrimStart(';')), 'User'); 'added' } else { 'already' }`;
+    try {
+      const { stdout } = await runCmd("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps]);
+      console.log(`Wrote ${shim}.`);
+      console.log(stdout.includes("added")
+        ? "Added its folder to your PATH. Open a NEW terminal, then `chrysalis workspace` works anywhere."
+        : "Its folder was already on your PATH. `chrysalis workspace` works in a new terminal.");
+    } catch (e) {
+      console.log(`Wrote ${shim}, but could not change your PATH: ${(e as Error).message}`);
+      console.log(`Add this folder to your PATH by hand: ${binDir}`);
+    }
+    return;
+  }
+  const binDir = path.join(os.homedir(), ".local", "bin");
+  const link = path.join(binDir, "chrysalis");
+  if (remove) {
+    try {
+      // only ours: never remove something else that answers to the name
+      if (fs.readlinkSync(link) !== exe) {
+        console.log(`${link} points somewhere else — leaving it alone.`);
+        return;
+      }
+    } catch {
+      console.log(`Nothing of ours at ${link}.`);
+      return;
+    }
+    fs.rmSync(link, { force: true });
+    console.log(`Removed ${link}.`);
+    return;
+  }
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.rmSync(link, { force: true });
+  fs.symlinkSync(exe, link);
+  console.log(`Linked ${link} -> ${exe}`);
+  const onPath = (process.env.PATH ?? "").split(":").includes(binDir);
+  console.log(onPath
+    ? "It is on your PATH: `chrysalis workspace` works anywhere."
+    : `Your PATH does not include ${binDir} yet. Add this to your shell's startup file:\n\n  export PATH="$HOME/.local/bin:$PATH"`);
+}
+
+/**
+ * How to run this program again, as the person reading actually can. A
+ * downloaded build is not on PATH — typing `chrysalis` in a terminal only
+ * works for the npm install — so the examples name the program by its own
+ * path, ready to paste, instead of a command that would not be recognized.
+ */
+const exeDir = (): string => path.dirname(process.execPath);
+const onPath = (dir: string): boolean =>
+  (process.env.PATH ?? "").split(process.platform === "win32" ? ";" : ":").includes(dir);
+
+function selfCommand(): string {
+  if (INSTALL_KIND === "npm") return "chrysalis";
+  if (INSTALL_KIND === "source") return "bun run src/index.ts";
+  const exe = process.execPath;
+  // a path with a space has to survive being pasted into a shell
+  return /\s/.test(exe) ? `"${exe}"` : exe;
+}
+
+/**
  * Everything a coding agent needs to work on this Chrysalis, in one command.
  *
  * The workspace is the same plain files and the same git repository on every
@@ -168,6 +275,9 @@ function pickUser(dataDir: string, asked: unknown): string {
 function printWorkspace(dataDir: string, asUser: string | undefined): void {
   const username = pickUser(dataDir, asUser);
   const p = userPaths(dataDir, username);
+  // the folders below are named as though they are there; on a workspace the
+  // new engine has not booted on yet they would not be. Both are idempotent.
+  try { ensureNotesDir(dataDir, username); } catch { /* read-only home: the listing is still useful */ }
   const lock = readLock(dataDir);
   const lines = [
     `account:   ${username}`,
@@ -193,6 +303,7 @@ function printWorkspace(dataDir: string, asUser: string | undefined): void {
   } catch { /* no settings yet */ }
   lines.push(`apps:      ${apps.length ? apps.map((a) => `${a.id}${a.id === active ? " (open)" : ""}`).join(", ") : "none"}`);
   console.log(lines.join("\n"));
+  const me = selfCommand();
   console.log(`
 Point your editor or coding agent at the workspace folder. It is a git
 repository of plain files: apps/<id>/{src,plugins,data}, plugins/, notes/,
@@ -200,12 +311,17 @@ commands/. AGENTS.md there explains the layout and what belongs where — it is
 written for whatever agent reads it, not just the built-in one. Saves reach
 open pages on their own; app source rebuilds in the browser.
 
-Use \`chrysalis api\` for the parts that are not files — asking for an app's
-build errors, its console, reinstalling its dependencies:
+For the parts that are not files — whether an app built, what its page logged,
+which models are connected — call the API of the Chrysalis running here:
 
-  chrysalis api GET  /v1/apps
-  chrysalis api GET  /v1/apps/${apps[0]?.id ?? "<app>"}/build
-  chrysalis api POST /v1/apps/${apps[0]?.id ?? "<app>"}/build '{}'`);
+  ${me} api GET  /v1/apps
+  ${me} api GET  /v1/apps/${apps[0]?.id ?? "<app>"}/build
+  ${me} api POST /v1/apps/${apps[0]?.id ?? "<app>"}/build '{}'
+${INSTALL_KIND === "binary" && !onPath(exeDir()) ? `
+That is this program's own path, because a downloaded Chrysalis is not on your
+PATH — plain \`chrysalis\` would not be recognized. To fix that once:
+
+  ${me} install-cli` : ""}`);
 }
 
 /**

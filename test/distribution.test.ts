@@ -495,3 +495,28 @@ describe("engine identity", () => {
     expect(v.engine!.version).not.toBe("");
   });
 });
+
+describe("the command line an outside agent uses", () => {
+  const src = fs.readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+
+  it("offers workspace, api and install-cli, and --help names them", () => {
+    const help = /const HELP = `([\s\S]*?)`;/.exec(src)?.[1] ?? "";
+    expect(help).not.toBe("");
+    for (const verb of ["workspace", "api", "install-cli", "uninstall-cli"]) {
+      expect(src, `no "${verb}" case`).toContain(`case "${verb}":`);
+      expect(help, `"${verb}" is not in --help`).toContain(verb);
+    }
+  });
+
+  it("never puts a PATH through setx, which truncates it", () => {
+    // the comment explaining why may name it; a call would quote it
+    expect(src).not.toContain('"setx"');
+    expect(src).not.toContain("'setx'");
+  });
+
+  it("says how to run itself per install, not just 'chrysalis'", () => {
+    // a downloaded build is not on PATH: the examples have to be pasteable
+    expect(src).toContain('if (INSTALL_KIND === "npm") return "chrysalis"');
+    expect(src).toContain("process.execPath");
+  });
+});
