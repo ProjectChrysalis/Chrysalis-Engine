@@ -16,7 +16,8 @@ import { EventBus } from "../src/server/ws.js";
 import { SessionService } from "../src/sessions.js";
 import { UserService } from "../src/users.js";
 import { defaultInstanceConfig } from "../src/config.js";
-import { userPaths } from "../src/paths.js";
+import { bootstrapUserDir, ensureWorkspaceAgentsMd, userPaths } from "../src/paths.js";
+import { instructionDocsStamp } from "../src/agent/agent.js";
 import { invalidatePluginCache } from "../src/plugins/runtime.js";
 import { installNotesApp } from "./fixtures/notes-app.js";
 
@@ -217,4 +218,66 @@ describe("admin password resets", () => {
     });
     expect(disable.status).toBe(200);
   }, 30_000);
+});
+describe("workspace instruction files", () => {
+  it("seeds AGENTS.md with a digest marker and notes/ with a README", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chry-docs-"));
+    try {
+      bootstrapUserDir(dir, "ada");
+      const root = path.join(dir, "users", "ada");
+      const agents = fs.readFileSync(path.join(root, "AGENTS.md"), "utf8");
+      expect(agents).toMatch(/^<!-- chrysalis-workspace-agents: \d+ sha256:[0-9a-f]{16} -->\n/);
+      expect(fs.readFileSync(path.join(root, "notes", "README.md"), "utf8")).toContain("# Notes");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("never overwrites an AGENTS.md someone edited", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chry-docs-"));
+    try {
+      bootstrapUserDir(dir, "ada");
+      const am = path.join(dir, "users", "ada", "AGENTS.md");
+      const seeded = fs.readFileSync(am, "utf8");
+      // an edit that keeps the marker line — the obvious thing to do with a
+      // file full of instructions, and what used to be silently reverted
+      const edited = seeded.replace(/\n## Layout\n/, "\n## House rules\nAlways ask before deleting a chat.\n\n## Layout\n");
+      expect(edited).not.toBe(seeded);
+      fs.writeFileSync(am, edited, "utf8");
+      // pretend a later engine ships a newer template
+      const older = edited.replace(/chrysalis-workspace-agents: \d+/, "chrysalis-workspace-agents: 1");
+      fs.writeFileSync(am, older, "utf8");
+      expect(ensureWorkspaceAgentsMd(dir, "ada")).toBe(false);
+      expect(fs.readFileSync(am, "utf8")).toContain("Always ask before deleting a chat.");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does refresh an untouched copy when the template moves on", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chry-docs-"));
+    try {
+      bootstrapUserDir(dir, "ada");
+      const am = path.join(dir, "users", "ada", "AGENTS.md");
+      // same body, older version: an engine-written copy from a past release
+      const body = fs.readFileSync(am, "utf8").replace(/^<!--[^\n]*-->\n/, "");
+      fs.writeFileSync(am, `<!-- chrysalis-workspace-agents: 1 -->\n${body}`, "utf8");
+      expect(ensureWorkspaceAgentsMd(dir, "ada")).toBe(true);
+      expect(fs.readFileSync(am, "utf8")).toMatch(/sha256:[0-9a-f]{16}/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("the fingerprint moves when a note is written", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chry-docs-"));
+    try {
+      const p = bootstrapUserDir(dir, "ada");
+      const before = instructionDocsStamp(p);
+      fs.writeFileSync(path.join(dir, "users", "ada", "notes", "plan.md"), "# Plan\nRework memory.\n", "utf8");
+      expect(instructionDocsStamp(p)).not.toBe(before);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

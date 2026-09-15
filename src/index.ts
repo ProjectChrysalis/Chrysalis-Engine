@@ -17,7 +17,7 @@ import { ConfigError, dataDirOf, envNameOf, flagNameOf, loadConfig, parseFlags, 
 import { ENGINE_VERSION, INSTALL_KIND, resolveHomeDir } from "./install.js";
 import { UserService } from "./users.js";
 import { SessionService } from "./sessions.js";
-import { bootstrapUserDir, ensureGitignoreEntries, ensureWorkspaceAgentsMd, migrateConnectionsIntoDataRoot, migrateCredentialsIntoDataRoot, migrateMcpIntoDataRoot, migrateSpeechIntoDataRoot, migrateWebSearchPreset, userPaths } from "./paths.js";
+import { bootstrapUserDir, ensureGitignoreEntries, ensureNotesDir, ensureWorkspaceAgentsMd, migrateConnectionsIntoDataRoot, migrateCredentialsIntoDataRoot, migrateMcpIntoDataRoot, migrateSpeechIntoDataRoot, migrateWebSearchPreset, userPaths } from "./paths.js";
 import { initRepo, untrackBoundary, commitAll as gitCommitAll, commitPaths as gitCommitPaths } from "./git.js";
 import { renameAppDir } from "./apps/manager.js";
 import { gcRepoIfChunky } from "./apps/git.js";
@@ -208,9 +208,14 @@ async function prepareAccounts(users: UserService, dataDir: string): Promise<voi
     if (ensureGitignoreEntries(p.root)) {
       await gitCommitPaths(p.root, u.username, "chore: ignore file covers runtime state and staged imports", [".gitignore"]);
     }
-    // workspace AGENTS.md teaches external coding agents the file contract
+    // workspace AGENTS.md teaches the file contract — to the built-in agent,
+    // which is handed it, and to any coding agent pointed at this directory
     if (ensureWorkspaceAgentsMd(dataDir, u.username)) {
-      await gitCommitAll(p.root, u.username, "docs: workspace AGENTS.md (external coding agents)");
+      await gitCommitAll(p.root, u.username, "docs: workspace AGENTS.md");
+    }
+    // notes/: the user's own plans and specs, listed for the agent every run
+    if (ensureNotesDir(dataDir, u.username)) {
+      await gitCommitAll(p.root, u.username, "docs: notes/ for plans and specs");
     }
     await initRepo(p.root);
     await untrackBoundary(p.root, u.username);

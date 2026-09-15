@@ -30,7 +30,7 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { radiusProvider } from "@earendil-works/pi-ai/providers/radius";
 import type { AuthPrompt, Credential, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { curatedProviders, loadCustomProviders, reservedProviderIds } from "../providers/custom.js";
-import { UserAgent, listSessions, renameSession, archiveSession, sessionDir, isReasoningLevel, type ReasoningLevel } from "../agent/agent.js";
+import { UserAgent, instructionDocsStamp, listSessions, renameSession, archiveSession, sessionDir, isReasoningLevel, type ReasoningLevel } from "../agent/agent.js";
 import { listConnections, createConnection, updateConnection, deleteConnection, validateConnectionInput, validatePromptFormatInput, readConnections, connectionKeyUsable, type ConnectionInfo } from "../connections.js";
 import { PROMPT_FORMATS, type PromptFormat } from "../providers/prompt-formats.js";
 import {
@@ -570,6 +570,15 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   ): Promise<UserAgent> => {
     const key = sessionId ? `${u.username}:${sessionId}:${model ?? ""}:${reasoning ?? ""}:${mode}` : undefined;
     let a = key ? agentInstances.get(key) : undefined;
+    // The instruction files ride the system prompt, which is snapshotted when
+    // the agent is made. Editing a note or an AGENTS.md mid-conversation and
+    // having it ignored until the next chat is the kind of thing nobody works
+    // out on their own, so a changed file drops the cached agent instead.
+    const docsNow = instructionDocsStamp(userPaths(dataDir, u.username));
+    if (a && a.docsStamp !== docsNow) {
+      if (key) agentInstances.delete(key);
+      a = undefined;
+    }
     if (!a) {
       let resolvedSessionId = sessionId;
       a = await UserAgent.create(u.username, getModels(u), userPaths(dataDir, u.username), users, config, {
@@ -601,6 +610,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
           }),
       });
       resolvedSessionId = a.sessionId;
+      a.docsStamp = docsNow;
       if (key) agentInstances.set(key, a);
     }
     return a;

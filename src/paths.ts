@@ -1,4 +1,5 @@
 /** Data-root layout + per-user directory bootstrap. See SPEC §4. */
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { WEB_SEARCH_PRESET, isLegacyWebSearchPreset, type McpServerConfig } from "./mcp/registry.js";
@@ -183,12 +184,12 @@ apps/.staging/
 
 /**
  * Workspace-level AGENTS.md — read by ANY coding agent pointed at this dir
- * (Chrysalis's built-in agent, Claude Code, Zcode, …). No secrets:
- * the file is git-tracked. Its job: teach the file-first contract + how to
- * drive the engine.
+ * (Chrysalis's built-in agent, Claude Code, Zcode, …), and put in front of
+ * the built-in agent directly. No secrets: the file is git-tracked. Its job:
+ * teach the file-first contract + how to drive the engine.
  */
-const USER_AGENTS_MD = `<!-- chrysalis-workspace-agents: 10 -->
-# Chrysalis workspace
+const AGENTS_MD_VERSION = 11;
+const USER_AGENTS_MD_BODY = `# Chrysalis workspace
 
 Everything here is files you can edit like code — this user's whole Chrysalis world. The engine hot-reloads as you save.
 
@@ -202,12 +203,21 @@ Everything here is files you can edit like code — this user's whole Chrysalis 
 - An app is free to be anything: a chat studio, a visual novel, a game, a tool. Each carries its own \`AGENTS.md\` and \`data/README.md\` (its field-shape map) — read those before editing that app.
 - \`plugins/<id>/\` — top-level always-on plugins (same format as app plugins).
 - \`providers.json\` — custom model endpoints. \`settings.json\` — activeApp etc. (the Settings UI owns it; agents do not read or edit it).
+- \`notes/\` — plans, specs and reference material, yours to create and keep. The engine never writes here and never deletes anything in it. Every file is listed for the agent by name and first line, so write one per topic with a first line that says what it covers, and read the relevant note before starting work in that area.
+- \`persona.md\` — standing instructions that apply to EVERY request. Always in the agent's context (Settings > the agent instructions box writes it). Keep it short; put anything task-shaped in \`notes/\` instead.
 - In app \`data/\` trees, files starting with \`_\` are AI-only templates (never shown in the UI): copy \`_example.json\` to a real name to create the entity with the right shape.
 - NOT here (never reachable): credentials, \`mcp.json\`, \`connections.json\` and \`speech.json\` — all live outside the workspace in the engine's credentials dir. MCP servers, model connections and speech endpoints are the user's to configure in Settings; an MCP entry runs a command on the host or opens unrestricted egress, so nothing in this workspace can author one.
 
 ## Driving the engine (optional — files alone cover most work)
 The local engine also exposes HTTP:
 - API base: \`<the address Chrysalis prints at start>/v1\`, by default \`http://127.0.0.1:8788/v1\` (auth: the user's bearer token / session). The port is set in the engine's config.yaml, which lives outside this workspace.
+
+## Where a change goes
+Pick the lightest place that can carry the change. All three are supported and all three survive an app update — an update is a three-way merge against the version the app was installed from, so your edits are kept and only an edit that overlaps the same lines as the update conflicts (and then nothing is written until the user picks how to settle it). App \`data/\` is never part of an update at all.
+1. \`apps/<id>/data/\` — content, settings, entities. No rebuild, open clients pick it up in about a second, and it can never conflict with an update. Most requests end here.
+2. \`apps/<id>/plugins/<your-id>/\` — backend behavior: routes, tools, scheduled work. Prefer a NEW plugin folder of your own over editing one that shipped with the app: a file only you added has no upstream version to disagree with, so it can never conflict.
+3. \`apps/<id>/src/\` — the UI. Editing it is normal and expected; it is how the app changes shape. It rebuilds in the user's browser (call app_check afterwards) and puts that file into the merge path on the next update.
+Read the app's own AGENTS.md before deciding: it says which of its behavior is already data-driven, and reaching for \`src/\` for something a data file already controls is the one wrong answer here.
 
 ## Rules
 - Never touch anything outside this workspace: the engine's credentials store, other users' directories, and the Chrysalis engine's own install (source, deps, git repo) are off-limits — the user updates the engine themselves.
@@ -231,21 +241,37 @@ export function bootstrapUserDir(dataDir: string, username: string): UserPaths {
   const gi = path.join(p.root, ".gitignore");
   if (!fs.existsSync(gi)) fs.writeFileSync(gi, USER_GITIGNORE, "utf8");
   const am = path.join(p.root, "AGENTS.md");
-  if (!fs.existsSync(am)) fs.writeFileSync(am, USER_AGENTS_MD, "utf8");
+  if (!fs.existsSync(am)) fs.writeFileSync(am, workspaceAgentsMd(), "utf8");
+  const notes = path.join(p.root, "notes");
+  if (!fs.existsSync(notes)) {
+    fs.mkdirSync(notes, { recursive: true });
+    fs.writeFileSync(path.join(notes, "README.md"), NOTES_README, "utf8");
+  }
   return p;
 }
 
+/** The marker line an engine-written AGENTS.md carries: the template version,
+ *  plus a digest of the body the engine wrote. */
+const AGENTS_MD_MARKER = /^<!--\s*chrysalis-workspace-agents:\s*(\d+)(?:\s+sha256:([0-9a-f]{16}))?\s*-->\r?\n/;
+
+const agentsMdDigest = (body: string): string =>
+  crypto.createHash("sha256").update(body, "utf8").digest("hex").slice(0, 16);
+
+function workspaceAgentsMd(): string {
+  return `<!-- chrysalis-workspace-agents: ${AGENTS_MD_VERSION} sha256:${agentsMdDigest(USER_AGENTS_MD_BODY)} -->\n${USER_AGENTS_MD_BODY}`;
+}
+
 /**
- * Seed/refresh the workspace AGENTS.md. The HTML comment marker versions the
- * template: engine-written copies refresh on boot when the version changes;
- * a file WITHOUT any marker was edited by the user (or their agent) and is
- * never overwritten.
+ * Seed/refresh the workspace AGENTS.md. The marker versions the template so
+ * engine-written copies refresh on boot, and carries a digest of the body the
+ * engine wrote so an edited one is left alone. Checking only for the marker's
+ * presence meant a file someone edited in place — the obvious thing to do
+ * with a file full of instructions — was silently replaced on the next boot
+ * that changed the version.
  */
 export function ensureWorkspaceAgentsMd(dataDir: string, username: string): boolean {
   const p = userPaths(dataDir, username);
   const am = path.join(p.root, "AGENTS.md");
-  const MARKER = "chrysalis-workspace-agents:";
-  const CURRENT = "chrysalis-workspace-agents: 10";
   let existing: string | null = null;
   try {
     existing = fs.readFileSync(am, "utf8");
@@ -253,12 +279,49 @@ export function ensureWorkspaceAgentsMd(dataDir: string, username: string): bool
     /* missing → seed below */
   }
   if (existing !== null) {
-    if (!existing.includes(MARKER)) return false; // user-edited — hands off
-    if (existing.includes(CURRENT)) return false; // already current
+    const m = AGENTS_MD_MARKER.exec(existing);
+    if (!m) return false; // no marker: theirs, hands off
+    if (Number(m[1]) >= AGENTS_MD_VERSION) return false; // already current
+    // A digest only appears on copies this version of the engine wrote. An
+    // older marker has none, and those were being overwritten already, so
+    // refreshing them once more is no new loss — and it stamps a digest that
+    // protects every edit made from here on.
+    if (m[2] && agentsMdDigest(existing.slice(m[0].length)) !== m[2]) return false;
   }
-  fs.writeFileSync(am, USER_AGENTS_MD, "utf8");
+  fs.writeFileSync(am, workspaceAgentsMd(), "utf8");
   return true;
 }
+
+/** `notes/` is the user's: plans, specs, reference material. The engine seeds
+ *  a README so the directory exists and says what it is for, then never
+ *  writes there again. */
+export function ensureNotesDir(dataDir: string, username: string): boolean {
+  const p = userPaths(dataDir, username);
+  const dir = path.join(p.root, "notes");
+  const readme = path.join(dir, "README.md");
+  if (fs.existsSync(dir)) return false;
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(readme, NOTES_README, "utf8");
+  return true;
+}
+
+const NOTES_README = `# Notes
+
+Plans, specs and reference material for your agent. This directory is yours —
+Chrysalis seeds this one file and never writes here again.
+
+Your agent sees every file in here listed by name and first line on every
+request, and reads the ones that matter before it starts work. So:
+
+- One file per topic, named for the topic (\`roleplay-memory-rework.md\`).
+- Make the first line say what the file covers. That line is what your agent
+  reads in the list, and it is how it decides which file to open.
+- Anything that should apply to *every* request, however small, belongs in
+  Settings under the agent instructions box instead (it writes \`persona.md\`,
+  which is always in full).
+
+Delete this README once you have notes of your own.
+`;
 
 /**
  * One-time migration: credentials used to live at <userDir>/auth.json (inside
