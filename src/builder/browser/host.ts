@@ -203,6 +203,12 @@ class AppBuild {
       if (type === "build_needed") {
         for (const p of Array.isArray(payload.paths) ? payload.paths : []) if (typeof p === "string") this.changed.add(p);
         void this.kick();
+      } else if (type === "app_changed" && payload.updated === true) {
+        // an update replaced the app's sources on disk. Without a rebuild the
+        // open page keeps serving the version it was loaded with, which reads
+        // as "the update did nothing". Full, not update: the new version may
+        // add, remove or rewire files no change event ever named.
+        void this.rebuild();
       } else if (type === "app_built" && payload.kind === "full" && payload.holder !== this.holder) {
         for (const w of this.watchers) w.onReload();
       }
