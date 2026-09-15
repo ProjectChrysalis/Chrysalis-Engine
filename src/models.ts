@@ -1254,17 +1254,27 @@ export class UserModelService {
     if (!pick) throw new Error(`image model not found: ${req.model}`);
     const ctx = { input: [{ type: "text" as const, text: req.prompt }] };
     const viaConnection = (await this.imageConnections()).find((s) => s.id === pick.provider);
-    let out: Awaited<ReturnType<typeof this.images.generateImages>>;
-    if (viaConnection) {
-      const raw = this.images.getModel(viaConnection.catalog, pick.id);
-      if (!raw) throw new Error(`image model not found in registry: ${pick.id}`);
-      out = await this.images.generateImages({ ...raw, baseUrl: viaConnection.baseUrl }, ctx, { apiKey: viaConnection.key });
-    } else {
-      const raw = this.images.getModel(pick.provider, pick.id);
-      if (!raw) throw new Error(`image model not found in registry: ${pick.id}`);
-      out = await this.images.generateImages(raw, ctx);
+    const raw = this.images.getModel(viaConnection?.catalog ?? pick.provider, pick.id);
+    if (!raw) throw new Error(`image model not found in registry: ${pick.id}`);
+    const out = viaConnection
+      ? await this.images.generateImages({ ...raw, baseUrl: viaConnection.baseUrl }, ctx, { apiKey: viaConnection.key })
+      : await this.images.generateImages(raw, ctx);
+    if (out.stopReason === "error") {
+      const message = out.errorMessage ?? "image generation failed";
+      // Pure image models reject the chat call the shared adapter makes and
+      // answer with the endpoint that does serve them; use it instead of
+      // reporting a model the catalog lists as broken.
+      if (String(raw.api) === "openrouter-images" && /\/api\/v1\/images endpoint/i.test(message)) {
+        const auth = viaConnection ? undefined : (await this.images.getAuth(pick.provider))?.auth;
+        const apiKey = viaConnection?.key ?? auth?.apiKey;
+        const baseUrl = viaConnection?.baseUrl ?? auth?.baseUrl ?? String(raw.baseUrl ?? "");
+        if (apiKey && baseUrl) {
+          const image = await postImagePrompt(baseUrl, apiKey, pick.id, req.prompt);
+          return { data: image.data, mimeType: image.mimeType, model: `${pick.provider}/${pick.id}` };
+        }
+      }
+      throw new Error(message);
     }
-    if (out.stopReason === "error") throw new Error(out.errorMessage ?? "image generation failed");
     const img = (out.output as { type: string; data?: string; mimeType?: string }[]).find((c) => c.type === "image" && c.data);
     if (!img?.data) {
       // models that refuse answer in text instead of an image; that text is the reason
@@ -1273,6 +1283,24 @@ export class UserModelService {
     }
     return { data: Buffer.from(img.data, "base64"), mimeType: img.mimeType ?? "image/png", model: `${pick.provider}/${pick.id}` };
   }
+}
+
+/** The OpenAI-compatible image call OpenRouter serves on its dedicated
+ *  endpoint: { model, prompt } in, base64 bytes and media type out. */
+async function postImagePrompt(baseUrl: string, apiKey: string, model: string, prompt: string): Promise<{ data: Buffer; mimeType: string }> {
+  const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/images`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ model, prompt }),
+  });
+  const body = (await res.json().catch(() => null)) as { data?: { b64_json?: string; media_type?: string }[]; error?: { message?: string } } | null;
+  if (!res.ok) {
+    const detail = body?.error?.message;
+    throw new Error(detail ? `${res.status}: ${detail}` : `image generation failed (${res.status})`);
+  }
+  const image = body?.data?.[0];
+  if (!image?.b64_json) throw new Error("image endpoint returned no image data");
+  return { data: Buffer.from(image.b64_json, "base64"), mimeType: image.media_type ?? "image/png" };
 }
 
 export class ModelNotConfiguredError extends Error {}

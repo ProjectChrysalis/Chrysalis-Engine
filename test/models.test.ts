@@ -445,3 +445,75 @@ describe("providers whose endpoint lives on each model", () => {
     expect(new Set(opencode.map((m) => m.api)).size).toBeGreaterThan(1);
   }, 30_000);
 });
+
+describe("image models served on a dedicated images endpoint", () => {
+  /** First chat call answers 404 naming /images, the retry is what we count. */
+  function stubImagesFetch(): { calls: { url: string; auth: string }[]; restore: () => void } {
+    const calls: { url: string; auth: string }[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = Object.assign(
+      async (url: string | URL, init?: RequestInit) => {
+        const u = String(url);
+        const headers = init?.headers as Record<string, string> | undefined;
+        calls.push({ url: u, auth: headers?.authorization ?? headers?.Authorization ?? "-" });
+        if (u.endsWith("/chat/completions")) {
+          return new Response(
+            JSON.stringify({ error: { message: "openai/gpt-image-2 is an image generation model and cannot be used with the chat/completions endpoint. Use the /api/v1/images endpoint instead." } }),
+            { status: 404, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (u.endsWith("/images")) {
+          return new Response(
+            JSON.stringify({ data: [{ b64_json: Buffer.from("fake-png").toString("base64"), media_type: "image/webp" }] }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        throw new Error(`unexpected fetch: ${u}`);
+      },
+      { preconnect: (): void => {} },
+    ) as typeof fetch;
+    return { calls, restore: () => { globalThis.fetch = original; } };
+  }
+
+  it("the builtin provider retries against /images with its stored key", async () => {
+    const p = userPaths(dataDir, "ivy");
+    fs.mkdirSync(path.dirname(p.auth), { recursive: true });
+    fs.writeFileSync(p.auth, JSON.stringify({ openrouter: { type: "api_key", key: "sk-or-test" } }), { mode: 0o600 });
+    const svc = new UserModelService("ivy", p, defaultInstanceConfig());
+
+    const stub = stubImagesFetch();
+    try {
+      const out = await svc.generateImage({ prompt: "a red panda astronaut", model: "openrouter/openai/gpt-image-2" });
+      expect(out.model).toBe("openrouter/openai/gpt-image-2");
+      expect(out.mimeType).toBe("image/webp");
+      expect(out.data.toString()).toBe("fake-png");
+      expect(stub.calls[0]!.url).toBe("https://openrouter.ai/api/v1/chat/completions");
+      expect(stub.calls.at(-1)!.url).toBe("https://openrouter.ai/api/v1/images");
+      expect(stub.calls.at(-1)!.auth).toBe("Bearer sk-or-test");
+    } finally {
+      stub.restore();
+    }
+  }, 30_000);
+
+  it("a named connection reuses its own endpoint and key", async () => {
+    const p = userPaths(dataDir, "joe");
+    fs.mkdirSync(path.dirname(p.connections), { recursive: true });
+    fs.writeFileSync(p.connections, JSON.stringify({
+      connections: { or1: { name: "openrouter raw", api: "openai-completions", baseUrl: "https://openrouter.ai/api/v1", models: "auto" } },
+    }));
+    fs.mkdirSync(path.dirname(p.auth), { recursive: true });
+    fs.writeFileSync(p.auth, JSON.stringify({ or1: { type: "api_key", key: "sk-or-conn", boundBaseUrl: "https://openrouter.ai/api/v1" } }), { mode: 0o600 });
+    const svc = new UserModelService("joe", p, defaultInstanceConfig());
+
+    const stub = stubImagesFetch();
+    try {
+      const out = await svc.generateImage({ prompt: "a red panda astronaut", model: "or1/openai/gpt-image-2" });
+      expect(out.model).toBe("or1/openai/gpt-image-2");
+      expect(out.mimeType).toBe("image/webp");
+      expect(stub.calls.at(-1)!.url).toBe("https://openrouter.ai/api/v1/images");
+      expect(stub.calls.at(-1)!.auth).toBe("Bearer sk-or-conn");
+    } finally {
+      stub.restore();
+    }
+  }, 30_000);
+});
