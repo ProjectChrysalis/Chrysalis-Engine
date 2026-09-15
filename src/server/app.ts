@@ -23,7 +23,7 @@ import { ENGINE_REPOSITORY, ENGINE_VERSION, resourcesDir } from "../install.js";
 import type { ServerSettings } from "./settings.js";
 import { latestRelease } from "../updates.js";
 import { SELF_UPDATE, startUpdate, updateState } from "../self-update.js";
-import { userPaths, safeResolve, type UserPaths } from "../paths.js";
+import { agentReadDenied, userPaths, safeResolve, type UserPaths } from "../paths.js";
 import * as git from "../git.js";
 import { UserModelService, ModelNotConfiguredError, type ModelPricing } from "../models.js";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
@@ -2085,6 +2085,38 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     return c.json({ files: results });
   });
 
+  /** Files a message pointed at with "@path". Workspace-relative only, read
+   *  through the same guard every file tool uses, capped so a message naming
+   *  a huge file does not become the whole context. Anything that is not a
+   *  readable text file in the workspace is left as the plain text it is. */
+  const MENTION_BYTES = 64 * 1024;
+  const readMentionedFiles = (p: UserPaths, message: string): Array<{ path: string; text: string; truncated: boolean }> => {
+    const out: Array<{ path: string; text: string; truncated: boolean }> = [];
+    const seen = new Set<string>();
+    // a path ends at whitespace; trailing sentence punctuation is not part of it
+    for (const m of message.matchAll(/(?:^|\s)@([A-Za-z0-9._][A-Za-z0-9._/\-]{0,255})/g)) {
+      const rel = (m[1] ?? "").replace(/[.,;:!?)\]]+$/, "");
+      if (!rel || seen.has(rel) || out.length >= 10) continue;
+      seen.add(rel);
+      if (agentReadDenied(rel)) continue;
+      let abs: string;
+      try {
+        abs = safeResolve(p.root, rel);
+      } catch {
+        continue;
+      }
+      try {
+        if (!fs.statSync(abs).isFile()) continue;
+        const buf = fs.readFileSync(abs);
+        // a binary file is not context, it is noise
+        if (buf.subarray(0, 4096).includes(0)) continue;
+        const truncated = buf.length > MENTION_BYTES;
+        out.push({ path: rel, text: buf.subarray(0, MENTION_BYTES).toString("utf8"), truncated });
+      } catch { /* unreadable: the model still has the path */ }
+    }
+    return out;
+  };
+
   // commands/: the user's own reusable prompts, one markdown file each. The
   // composer lists them as /<filename>; picking one drops its text in the box.
   // A workflow is mostly the prompts someone types again and again, so this is
@@ -2185,6 +2217,9 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       }
       throw e;
     }
+    // "@path" the composer's file picker put in the message: read them now, so
+    // the model is looking at the file instead of going to fetch it first.
+    const contextFiles = readMentionedFiles(paths, body.message);
     bus.emit(u.username, "agent_session", { sessionId: agent.sessionId });
     const runKey = `${u.username}:${agent.sessionId}`;
     activeRuns.set(runKey, agent);
@@ -2194,6 +2229,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         onEvent: (ev) => bus.emit(u.username, "agent_event", { sessionId: agent.sessionId, ev }),
         images,
         ...(imageUrls.length ? { imageUrls } : {}),
+        ...(contextFiles.length ? { contextFiles } : {}),
       });
       // auto-compact: when the next call's context is over the limit, fold
       // the session into a summary (marker keeps history for the UI). The

@@ -3,6 +3,7 @@
  * and only showed up when someone used it: the popover opened as an empty
  * sliver, and picking a file put the mention markup into the message.
  */
+import fs from "node:fs";
 import { describe, expect, it } from "bun:test";
 import { fileTriggerAdapter, filePathDirective, fileTriggerItem } from "../client-agent/src/file-mentions.js";
 
@@ -46,5 +47,37 @@ describe("the @ file picker", () => {
     const item = fileTriggerItem("apps/roleplay/src/lib/store.ts");
     expect(item.label).toBe("store.ts");
     expect(item.description).toBe("apps/roleplay/src/lib/store.ts");
+  });
+});
+
+/**
+ * "@path" in a message means the person is pointing at a file. Reading it
+ * before the turn saves the model going to find out what they meant.
+ */
+describe("files named with @ reach the model", () => {
+  const src = fs.readFileSync(new URL("../src/server/app.ts", import.meta.url), "utf8");
+
+  it("reads them through the same guard the file tools use", () => {
+    const fn = src.slice(src.indexOf("const readMentionedFiles"), src.indexOf("const readMentionedFiles") + 1400);
+    expect(fn).toContain("agentReadDenied");
+    expect(fn).toContain("safeResolve");
+  });
+
+  it("caps how much one message can drag in", () => {
+    const fn = src.slice(src.indexOf("const readMentionedFiles"), src.indexOf("const readMentionedFiles") + 1400);
+    expect(src).toContain("MENTION_BYTES = 64 * 1024");
+    expect(fn).toContain("out.length >= 10");
+  });
+
+  it("skips binaries, which are noise rather than context", () => {
+    const fn = src.slice(src.indexOf("const readMentionedFiles"), src.indexOf("const readMentionedFiles") + 1400);
+    expect(fn).toContain("includes(0)");
+  });
+
+  it("keeps the typed message in the transcript, not the file's contents", () => {
+    const agentSrc = fs.readFileSync(new URL("../src/agent/agent.ts", import.meta.url), "utf8");
+    // markStarted records what was typed; only the prompt carries the files
+    expect(agentSrc).toContain("this.markStarted(userMessage)");
+    expect(agentSrc).toContain("this.agent.prompt(promptText");
   });
 });

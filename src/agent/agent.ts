@@ -356,9 +356,21 @@ export class UserAgent {
       images?: Array<{ data: string; mimeType: string }>;
       /** Where the same images live in the asset store, for the record. */
       imageUrls?: string[];
+      /** Files the message named with "@path", already read. They ride the
+       *  prompt the model sees; the transcript keeps what was typed, so the
+       *  chat shows "@notes/plan.md" rather than the file pasted into it. */
+      contextFiles?: Array<{ path: string; text: string; truncated: boolean }>;
     } = {},
   ): Promise<AgentRunResult> {
     this.markStarted(userMessage);
+    // "@path" in the message means the person is pointing at a file. Reading
+    // it here saves the model a round trip to find out what they meant, and
+    // saves them wondering why it went looking instead of just looking.
+    const promptText = opts.contextFiles?.length
+      ? `${userMessage}\n\n${opts.contextFiles
+          .map((f) => `<file path="${f.path}">\n${f.text}\n</file>${f.truncated ? `\n(${f.path} was cut short here — read the rest if you need it)` : ""}`)
+          .join("\n\n")}`
+      : userMessage;
     const before = this.agent.state.messages.length;
     let thinkingText = "";
     let thinkingStart = 0;
@@ -431,7 +443,7 @@ export class UserAgent {
     });
     try {
       const images = (opts.images ?? []).map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
-      await this.agent.prompt(userMessage, images.length ? images : undefined);
+      await this.agent.prompt(promptText, images.length ? images : undefined);
     } finally {
       unsub();
     }
