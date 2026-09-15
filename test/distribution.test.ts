@@ -520,3 +520,33 @@ describe("the command line an outside agent uses", () => {
     expect(src).toContain("process.execPath");
   });
 });
+
+describe("chrysalis makes itself a command", () => {
+  const src = fs.readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+
+  it("links on first start, so nobody has to find install-cli", () => {
+    expect(src).toContain(".cli-linked");
+    expect(src).toContain("await linkCli(dataDir)");
+  });
+
+  it("writes the marker BEFORE trying, so uninstall-cli stays undone", () => {
+    const block = src.slice(src.indexOf("const cliMarker"), src.indexOf("const cliMarker") + 700);
+    expect(block.indexOf("writeFileSync(cliMarker")).toBeLessThan(block.indexOf("await linkCli"));
+  });
+
+  it("never lets the convenience take the engine down with it", () => {
+    const block = src.slice(src.indexOf("const cliMarker"), src.indexOf("const cliMarker") + 700);
+    expect(block).toContain("catch");
+    expect(block).toContain("log.warn");
+  });
+
+  it("only removes a link that points at this program", () => {
+    const block = src.slice(src.indexOf("async function unlinkCli"), src.indexOf("async function unlinkCli") + 600);
+    expect(block).toContain("readlinkSync");
+    expect(block).toContain("process.execPath");
+  });
+
+  it("refuses a body its shell already mangled, instead of sending it", () => {
+    expect(src).toContain("not valid JSON after your shell finished with it");
+  });
+});

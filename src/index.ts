@@ -194,71 +194,91 @@ async function installCli(dataDir: string, remove: boolean): Promise<void> {
     console.log("The Android app has no terminal to put anything on.");
     return;
   }
-  const exe = process.execPath;
-  if (process.platform === "win32") {
-    const binDir = path.join(dataDir, "bin");
-    const shim = path.join(binDir, "chrysalis.cmd");
-    if (remove) {
-      fs.rmSync(shim, { force: true });
-      console.log(`Removed ${shim}.\nThe folder stays on your PATH; nothing is in it.`);
-      return;
-    }
-    fs.mkdirSync(binDir, { recursive: true });
-    fs.writeFileSync(shim, `@echo off\r\n"${exe}" %*\r\n`, "utf8");
-    // read-modify-write the account's PATH through the registry
-    const ps = `$d='${binDir.replace(/'/g, "''")}'; $p=[Environment]::GetEnvironmentVariable('Path','User'); if (($p -split ';') -notcontains $d) { [Environment]::SetEnvironmentVariable('Path', (($p.TrimEnd(';') + ';' + $d).TrimStart(';')), 'User'); 'added' } else { 'already' }`;
-    try {
-      const { stdout } = await runCmd("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps]);
-      console.log(`Wrote ${shim}.`);
-      console.log(stdout.includes("added")
-        ? "Added its folder to your PATH. Open a NEW terminal, then `chrysalis workspace` works anywhere."
-        : "Its folder was already on your PATH. `chrysalis workspace` works in a new terminal.");
-    } catch (e) {
-      console.log(`Wrote ${shim}, but could not change your PATH: ${(e as Error).message}`);
-      console.log(`Add this folder to your PATH by hand: ${binDir}`);
-    }
-    return;
-  }
-  const binDir = path.join(os.homedir(), ".local", "bin");
-  const link = path.join(binDir, "chrysalis");
+  const link = cliLinkPath(dataDir);
   if (remove) {
-    try {
-      // only ours: never remove something else that answers to the name
-      if (fs.readlinkSync(link) !== exe) {
-        console.log(`${link} points somewhere else — leaving it alone.`);
-        return;
-      }
-    } catch {
-      console.log(`Nothing of ours at ${link}.`);
-      return;
-    }
-    fs.rmSync(link, { force: true });
-    console.log(`Removed ${link}.`);
+    const gone = await unlinkCli(dataDir);
+    console.log(gone ? `Removed ${link}.` : `Nothing of ours at ${link}.`);
+    if (gone && process.platform === "win32") console.log("The folder stays on your PATH; nothing is in it.");
     return;
   }
-  fs.mkdirSync(binDir, { recursive: true });
-  fs.rmSync(link, { force: true });
-  fs.symlinkSync(exe, link);
-  console.log(`Linked ${link} -> ${exe}`);
-  const onPath = (process.env.PATH ?? "").split(":").includes(binDir);
-  console.log(onPath
+  await linkCli(dataDir);
+  console.log(`Wrote ${link}.`);
+  console.log(onPath(path.dirname(link))
     ? "It is on your PATH: `chrysalis workspace` works anywhere."
-    : `Your PATH does not include ${binDir} yet. Add this to your shell's startup file:\n\n  export PATH="$HOME/.local/bin:$PATH"`);
+    : process.platform === "win32"
+      ? "Its folder is on your PATH. Open a NEW terminal, then `chrysalis workspace` works anywhere."
+      : `Your PATH does not include ${path.dirname(link)} yet. Add this to your shell's startup file:\n\n  export PATH="$HOME/.local/bin:$PATH"`);
 }
 
 /**
- * How to run this program again, as the person reading actually can. A
- * downloaded build is not on PATH — typing `chrysalis` in a terminal only
- * works for the npm install — so the examples name the program by its own
- * path, ready to paste, instead of a command that would not be recognized.
+ * Make `chrysalis` resolve on this account's PATH. Returns whether anything
+ * was written.
+ *
+ * On macOS and Linux that is a symlink in ~/.local/bin, which is on the PATH
+ * of every current shell and needs no privileges. On Windows it is a small
+ * .cmd beside this Chrysalis's data, in a folder added to the account's PATH
+ * through the registry — never `setx`, which silently truncates a PATH over
+ * 1024 characters and has eaten many.
+ *
+ * Both point at this program where it stands, so an update (which replaces the
+ * file in place) keeps working, and moving the folder means running this again.
  */
-const exeDir = (): string => path.dirname(process.execPath);
-const onPath = (dir: string): boolean =>
-  (process.env.PATH ?? "").split(process.platform === "win32" ? ";" : ":").includes(dir);
+async function linkCli(dataDir: string): Promise<boolean> {
+  if (INSTALL_KIND !== "binary") return false;
+  const link = cliLinkPath(dataDir);
+  const dir = path.dirname(link);
+  fs.mkdirSync(dir, { recursive: true });
+  if (process.platform === "win32") {
+    fs.writeFileSync(link, `@echo off\r\n"${process.execPath}" %*\r\n`, "utf8");
+    // read-modify-write the account's PATH through the registry
+    const ps = `$d='${dir.replace(/'/g, "''")}'; $p=[Environment]::GetEnvironmentVariable('Path','User'); if (($p -split ';') -notcontains $d) { [Environment]::SetEnvironmentVariable('Path', (($p.TrimEnd(';') + ';' + $d).TrimStart(';')), 'User') }`;
+    await runCmd("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps]);
+    return true;
+  }
+  fs.rmSync(link, { force: true });
+  fs.symlinkSync(process.execPath, link);
+  return true;
+}
 
-function selfCommand(): string {
+/** Undo linkCli — but only our own link, never something else answering to
+ *  the name. */
+async function unlinkCli(dataDir: string): Promise<boolean> {
+  const link = cliLinkPath(dataDir);
+  if (!fs.existsSync(link)) return false;
+  if (process.platform !== "win32") {
+    try {
+      if (fs.readlinkSync(link) !== process.execPath) return false;
+    } catch {
+      return false;
+    }
+  }
+  fs.rmSync(link, { force: true });
+  return true;
+}
+
+const onPath = (dir: string): boolean =>
+  (process.env.PATH ?? "").split(process.platform === "win32" ? ";" : ":").filter(Boolean).includes(dir);
+
+/** Where `chrysalis` lives once it is on PATH. NOT next to the program: on
+ *  Windows the launcher goes beside the data folder, and on macOS and Linux
+ *  the link goes in ~/.local/bin, so the program's own directory says nothing
+ *  about whether the name resolves. */
+function cliLinkPath(dataDir: string): string {
+  return process.platform === "win32"
+    ? path.join(dataDir, "bin", "chrysalis.cmd")
+    : path.join(os.homedir(), ".local", "bin", "chrysalis");
+}
+
+/** Does typing `chrysalis` reach us right now? */
+function cliOnPath(dataDir: string): boolean {
+  const link = cliLinkPath(dataDir);
+  return fs.existsSync(link) && onPath(path.dirname(link));
+}
+
+function selfCommand(dataDir: string): string {
   if (INSTALL_KIND === "npm") return "chrysalis";
   if (INSTALL_KIND === "source") return "bun run src/index.ts";
+  if (cliOnPath(dataDir)) return "chrysalis";
   const exe = process.execPath;
   // a path with a space has to survive being pasted into a shell
   return /\s/.test(exe) ? `"${exe}"` : exe;
@@ -303,7 +323,7 @@ function printWorkspace(dataDir: string, asUser: string | undefined): void {
   } catch { /* no settings yet */ }
   lines.push(`apps:      ${apps.length ? apps.map((a) => `${a.id}${a.id === active ? " (open)" : ""}`).join(", ") : "none"}`);
   console.log(lines.join("\n"));
-  const me = selfCommand();
+  const me = selfCommand(dataDir);
   console.log(`
 Point your editor or coding agent at the workspace folder. It is a git
 repository of plain files: apps/<id>/{src,plugins,data}, plugins/, notes/,
@@ -317,7 +337,7 @@ which models are connected — call the API of the Chrysalis running here:
   ${me} api GET  /v1/apps
   ${me} api GET  /v1/apps/${apps[0]?.id ?? "<app>"}/build
   ${me} api POST /v1/apps/${apps[0]?.id ?? "<app>"}/build '{}'
-${INSTALL_KIND === "binary" && !onPath(exeDir()) ? `
+${INSTALL_KIND === "binary" && !cliOnPath(dataDir) ? `
 That is this program's own path, because a downloaded Chrysalis is not on your
 PATH — plain \`chrysalis\` would not be recognized. To fix that once:
 
@@ -347,6 +367,18 @@ async function callApi(dataDir: string, args: string[], asUser: string | undefin
   let body = rest.join(" ").trim();
   if (!body && !process.stdin.isTTY && method !== "GET" && method !== "HEAD") {
     body = await new Response(process.stdin as unknown as ReadableStream).text().catch(() => "");
+  }
+  // Quoting a JSON body through a shell is where this goes wrong, and it goes
+  // wrong quietly: the server sees a body it cannot read and answers about a
+  // missing field, which reads like the request was wrong rather than the
+  // quoting. Say it here, before it is sent, and name the way that always
+  // survives — a pipe carries the bytes with no shell in between.
+  if (body) {
+    try {
+      JSON.parse(body);
+    } catch {
+      fail(`the body is not valid JSON after your shell finished with it:\n  ${body}\n\nPipe it instead, which no shell can mangle:\n  echo {"key":"value"} | ${selfCommand(dataDir)} api ${method} ${apiPath}`);
+    }
   }
   const username = pickUser(dataDir, asUser);
   const sessions = new SessionService(dataDir);
@@ -516,6 +548,23 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
   if (newer) fail(newer);
 
   log.info(`Chrysalis ${ENGINE_VERSION} (${INSTALL_KIND})`);
+  // A downloaded build is a folder someone unpacked, so `chrysalis` is not a
+  // command until something makes it one. Asking people to run install-cli
+  // first means the command line is only found by those who read far enough,
+  // so the first start does it for them. Once: the marker is written before
+  // the attempt, so `uninstall-cli` stays undone and a failure is not retried
+  // forever. Never fatal — this is a convenience, not part of serving.
+  const cliMarker = path.join(dataDir, ".cli-linked");
+  if (INSTALL_KIND === "binary" && !fs.existsSync(cliMarker)) {
+    try {
+      fs.writeFileSync(cliMarker, `${new Date().toISOString()}\n`, "utf8");
+      const done = await linkCli(dataDir);
+      // ASCII only: the Windows console log mangles anything else
+      if (done) log.info('"chrysalis" is now a command in a new terminal. Try: chrysalis workspace  (undo: chrysalis uninstall-cli)');
+    } catch (e) {
+      log.warn(`could not put chrysalis on your PATH: ${(e as Error).message}`);
+    }
+  }
   // the first run after an update keeps what undoing it needs until the
   // parent has seen this version serve; every other start drops leftovers
   const firstRunAfterUpdate = process.env.CHRYSALIS_UPDATED === "1";

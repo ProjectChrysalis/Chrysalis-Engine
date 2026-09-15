@@ -51,10 +51,10 @@ again after each update. The Bun install above avoids this.
 
 ## Bring your own tools
 
-Your whole Chrysalis is a folder of plain files under git. In a terminal, in
-the folder you unpacked it into, run `./chrysalis workspace` (`.\chrysalis.exe`
-on Windows, or just `chrysalis` after a `bun install -g`) — a download is not on
-your PATH until you run `./chrysalis install-cli` once. It prints where the workspace is; point your editor or coding agent
+Your whole Chrysalis is a folder of plain files under git. Run `chrysalis
+workspace` in a terminal — Chrysalis makes itself a command the first time it
+starts, so there is nothing to install (open a new terminal if it was already
+running). It prints where the workspace is; point your editor or coding agent
 at it and work normally, saves reach open pages on their own. `AGENTS.md` there
 explains the layout to whatever agent reads it. For the parts that are not
 files, `./chrysalis api GET /v1/apps` calls the running engine's API.
