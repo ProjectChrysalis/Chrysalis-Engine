@@ -113,6 +113,39 @@ const defines = (kind: string): string[] => [
 ];
 const ENTRIES = ["src/index.ts", "src/plugins/sandbox-worker.mjs"];
 
+const MAC_LAUNCHER = `#!/bin/sh
+# Start Chrysalis on macOS: clear the download flag, sign the program for this
+# Mac, run it. Both steps touch this folder only and are safe to repeat.
+set -e
+cd "$(dirname "$0")"
+
+xattr -dr com.apple.quarantine . 2>/dev/null || true
+
+if ! codesign --verify --quiet ./chrysalis 2>/dev/null; then
+  echo "Preparing Chrysalis for macOS (once per download)..."
+  codesign --remove-signature ./chrysalis 2>/dev/null || true
+  codesign --force --sign - ./chrysalis
+fi
+
+exec ./chrysalis "$@"
+`;
+
+const MAC_README = `
+macOS: double-click start.command, not chrysalis.
+
+These builds do not carry a signature macOS accepts, so opening chrysalis
+directly is blocked or closes straight away with "killed".
+start.command clears the download flag, signs the program for your Mac and
+starts it. Use it again after each update: every download is a new folder.
+
+By hand, in Terminal in this folder:
+
+  xattr -dr com.apple.quarantine .
+  codesign --remove-signature chrysalis
+  codesign --force --sign - chrysalis
+  ./chrysalis
+`;
+
 const README = (exe: string) => `Chrysalis ${version}
 
 Start:     ${exe === "chrysalis.exe" ? "double-click chrysalis.exe" : "./chrysalis"}
@@ -136,7 +169,14 @@ for (const name of targets) {
   ]);
   fs.cpSync(resources, path.join(folder, "resources"), { recursive: true });
   if (t.kind === "android") continue;
-  fs.writeFileSync(path.join(folder, "README.txt"), README(t.exe));
+  const isMac = name.startsWith("macos-");
+  fs.writeFileSync(path.join(folder, "README.txt"), README(t.exe) + (isMac ? MAC_README : ""));
+  if (isMac) {
+    // .command so Finder runs it on a double-click, like the .exe on Windows
+    const launcher = path.join(folder, "start.command");
+    fs.writeFileSync(launcher, MAC_LAUNCHER);
+    fs.chmodSync(launcher, 0o755);
+  }
   if (flags.has("--no-archive") || !t.archive) continue;
   const base = path.basename(folder);
   if (t.archive === "tar") {

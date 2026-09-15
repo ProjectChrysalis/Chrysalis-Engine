@@ -29,8 +29,8 @@ Nothing else needs to be installed.
 | System | Download | Start it |
 | --- | --- | --- |
 | Windows | `Chrysalis-<version>-windows-x64.zip` | Unzip, double-click `chrysalis.exe` |
-| macOS (Apple silicon) | `Chrysalis-<version>-macos-arm64.tar.gz` | Unpack, run `./chrysalis` in Terminal |
-| macOS (Intel) | `Chrysalis-<version>-macos-x64.tar.gz` | Unpack, run `./chrysalis` in Terminal |
+| macOS (Apple silicon) | `Chrysalis-<version>-macos-arm64.tar.gz` | Unpack, double-click `start.command` |
+| macOS (Intel) | `Chrysalis-<version>-macos-x64.tar.gz` | Unpack, double-click `start.command` |
 | Linux | `Chrysalis-<version>-linux-x64.tar.gz` (or `-arm64`) | Unpack, run `./chrysalis` |
 | Android 9+ | `Chrysalis-<version>-android-arm64.apk` | Install, open the app |
 | Docker | `ghcr.io/projectchrysalis/chrysalis-engine` | `docker compose up -d` with this repository's `docker-compose.yml` |
@@ -43,8 +43,11 @@ app is untouched.
 
 Already have [Bun](https://bun.sh)? `bun install -g chrysalis-engine`, then run `chrysalis`.
 
-On macOS, a download from the internet may be blocked the first time. Run
-`xattr -dr com.apple.quarantine .` in the unpacked folder, or use the Bun install above.
+On macOS, start with `start.command`, not `chrysalis`. These builds do not carry
+a signature macOS accepts, so opening `chrysalis` directly is blocked or closes
+straight away with `killed`. `start.command`
+clears the download flag, signs the program for that Mac and starts it — use it
+again after each update. The Bun install above avoids this.
 
 ## First start
 
