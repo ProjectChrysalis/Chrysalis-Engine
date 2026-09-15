@@ -20,19 +20,42 @@ interface SessionEntry {
 export class SessionService {
   private file: string;
   private sessions = new Map<string, SessionEntry>();
+  /** mtime of the file as loaded, so a reload is one stat when nothing has
+   *  changed — which is every request but the few that follow a write. */
+  private loadedMtime = -1;
 
   constructor(dataDir: string) {
     this.file = path.join(dataDir, "sessions.json");
+    this.load();
+  }
+
+  /** Re-read the file. More than one process writes it — the engine, and a
+   *  `chrysalis api` call on the same machine minting one for itself — so a
+   *  long-running engine cannot treat what it read at boot as the whole
+   *  truth, and a short-lived command must not save over what it never saw. */
+  private load(): void {
+    const fresh = new Map<string, SessionEntry>();
     try {
+      this.loadedMtime = fs.statSync(this.file).mtimeMs;
       const raw = JSON.parse(fs.readFileSync(this.file, "utf8")) as { sessions?: SessionEntry[] };
       const now = Date.now();
       for (const s of raw.sessions ?? []) {
         if (typeof s?.hash === "string" && typeof s?.username === "string" && s.expiresAt > now) {
-          this.sessions.set(s.hash, s);
+          fresh.set(s.hash, s);
         }
       }
     } catch {
-      /* no sessions file yet */
+      this.loadedMtime = -1; /* no sessions file yet */
+    }
+    this.sessions = fresh;
+  }
+
+  /** True when the file has been written since this process read it. */
+  private changedOnDisk(): boolean {
+    try {
+      return fs.statSync(this.file).mtimeMs !== this.loadedMtime;
+    } catch {
+      return this.loadedMtime !== -1;
     }
   }
 
@@ -41,9 +64,11 @@ export class SessionService {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     fs.writeFileSync(this.file, JSON.stringify({ sessions }, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
     try { fs.chmodSync(this.file, 0o600); } catch { /* best effort */ }
+    try { this.loadedMtime = fs.statSync(this.file).mtimeMs; } catch { /* stat failed: next read reloads */ }
   }
 
   create(username: string): string {
+    this.load(); // never write back a file we have not just read
     const token = crypto.randomBytes(32).toString("base64url");
     const entry: SessionEntry = { hash: sha256(token), username, expiresAt: Date.now() + SESSION_TTL_MS };
     this.sessions.set(entry.hash, entry);
@@ -53,6 +78,11 @@ export class SessionService {
 
   verify(token: string): { username: string } | null {
     if (!token) return null;
+    // More than one process writes this file, so what was read at boot is not
+    // the whole truth: a session another one minted has to be honoured, and
+    // one it revoked has to stop working here. A stat per check settles both,
+    // and the file only moves when something actually signs in or out.
+    if (this.changedOnDisk()) this.load();
     const entry = this.sessions.get(sha256(token));
     if (!entry) return null;
     if (entry.expiresAt <= Date.now()) {
@@ -64,6 +94,7 @@ export class SessionService {
   }
 
   destroy(token: string): void {
+    this.load();
     if (this.sessions.delete(sha256(token))) this.save();
   }
 
