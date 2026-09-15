@@ -1292,6 +1292,9 @@ async function postImagePrompt(baseUrl: string, apiKey: string, model: string, p
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({ model, prompt }),
+    // image generation is slow, not endless: the same ten minutes the chat
+    // adapter allows before it gives up on a provider
+    signal: AbortSignal.timeout(10 * 60_000),
   });
   const body = (await res.json().catch(() => null)) as { data?: { b64_json?: string; media_type?: string }[]; error?: { message?: string } } | null;
   if (!res.ok) {
