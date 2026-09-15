@@ -1,13 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { File as FileIcon } from "@phosphor-icons/react"
-import {
-  ComposerPrimitive,
-  unstable_defaultDirectiveFormatter,
-  type Unstable_TriggerItem,
-} from "@assistant-ui/react"
+import { ComposerPrimitive } from "@assistant-ui/react"
 import type { Unstable_TriggerAdapter } from "@assistant-ui/core"
 import type { ReactNode } from "react"
 import { agentFiles } from "./api"
+import { filePathDirective, fileTriggerAdapter } from "./file-mentions"
 
 /**
  * "@" in the composer picks a file out of the workspace, so a request can name
@@ -19,6 +16,7 @@ import { agentFiles } from "./api"
  * results land a moment later and the popover re-renders. `isLoading` tells the
  * popover to say so in the meantime.
  */
+
 export function FileMentions(): ReactNode {
   const [files, setFiles] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
@@ -49,24 +47,7 @@ export function FileMentions(): ReactNode {
     return () => clearTimeout(timer.current)
   }, [fetchFor])
 
-  const adapter = useMemo<Unstable_TriggerAdapter>(() => {
-    const items = (): Unstable_TriggerItem[] =>
-      files.map((path) => ({
-        id: path,
-        type: "file",
-        label: path.split("/").pop() ?? path,
-        description: path,
-      }))
-    return {
-      categories: () => [{ id: "files", label: "Files" }],
-      categoryItems: () => items(),
-      search: (query: string) => {
-        fetchFor(query.toLowerCase())
-        const q = query.toLowerCase()
-        return items().filter((i) => i.id.toLowerCase().includes(q))
-      },
-    }
-  }, [files, fetchFor])
+  const adapter = useMemo<Unstable_TriggerAdapter>(() => fileTriggerAdapter(files, fetchFor), [files, fetchFor])
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopover
@@ -74,9 +55,9 @@ export function FileMentions(): ReactNode {
       adapter={adapter}
       isLoading={loading}
       aria-label="Files"
-      className="aui-trigger-popover bg-popover text-popover-foreground border-border absolute inset-x-2 bottom-full z-50 mb-2 max-h-72 overflow-y-auto rounded-xl border p-1 shadow-lg"
+      className="aui-trigger-popover bg-popover text-popover-foreground border-border absolute inset-x-2 bottom-full z-50 mb-2 max-h-72 min-h-11 overflow-y-auto rounded-xl border p-1 shadow-lg"
     >
-      <ComposerPrimitive.Unstable_TriggerPopover.Directive formatter={unstable_defaultDirectiveFormatter} />
+      <ComposerPrimitive.Unstable_TriggerPopover.Directive formatter={filePathDirective} />
       <ComposerPrimitive.Unstable_TriggerPopoverItems>
         {(items) =>
           items.length ? (
