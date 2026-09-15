@@ -250,8 +250,24 @@ export function startUpdate(version: string, asset: ReleaseAsset, restart: () =>
   if (!SELF_UPDATE) return { phase: "failed", error: "this copy of Chrysalis cannot update itself" };
   if (state.phase === "downloading" || state.phase === "installing" || state.phase === "restarting") return state;
   state = { phase: "downloading", version };
-  void (async () => {
-    const dir = programDir();
+  void installUpdate(programDir(), version, asset, restart);
+  return state;
+}
+
+/**
+ * Fetch, check and swap in a release, reporting through `state`. Separated
+ * from startUpdate so the whole chain — the size and checksum guards, the
+ * unpack, the does-it-even-run check, the swap — can be driven against a
+ * directory that is not this program's own.
+ */
+export async function installUpdate(
+  dir: string,
+  version: string,
+  asset: ReleaseAsset,
+  restart: () => Promise<void>,
+  exe: string = path.basename(process.execPath),
+): Promise<UpdateState> {
+  {
     const work = path.join(dir, ".update");
     try {
       fs.rmSync(work, { recursive: true, force: true });
@@ -278,7 +294,6 @@ export function startUpdate(version: string, asset: ReleaseAsset, restart: () =>
       if (asset.sha256 && hash.digest("hex") !== asset.sha256) throw new Error("the download does not match the release's checksum");
       state = { phase: "installing", version };
       await extract(archive, path.join(work, "unpacked"));
-      const exe = path.basename(process.execPath);
       const fresh = findProgram(path.join(work, "unpacked"), exe);
       await checkProgram(path.join(fresh, exe), version);
       swapProgram(dir, fresh, exe);
@@ -295,7 +310,7 @@ export function startUpdate(version: string, asset: ReleaseAsset, restart: () =>
       state = { phase: "failed", version, error };
       fs.rmSync(work, { recursive: true, force: true });
     }
-  })();
+  }
   return state;
 }
 
