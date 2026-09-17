@@ -155,7 +155,7 @@ let ready = false;
 let queue: Promise<void> = Promise.resolve();
 
 function beat(): void {
-  void api("/v1/sandbox/host", { method: "POST", body: JSON.stringify({ host: HOST_ID, ready }) }).catch(() => {
+  void api("/v1/sandbox/host", { method: "POST", body: JSON.stringify({ host: HOST_ID, ready, version: VERSION }) }).catch(() => {
     /* logged out or engine restarting — the next beat retries */
   });
 }

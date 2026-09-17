@@ -1,8 +1,8 @@
 /**
  * Agent shell: browser-only execution. Config plumbing (browser default, off
- * switch), output caps, and the bash tool's wiring to the runner. The sandbox
- * itself is covered by sandbox-browser.test.ts; nothing here touches a host
- * process because no host execution path exists.
+ * switch), output caps, the bash tool's wiring to the runner, and the browser
+ * runner's readiness messaging. Nothing here touches a host process because no
+ * host execution path exists.
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { defaultInstanceConfig, loadConfig, sandboxConfigOf } from "../src/config.js";
 import { WRITE_TOOLS, buildUserTools } from "../src/agent/tools.js";
 import { EventBus } from "../src/server/ws.js";
+import { BrowserSandbox } from "../src/sandbox/browser.js";
 import { capOutput, createSandbox, defaultSandboxConfig, type SandboxRunner } from "../src/sandbox/index.js";
 import { workspaceFs } from "../src/sandbox/workspace.js";
 import { bootstrapUserDir, userPaths } from "../src/paths.js";
@@ -151,5 +152,62 @@ describe("mcp.json is out of the shell's reach", () => {
   it("every other workspace file still syncs normally", () => {
     const p = bootstrapUserDir(tmp, "alice");
     expect(workspaceFs(p.root, { op: "write", files: [{ path: "notes.md", b64: b64("hi") }] })).toEqual({ ok: true });
+  });
+});
+
+/** A page loaded before the engine rebuilt its host bundle never mounts the
+ *  workspace, so the runner must wait out a booting page, then say plainly
+ *  that the tab needs a reload instead of "try again" forever. */
+describe("browser runner readiness", () => {
+  const cfg = defaultSandboxConfig();
+  function busStub() {
+    const emitted: [string, string, Record<string, unknown>][] = [];
+    const bus = {
+      emit: (username: string, type: string, payload: Record<string, unknown>) => {
+        emitted.push([username, type, payload]);
+      },
+    } as unknown as EventBus;
+    return { bus, emitted };
+  }
+
+  it("waits for a mounting host, then says the tab needs a reload", async () => {
+    const { bus, emitted } = busStub();
+    const runner = new BrowserSandbox(cfg, bus, 300);
+    runner.hello("alice", "host123456", false);
+    const started = Date.now();
+    const res = await runner.run("alice", "/tmp", { command: "ls" });
+    expect("error" in res && res.error).toMatch(/did not start.*Reload/s);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(280);
+    expect(emitted).toEqual([]);
+  });
+
+  it("names a stale page as such", async () => {
+    const runner = new BrowserSandbox(cfg, busStub().bus, 50);
+    runner.hello("alice", "host123456", false, true);
+    const res = await runner.run("alice", "/tmp", { command: "ls" });
+    expect("error" in res && res.error).toMatch(/older page load/);
+  });
+
+  it("queues on a ready host and resolves the run", async () => {
+    const { bus, emitted } = busStub();
+    const runner = new BrowserSandbox(cfg, bus, 50);
+    runner.hello("alice", "host123456", true);
+    const pending = runner.run("alice", "/tmp", { command: "uname" });
+    await new Promise((r) => setTimeout(r, 10));
+    const [, type, payload] = emitted[0]!;
+    expect(type).toBe("sandbox_run");
+    expect(payload.command).toBe("uname");
+    expect(runner.resolve("alice", payload.id as string, { exitCode: 0, stdout: "wasi\n" })).toBe(true);
+    const res = await pending;
+    expect("stdout" in res && res.stdout).toBe("wasi\n");
+  });
+
+  it("status tells the truth about a host that never mounted", () => {
+    const runner = new BrowserSandbox(cfg, busStub().bus, 50);
+    expect(runner.status().reason).toMatch(/no sandbox is connected/);
+    runner.hello("alice", "host123456", false);
+    expect(runner.status().reason).toMatch(/starting up/);
+    runner.hello("alice", "host123456", false, true);
+    expect(runner.status().reason).toMatch(/older sandbox/);
   });
 });

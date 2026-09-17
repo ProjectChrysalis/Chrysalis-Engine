@@ -1316,10 +1316,18 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   // another provider there is no browser host, and these answer plainly.
   app.post("/v1/sandbox/host", async (c) => {
     if (!(sandbox instanceof BrowserSandbox)) return c.json({ error: "this instance does not use the browser sandbox" }, 409);
-    const body = await c.req.json<{ host?: unknown; ready?: unknown }>().catch(() => ({}) as { host?: unknown; ready?: unknown });
+    const body = await c.req
+      .json<{ host?: unknown; ready?: unknown; version?: unknown }>()
+      .catch(() => ({}) as { host?: unknown; ready?: unknown; version?: unknown });
     if (typeof body.host !== "string" || !/^[a-z0-9]{8,64}$/.test(body.host)) return c.json({ error: "host required" }, 400);
-    sandbox.hello(c.get("user").username, body.host, body.ready === true);
-    return c.json({ ok: true });
+    // A page loaded before the engine rebuilt its host bundle keeps running the
+    // old code; it can never mount the workspace, so tell it (and the run path)
+    // that only a reload helps.
+    const hostVersion = typeof body.version === "string" ? body.version : null;
+    const current = await sandboxVersion();
+    const stale = hostVersion !== null && hostVersion !== current;
+    sandbox.hello(c.get("user").username, body.host, body.ready === true, stale);
+    return c.json(stale ? { ok: true, stale: true, version: current } : { ok: true });
   });
 
   app.post("/v1/sandbox/result", async (c) => {

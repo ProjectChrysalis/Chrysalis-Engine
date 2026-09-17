@@ -17,11 +17,15 @@ import { capOutput } from "./index.js";
 const HOST_TTL = 45_000;
 /** Grace on top of the requested timeout for browser-side scheduling. */
 const RUN_GRACE = 15_000;
+/** How long a run waits for a connected host to finish mounting the workspace. */
+const READY_WAIT_MS = 10_000;
 
 interface HostState {
   hostId: string;
   lastSeen: number;
   ready: boolean;
+  /** The page said its host bundle predates the engine's current one. */
+  stale: boolean;
 }
 
 interface PendingRun {
@@ -36,6 +40,7 @@ export class BrowserSandbox implements SandboxRunner {
   constructor(
     private cfg: SandboxConfig,
     private bus: EventBus,
+    private readyWaitMs = READY_WAIT_MS,
   ) {}
 
   get config(): SandboxConfig {
@@ -49,10 +54,18 @@ export class BrowserSandbox implements SandboxRunner {
   /** Host heartbeat (and registration). `ready` is true once the workspace is
    *  mounted; the run path refuses to queue commands before that. The most
    *  recent heartbeating host is the one addressed by runs, so two open tabs
-   *  never execute the same command. */
-  hello(username: string, hostId: string, ready: boolean): void {
+   *  never execute the same command. `stale` marks a page from an older load
+   *  whose host bundle no longer matches this engine: it cannot run commands
+   *  and only a reload fixes it, so say so instead of waiting on it. */
+  hello(username: string, hostId: string, ready: boolean, stale = false): void {
     const cur = this.hosts.get(username);
-    this.hosts.set(username, { hostId, lastSeen: Date.now(), ready: ready || (cur?.hostId === hostId && cur.ready) });
+    const same = cur?.hostId === hostId;
+    this.hosts.set(username, {
+      hostId,
+      lastSeen: Date.now(),
+      ready: ready || (same && cur!.ready),
+      stale: same ? stale || cur!.stale : stale,
+    });
   }
 
   private host(username: string): HostState | null {
@@ -69,13 +82,19 @@ export class BrowserSandbox implements SandboxRunner {
     if (this.cfg.provider === "off") {
       return { provider: "off", available: false, reason: "shell is off (agent.shell in config.yaml)", running: 0, unsafe: false, isolation: "off" };
     }
-    const ready = [...this.hosts.values()].filter((h) => h.ready && Date.now() - h.lastSeen <= HOST_TTL).length;
+    const known = [...this.hosts.values()].filter((h) => Date.now() - h.lastSeen <= HOST_TTL);
+    const ready = known.filter((h) => h.ready).length;
+    const reason = ready
+      ? "commands run in this browser, in a WebAssembly shell: busybox ash with coreutils, grep, sed, awk, find, workspace mounted at /workspace, no host access"
+      : known.some((h) => h.stale)
+        ? "this page is running an older sandbox than the engine; reload the tab to start the shell"
+        : known.length
+          ? "the sandbox in this tab is starting up; reload the page if this sticks"
+          : "no sandbox is connected — open Chrysalis in a browser tab to run shell commands (they never run on the host)";
     return {
       provider: "browser",
       available: ready > 0,
-      reason: ready
-        ? "commands run in this browser, in a WebAssembly shell: busybox ash with coreutils, grep, sed, awk, find, tar, workspace mounted at /workspace, no host access"
-        : "no sandbox is connected — open Chrysalis in a browser tab to run shell commands (they never run on the host)",
+      reason,
       running: this.pending.size,
       unsafe: false,
       isolation: "wasm",
@@ -84,9 +103,26 @@ export class BrowserSandbox implements SandboxRunner {
 
   async run(username: string, _userRoot: string, input: SandboxRunInput): Promise<SandboxRunResult | { error: string }> {
     if (this.cfg.provider === "off") return { error: "the shell is off on this instance (agent.shell in config.yaml)" };
-    const h = this.host(username);
+    let h = this.host(username);
     if (!h) return { error: "No sandbox is connected. Open Chrysalis in a browser tab; commands run there, never on the host." };
-    if (!h.ready) return { error: "The browser sandbox is still starting up. Try again in a moment." };
+    if (!h.ready) {
+      // A fresh page mounts the workspace before it can run anything, and a
+      // heartbeat replaces the record, so re-read until ready or out of time.
+      const deadline = Date.now() + this.readyWaitMs;
+      while (!h.ready && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 200));
+        h = this.host(username);
+        if (!h) break;
+      }
+      if (!h) return { error: "No sandbox is connected. Open Chrysalis in a browser tab; commands run there, never on the host." };
+      if (!h.ready) {
+        return {
+          error: h.stale
+            ? "The sandbox in this tab is from an older page load and cannot run commands. Reload the browser tab, then try again."
+            : "The sandbox in this tab did not start. Reload the browser tab, then try again.",
+        };
+      }
+    }
     const timeout = Math.min(Math.max(1000, Math.floor(input.timeoutMs ?? this.cfg.timeoutMs)), this.cfg.timeoutMs);
     const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
     return new Promise((resolve) => {
