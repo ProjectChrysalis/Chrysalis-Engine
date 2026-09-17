@@ -149,10 +149,14 @@ export function wasmshAsset(rel: string): { body: Buffer; type: string } | null 
  *  from the engine, workers from blobs (the wasmsh worker is wrapped in one),
  *  eval/wasm for Pyodide, no other network at all. Firefox checks a worker's
  *  own module imports against worker-src, so the engine is listed there too. */
-export function sandboxFrameCsp(origin: string): string {
+export function sandboxFrameCsp(origin: string, opts: { blobScripts?: boolean } = {}): string {
+  // Module workers fetch their script under script-src (classic workers use
+  // worker-src), so a frame that boots module workers from blob URLs needs
+  // blob: here. The wasmsh frame uses a classic worker and does not.
+  const scriptSrc = opts.blobScripts ? `blob: ${origin}` : origin;
   return (
     "sandbox allow-scripts; default-src 'none'; " +
-    `script-src ${origin} 'unsafe-eval' 'wasm-unsafe-eval'; worker-src blob: ${origin}; ` +
+    `script-src ${scriptSrc} 'unsafe-eval' 'wasm-unsafe-eval'; worker-src blob: ${origin}; ` +
     `connect-src ${origin}; img-src 'none'; style-src 'none'; font-src 'none'; media-src 'none'; ` +
     `frame-ancestors ${origin}; base-uri 'none'; form-action 'none'; webrtc 'block'`
   );

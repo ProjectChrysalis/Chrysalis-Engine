@@ -17,7 +17,8 @@
     "build:client": "bun run scripts/build-frontends.ts",
     "dev:shell": "bun run scripts/dev/shell.ts",
     "dev:agent": "bun run scripts/dev/agent.ts",
-    "dist": "bun run scripts/dist.ts"
+    "dist": "bun run scripts/dist.ts",
+    "sandbox:fetch": "bun run scripts/sandbox.ts"
   },
   "dependencies": {
     "@babel/standalone": "^7.29.8",

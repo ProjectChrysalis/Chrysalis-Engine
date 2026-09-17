@@ -219,7 +219,12 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     }
   })();
   const hostAllowed = (hostName: string): boolean =>
-    hostName === "" || hostName === "localhost" || hostName === machineName || IP_LITERAL.test(hostName) || config.allowedHosts.includes(hostName);
+    hostName === "" ||
+    hostName === "localhost" ||
+    hostName === "sandbox.localhost" || // the sandbox frame's own origin
+    hostName === machineName ||
+    IP_LITERAL.test(hostName) ||
+    config.allowedHosts.includes(hostName);
   // CSRF guard for cookie sessions: browsers always send Origin on
   // cross-origin writes; same-origin pages match the request Host, and
   // non-browser bearer clients send no Origin at all — anything else is a
@@ -643,6 +648,12 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     // forever; index.html and the unhashed public/ files revalidate. Serving
     // the whole tree no-store re-downloaded the entire client on every load.
     c.header("cache-control", IMMUTABLE_NAME.test(full) ? "public, max-age=31536000, immutable" : "no-store");
+    if (full.endsWith(".html")) {
+      // The shell hosts the sandbox frame, which needs cross-origin isolation
+      // for SharedArrayBuffer; that requires an isolated embedder.
+      c.header("cross-origin-opener-policy", "same-origin");
+      c.header("cross-origin-embedder-policy", "require-corp");
+    }
     // binary-safe: utf8 decoding would corrupt pngs/woff2
     return c.body(new Uint8Array(fs.readFileSync(full)), 200, { "content-type": mime });
   };
@@ -713,6 +724,53 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     }
     return c.body(new Uint8Array(asset.body), 200, headers);
   });
+  // ---------- Kandelo sandbox (prebuilt) ----------
+  // The frame bundle, kernel, VFS image, and lazy programs. Source checkouts
+  // read the sibling project's build; packaged installs use
+  // resources/prebuilt/sandbox-k. Opaque-origin frame: CORS open, cookieless.
+  const kandeloDir = process.env.CHRYSALIS_SANDBOX_DIR ?? path.join(resourcesDir(), "prebuilt", "sandbox-k");
+  const serveKandelo = (rel: string, c: Context<AppEnv>) => {
+    const root = path.resolve(kandeloDir);
+    const name = rel === "" || rel.endsWith("/") ? `${rel}index.html` : rel;
+    const full = path.resolve(root, name);
+    if (full !== root && !full.startsWith(root + path.sep)) return c.body("not found", 404);
+    if (!fs.existsSync(full) || fs.statSync(full).isDirectory()) return c.body("not found", 404);
+    const isHtml = name.endsWith(".html");
+    const mime =
+      extMimes[path.extname(full)] ??
+      (path.extname(full) === ".wasm" ? "application/wasm" : "application/octet-stream");
+    const headers: Record<string, string> = {
+      "content-type": isHtml ? "text/html; charset=utf-8" : mime,
+      "x-content-type-options": "nosniff",
+      "cross-origin-opener-policy": "same-origin",
+      "cross-origin-embedder-policy": "require-corp",
+      "cross-origin-resource-policy": "cross-origin",
+      "access-control-allow-origin": "*",
+      "cache-control": isHtml ? "no-store" : "no-cache",
+    };
+    if (isHtml) {
+      // The Kandelo frame runs on its own loopback host (sandbox.localhost) so
+      // its workers are same-origin secure contexts (crypto.subtle for the TLS
+      // stack). That origin is strip separate from the shell: no cookies, no
+      // same-origin DOM access. Direct visits to the path get the opaque
+      // sandbox CSP instead.
+      const onSandboxHost = (c.req.header("host") ?? "").startsWith("sandbox.localhost");
+      headers["content-security-policy"] = onSandboxHost
+        ? `default-src 'none'; script-src 'self' blob: 'unsafe-eval' 'wasm-unsafe-eval'; worker-src blob: 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none'; media-src 'none'; frame-ancestors ${frameOriginOf(c)}; base-uri 'none'; form-action 'none'`
+        : sandboxFrameCsp(frameOriginOf(c), { blobScripts: true });
+      headers["connection-allowlist"] = FRAME_CONNECTION_ALLOWLIST;
+    }
+    // lazy programs ship pre-compressed; the browser decodes content-encoding
+    const acceptsZstd = /(^|,)\s*zstd\b/i.test(c.req.header("accept-encoding") ?? "");
+    if (!isHtml && acceptsZstd && fs.existsSync(`${full}.zst`)) {
+      const body = fs.readFileSync(`${full}.zst`);
+      return c.body(new Uint8Array(body), 200, { ...headers, "content-encoding": "zstd", "content-length": String(body.byteLength) });
+    }
+    return c.body(new Uint8Array(fs.readFileSync(full)), 200, headers);
+  };
+  app.get("/client/sandbox/k", (c) => serveKandelo("", c));
+  app.get("/client/sandbox/k/*", (c) => serveKandelo(c.req.path.slice("/client/sandbox/k/".length), c));
+
   app.get("/client/*", (c) => serveClientFile(c.req.path.slice("/client/".length), c));
 
   // ---------- agent chat UI (client-agent/dist, framed by the launcher tab) ----------
@@ -835,6 +893,44 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       body: capped.bytes,
     });
   });
+
+  /** Kandelo-compatible network proxy: the guest's fetch URL is a prefix
+   *  (`/v1/sandbox/proxy?token=<t>&url=<encoded-target>`), so there are no
+   *  custom headers to attach. Auth is the token in the query; without one the
+   *  route stays closed unless CHRYSALIS_SANDBOX_OPEN_PROXY=1 (loopback tests). */
+  const sandboxProxy = async (c: Context<AppEnv>): Promise<Response> => {
+    const cors = { "access-control-allow-origin": "*" };
+    const token = c.req.query("token") ?? c.req.header("x-sandbox-token");
+    const auth = netTokenUser(token);
+    const user = auth ? users.get(auth.username) : undefined;
+    const open = process.env.CHRYSALIS_SANDBOX_OPEN_PROXY === "1";
+    if (!open && (!auth || !user || user.enabled === false || auth.epoch !== readSandboxEpoch(userPaths(dataDir, auth.username).sandbox))) {
+      return c.body("sandbox network: not signed in\n", 401, cors);
+    }
+    if (!open && auth && user && !readSandboxSettings(userPaths(dataDir, auth.username).sandbox).internet) {
+      return c.body("sandbox network: internet access is off (Settings, Agent)\n", 403, cors);
+    }
+    const target = c.req.query("url") ?? "";
+    if (!target) return c.body("sandbox network: missing url\n", 400, cors);
+    const capped = await readCappedBody(c, 16 * 1024 * 1024);
+    if (!capped.ok) return c.body(`sandbox network: ${capped.error}\n`, 413, cors);
+    const headers: [string, string][] = [];
+    const drop = new Set(["host", "connection", "content-length", "accept-encoding", "origin", "referer", "cookie", "te", "trailer", "upgrade", "keep-alive"]);
+    for (const [name, value] of Object.entries(c.req.header())) {
+      if (value === undefined || drop.has(name.toLowerCase())) continue;
+      headers.push([name, value]);
+    }
+    return proxySandboxRequest({
+      url: target,
+      method: (c.req.method ?? "GET").toUpperCase(),
+      headers,
+      body: capped.bytes,
+    });
+  };
+  app.get("/v1/sandbox/proxy", sandboxProxy);
+  app.post("/v1/sandbox/proxy", sandboxProxy);
+  app.put("/v1/sandbox/proxy", sandboxProxy);
+  app.delete("/v1/sandbox/proxy", sandboxProxy);
 
   // ---------- sign-in (user picker + optional password) ----------
   // These run BEFORE the auth middleware; everything else needs a session

@@ -21,6 +21,15 @@
 declare const __SANDBOX_VERSION__: string;
 
 const VERSION = typeof __SANDBOX_VERSION__ === "string" ? __SANDBOX_VERSION__ : "dev";
+const SANDBOX_FRAME_BASE = (() => {
+  const onEngineMachine = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  const port = location.port ? `:${location.port}` : "";
+  // The frame runs on its own origin so its workers are same-origin secure
+  // contexts (crypto.subtle for the TLS stack) and it cannot touch the shell.
+  return onEngineMachine
+    ? `${location.protocol}//sandbox.localhost${port}/client/sandbox/k/`
+    : `${location.origin}/client/sandbox/k/`;
+})();
 const HOST_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
 const HEARTBEAT_MS = 15_000;
 const READ_BATCH_BYTES = 4 * 1024 * 1024;
@@ -88,7 +97,8 @@ class Frame {
 
   constructor(config: SandboxConfig) {
     this.iframe = document.createElement("iframe");
-    this.iframe.setAttribute("sandbox", "allow-scripts");
+    this.iframe.setAttribute("sandbox", "allow-scripts allow-same-origin");
+    this.iframe.setAttribute("allow", "cross-origin-isolated");
     this.iframe.setAttribute("aria-hidden", "true");
     this.iframe.title = "agent sandbox";
     this.iframe.style.cssText = "position:absolute;width:0;height:0;border:0;visibility:hidden";
@@ -116,7 +126,7 @@ class Frame {
       }
     };
     addEventListener("message", this.onMessage);
-    this.iframe.src = `/client/sandbox/frame.html?v=${VERSION}`;
+    this.iframe.src = `${SANDBOX_FRAME_BASE}?v=${VERSION}`;
     document.body.appendChild(this.iframe);
   }
 
