@@ -208,7 +208,7 @@ frontend, and its agent runs on pi's own libraries.
 | [Hono](https://hono.dev) | HTTP server and routing | MIT |
 | [Model Context Protocol SDK](https://github.com/modelcontextprotocol/typescript-sdk) | Connecting to external MCP servers for agent tools | MIT |
 | [QuickJS-ng](https://github.com/quickjs-ng/quickjs) via [quickjs-emscripten](https://github.com/justjake/quickjs-emscripten) | The app plugin sandbox | MIT |
-| [wasmsh](https://github.com/mayflower/wasmsh) with [Pyodide](https://pyodide.org) | The agent's in-browser sandbox: an actual shell and a Python runtime, both in wasm | Apache-2.0 |
+| [wasi-sh](https://github.com/alganet/wasi-sh), [libgit2](https://libgit2.org), [MicroPython](https://micropython.org), [QuickJS](https://github.com/quickjs-ng/quickjs) | The agent's in-browser sandbox: a fork-free wasm shell with real git, python and node | ISC, GPL-2.0, MIT |
 | [isomorphic-git](https://isomorphic-git.org) | Workspace version control, and installing apps from git without a git program | MIT |
 | [esbuild](https://esbuild.github.io) | Bundling app frontends and app builds (WASM inside the browser builder) | MIT |
 | [React](https://react.dev) | The web client shell and the agent chat UI | MIT |

@@ -279,11 +279,3 @@ export const guardedGitHttp: HttpClient = {
     return { url: hop.url.href, method: hop.method, statusCode: hop.status, statusMessage: source.statusMessage ?? "", headers: out, body: capped() };
   },
 };
-
-/** The git arguments a sandbox shell request carries: one base64 line per
- *  argument (see SHELL_PRELUDE). */
-export function decodeGitArgs(body: string): string[] {
-  const lines = body.split("\n");
-  if (lines.at(-1) === "") lines.pop();
-  return lines.map((line) => Buffer.from(line.trim(), "base64").toString("utf8"));
-}

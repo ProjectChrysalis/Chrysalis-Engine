@@ -13,15 +13,15 @@ import { unzipSync } from "fflate";
 import { resourcesDir } from "../src/install";
 
 const RELEASE = {
-  version: "0.1.0",
-  url: "https://github.com/ProjectChrysalis/chrysalis-sandbox/releases/download/v0.1.0/sandbox-k-0.1.0.zip",
-  sha256: "1307c09e9b518942747279ac68031c3c04ae1c7c5ea370eff4c06ce3609fa95f",
+  version: "0.2.3",
+  url: "https://github.com/ProjectChrysalis/chrysalis-sandbox/releases/download/v0.2.3/sandbox-0.2.3.zip",
+  sha256: "9d0671f89db57b5ec80b5da86d2b1ebb5e0cce4ea8ab6db2a420c239cc29e2a8",
 };
 
 const dest = path.join(resourcesDir(), "prebuilt", "sandbox-k");
 const force = process.argv.includes("--force");
 
-if (!force && fs.existsSync(path.join(dest, "index.html"))) {
+if (!force && fs.existsSync(path.join(dest, "runtime", "sandbox.mjs"))) {
   console.log(`sandbox already present at ${dest}`);
   process.exit(0);
 }

@@ -10,7 +10,7 @@ import { agentReadDenied, agentWriteDenied } from "../paths.js";
 
 /** Directories never mounted into the sandbox (derived artifacts, runtime
  *  state, git internals, agent transcripts). Matched on any path segment. */
-const MOUNT_SKIP_DIRS = new Set([".git", "node_modules", "dist", "agent", "assets-store", "store", ".staging"]);
+const MOUNT_SKIP_DIRS = new Set(["node_modules", "dist", "agent", "assets-store", "store", ".staging"]);
 /** Files above this are not mounted (the VFS is in-memory). */
 export const MAX_MOUNT_FILE = 2 * 1024 * 1024;
 /** Total mounted bytes before the tree is marked truncated. */
@@ -74,10 +74,18 @@ export function makePathGuard(root: string) {
 
 /** A path the sandbox may see. Rejects absolute paths, traversal, dotfiles
  *  outside the workspace, credential-shaped names and skipped trees. */
+/** Git internals are read and written by the sandbox bridge so real git works
+ *  in the workspace; the agent's file tools still never touch them. */
+export function isGitPath(rel: string): boolean {
+  const norm = rel.replace(/\\/g, "/").replace(/^\.\//, "");
+  return norm === ".git" || norm.startsWith(".git/");
+}
+
 export function sandboxPathAllowed(rel: string): string | null {
   const norm = rel.replace(/\\/g, "/").replace(/^\.\//, "");
   if (!norm || norm.startsWith("/") || norm.split("/").includes("..")) return "path escapes the workspace";
   if (/^auth\.json$/i.test(norm) || /(^|\/)auth\.json$/i.test(norm)) return "credentials are not sandbox-visible";
+  if (isGitPath(norm)) return null;
   const denied = agentReadDenied(norm);
   if (denied) return denied;
   const segs = norm.split("/");
@@ -167,7 +175,7 @@ export function workspaceFs(root: string, op: FsOp): FsOpResult {
   if (op.op === "write") {
     let total = 0;
     for (const f of op.files.slice(0, MAX_BATCH)) {
-      const bad = sandboxPathAllowed(f.path) ?? agentWriteDenied(f.path);
+      const bad = sandboxPathAllowed(f.path) ?? (isGitPath(f.path) ? null : agentWriteDenied(f.path));
       if (bad) throw new Error(`Refused: ${f.path}: ${bad}`);
       const buf = Buffer.from(f.b64, "base64");
       if (buf.length > MAX_WRITE_FILE) throw new Error(`Refused: ${f.path} is too large for the sandbox to write`);
@@ -181,7 +189,7 @@ export function workspaceFs(root: string, op: FsOp): FsOpResult {
     return { ok: true };
   }
   for (const rel of op.paths.slice(0, MAX_BATCH)) {
-    const bad = sandboxPathAllowed(rel) ?? agentWriteDenied(rel);
+    const bad = sandboxPathAllowed(rel) ?? (isGitPath(rel) ? null : agentWriteDenied(rel));
     if (bad) throw new Error(`Refused: ${bad}`);
     const abs = path.resolve(root, rel);
     guard.assertWritable(abs, rel);

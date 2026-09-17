@@ -1,6 +1,6 @@
 /**
  * The browser sandbox runner: commands execute in the user's browser, inside
- * a sandboxed frame running wasmsh (WebAssembly), never on the host. The
+ * a fork-free wasm shell in a worker, never on the host. The
  * engine owns the workspace files: the shell host mounts them, runs commands,
  * and posts changed files back through the workspace route.
  *
@@ -74,7 +74,7 @@ export class BrowserSandbox implements SandboxRunner {
       provider: "browser",
       available: ready > 0,
       reason: ready
-        ? "commands run in this browser, in a POSIX sandbox (WebAssembly): bash, coreutils, git, python, node, workspace mounted at /workspace, internet when the user allows it, no host access"
+        ? "commands run in this browser, in a WebAssembly shell: busybox ash with coreutils, grep, sed, awk, find, tar, workspace mounted at /workspace, no host access"
         : "no sandbox is connected — open Chrysalis in a browser tab to run shell commands (they never run on the host)",
       running: this.pending.size,
       unsafe: false,

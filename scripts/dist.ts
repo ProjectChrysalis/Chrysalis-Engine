@@ -96,14 +96,14 @@ const builder = await buildBuilderForRelease();
 writePrebuilt(path.join(resources, "prebuilt", "builder"), builder);
 const sandbox = await buildSandboxForRelease();
 writePrebuilt(path.join(resources, "prebuilt", "sandbox"), sandbox);
-for (const part of ["browser-worker.js", "package.json", "lib", "assets"]) {
-  fs.cpSync(path.join(sandbox.wasmshDir, part), path.join(resources, "prebuilt", "wasmsh", part), { recursive: true });
+const sandboxK = process.env.CHRYSALIS_SANDBOX_DIR ?? path.resolve(repo, "../chrysalis-sandbox");
+if (!fs.existsSync(path.join(sandboxK, "runtime", "sandbox.mjs"))) {
+  throw new Error("the sandbox runtime is missing: check out ../chrysalis-sandbox or set CHRYSALIS_SANDBOX_DIR");
 }
-const sandboxK = process.env.CHRYSALIS_SANDBOX_DIR ?? path.resolve(repo, "../chrysalis-sandbox/dist");
-if (!fs.existsSync(path.join(sandboxK, "index.html"))) {
-  throw new Error("the sandbox frame build is missing: run `bun run build` in ../chrysalis-sandbox or set CHRYSALIS_SANDBOX_DIR");
+const sandboxDest = path.join(resources, "prebuilt", "sandbox-k");
+for (const part of ["runtime", "vendor", "LICENSE", "sources.json"]) {
+  fs.cpSync(path.join(sandboxK, part), path.join(sandboxDest, part), { recursive: true });
 }
-fs.cpSync(sandboxK, path.join(resources, "prebuilt", "sandbox-k"), { recursive: true });
 console.log(`builder ${builder.version}, sandbox ${sandbox.version}`);
 
 // ---------- engine bundles ----------

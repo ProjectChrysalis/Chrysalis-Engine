@@ -42,11 +42,9 @@ import * as assets from "../assets/store.js";
 import { createSandbox, type SandboxRunner } from "../sandbox/index.js";
 import { sandboxConfigOf } from "../config.js";
 import { BrowserSandbox } from "../sandbox/browser.js";
-import { sandboxAsset, sandboxFrameCsp, sandboxVersion, wasmshAsset } from "../sandbox/assets.js";
+import { sandboxAsset, sandboxVersion } from "../sandbox/assets.js";
 import { workspaceFs, type FsOp as WorkspaceFsOp } from "../sandbox/workspace.js";
-import { decodeGitArgs, guardedGitHttp, initNetTokens, issueNetToken, netTokenUser, proxySandboxRequest, readSandboxEpoch, readSandboxSettings, writeSandboxSettings } from "../sandbox/network.js";
-import { SANDBOX_GIT_HOST } from "../sandbox/browser/prelude.js";
-import { GitCliError, runGitArgs } from "../agent/git-cli.js";
+import { initNetTokens, issueNetToken, netTokenUser, proxySandboxRequest, readSandboxEpoch, readSandboxSettings, writeSandboxSettings } from "../sandbox/network.js";
 import { log } from "../logger.js";
 import type { EventBus } from "./ws.js";
 import { ensureLookWatcher } from "./look-watch.js";
@@ -221,7 +219,6 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   const hostAllowed = (hostName: string): boolean =>
     hostName === "" ||
     hostName === "localhost" ||
-    hostName === "sandbox.localhost" || // the sandbox frame's own origin
     hostName === machineName ||
     IP_LITERAL.test(hostName) ||
     config.allowedHosts.includes(hostName);
@@ -648,12 +645,9 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     // forever; index.html and the unhashed public/ files revalidate. Serving
     // the whole tree no-store re-downloaded the entire client on every load.
     c.header("cache-control", IMMUTABLE_NAME.test(full) ? "public, max-age=31536000, immutable" : "no-store");
-    if (full.endsWith(".html")) {
-      // The shell hosts the sandbox frame, which needs cross-origin isolation
-      // for SharedArrayBuffer; that requires an isolated embedder.
-      c.header("cross-origin-opener-policy", "same-origin");
-      c.header("cross-origin-embedder-policy", "require-corp");
-    }
+    // app frames are cross-origin (opaque origin) and now carry COEP, so
+    // shell assets they load (the bridge, fonts) need a resource policy
+    c.header("cross-origin-resource-policy", "cross-origin");
     // binary-safe: utf8 decoding would corrupt pngs/woff2
     return c.body(new Uint8Array(fs.readFileSync(full)), 200, { "content-type": mime });
   };
@@ -685,25 +679,10 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     }
     return c.body(new Uint8Array(asset.body), 200, headers);
   });
-  // the browser sandbox's code (src/sandbox/browser) and the wasmsh runtime
-  // under a version-scoped path. The sandbox frame is opaque-origin, so its
+  // the browser sandbox host bundle (src/sandbox/browser) under a
+  // version-scoped path. The sandbox runs cookieless and opaque-origin, so its
   // fetches are cross-origin and credentialless: everything here answers with
   // CORS open, and serves only these files.
-  app.get("/client/sandbox/wasmsh/*", async (c) => {
-    const rest = c.req.path.slice("/client/sandbox/wasmsh/".length);
-    const slash = rest.indexOf("/");
-    const ver = slash === -1 ? rest : rest.slice(0, slash);
-    if (ver !== (await sandboxVersion())) return c.body("not found", 404);
-    const asset = wasmshAsset(slash === -1 ? "" : rest.slice(slash + 1));
-    if (!asset) return c.body("not found", 404);
-    return c.body(new Uint8Array(asset.body), 200, {
-      "content-type": asset.type,
-      "x-content-type-options": "nosniff",
-      "cross-origin-resource-policy": "cross-origin",
-      "access-control-allow-origin": "*",
-      "cache-control": "public, max-age=604800, immutable",
-    });
-  });
   app.get("/client/sandbox/:file", async (c) => {
     const name = c.req.param("file");
     const asset = await sandboxAsset(name).catch((e: unknown) => {
@@ -717,59 +696,32 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       "access-control-allow-origin": "*",
       "cache-control": c.req.query("v") === (await sandboxVersion()) ? "public, max-age=31536000, immutable" : "no-cache",
     };
-    if (name === "frame.html") {
-      headers["content-security-policy"] = sandboxFrameCsp(frameOriginOf(c));
-      headers["connection-allowlist"] = FRAME_CONNECTION_ALLOWLIST;
-      headers["cache-control"] = "no-store";
-    }
     return c.body(new Uint8Array(asset.body), 200, headers);
   });
-  // ---------- Kandelo sandbox (prebuilt) ----------
-  // The frame bundle, kernel, VFS image, and lazy programs. Source checkouts
-  // read the sibling project's build; packaged installs use
-  // resources/prebuilt/sandbox-k. Opaque-origin frame: CORS open, cookieless.
-  const kandeloDir = process.env.CHRYSALIS_SANDBOX_DIR ?? path.join(resourcesDir(), "prebuilt", "sandbox-k");
-  const serveKandelo = (rel: string, c: Context<AppEnv>) => {
-    const root = path.resolve(kandeloDir);
-    const name = rel === "" || rel.endsWith("/") ? `${rel}index.html` : rel;
-    const full = path.resolve(root, name);
+  // ---------- the sandbox runtime ----------
+  // Plain files (runtime, vendored shell, wasm) served cookieless with CORS.
+  // No COOP/COEP, no cross-origin isolation, no special headers: the runtime
+  // is single-threaded wasm and works on any origin.
+  const sandboxDir = process.env.CHRYSALIS_SANDBOX_DIR ?? path.join(resourcesDir(), "prebuilt", "sandbox-k");
+  const SANDBOX_SERVED = new Set(["runtime", "vendor", "LICENSE", "sources.json"]);
+  const serveSandboxFile = (rel: string, c: Context<AppEnv>) => {
+    const root = path.resolve(sandboxDir);
+    const first = rel.replace(/^\/+/, "").split("/")[0] ?? "";
+    if (!SANDBOX_SERVED.has(first)) return c.body("not found", 404);
+    const full = path.resolve(root, rel);
     if (full !== root && !full.startsWith(root + path.sep)) return c.body("not found", 404);
     if (!fs.existsSync(full) || fs.statSync(full).isDirectory()) return c.body("not found", 404);
-    const isHtml = name.endsWith(".html");
-    const mime =
-      extMimes[path.extname(full)] ??
-      (path.extname(full) === ".wasm" ? "application/wasm" : "application/octet-stream");
-    const headers: Record<string, string> = {
-      "content-type": isHtml ? "text/html; charset=utf-8" : mime,
+    const ext = path.extname(full);
+    const mime = ext === ".mjs" || ext === ".js" ? "text/javascript; charset=utf-8" : extMimes[ext] ?? "application/octet-stream";
+    return c.body(new Uint8Array(fs.readFileSync(full)), 200, {
+      "content-type": mime,
       "x-content-type-options": "nosniff",
-      "cross-origin-opener-policy": "same-origin",
-      "cross-origin-embedder-policy": "require-corp",
       "cross-origin-resource-policy": "cross-origin",
       "access-control-allow-origin": "*",
-      "cache-control": isHtml ? "no-store" : "no-cache",
-    };
-    if (isHtml) {
-      // The Kandelo frame runs on its own loopback host (sandbox.localhost) so
-      // its workers are same-origin secure contexts (crypto.subtle for the TLS
-      // stack). That origin is strip separate from the shell: no cookies, no
-      // same-origin DOM access. Direct visits to the path get the opaque
-      // sandbox CSP instead.
-      const onSandboxHost = (c.req.header("host") ?? "").startsWith("sandbox.localhost");
-      headers["content-security-policy"] = onSandboxHost
-        ? `default-src 'none'; script-src 'self' blob: 'unsafe-eval' 'wasm-unsafe-eval'; worker-src blob: 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none'; media-src 'none'; frame-ancestors ${frameOriginOf(c)}; base-uri 'none'; form-action 'none'`
-        : sandboxFrameCsp(frameOriginOf(c), { blobScripts: true });
-      headers["connection-allowlist"] = FRAME_CONNECTION_ALLOWLIST;
-    }
-    // lazy programs ship pre-compressed; the browser decodes content-encoding
-    const acceptsZstd = /(^|,)\s*zstd\b/i.test(c.req.header("accept-encoding") ?? "");
-    if (!isHtml && acceptsZstd && fs.existsSync(`${full}.zst`)) {
-      const body = fs.readFileSync(`${full}.zst`);
-      return c.body(new Uint8Array(body), 200, { ...headers, "content-encoding": "zstd", "content-length": String(body.byteLength) });
-    }
-    return c.body(new Uint8Array(fs.readFileSync(full)), 200, headers);
+      "cache-control": "no-cache",
+    });
   };
-  app.get("/client/sandbox/k", (c) => serveKandelo("", c));
-  app.get("/client/sandbox/k/*", (c) => serveKandelo(c.req.path.slice("/client/sandbox/k/".length), c));
+  app.get("/client/sandbox/k/*", (c) => serveSandboxFile(c.req.path.slice("/client/sandbox/k/".length), c));
 
   app.get("/client/*", (c) => serveClientFile(c.req.path.slice("/client/".length), c));
 
@@ -817,87 +769,10 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     return { ok: true, bytes: merged };
   };
 
-  // ---------- agent sandbox internet (before auth: the frame has no session) ----------
-  // The sandbox frame is opaque-origin and cookieless; it authenticates with
-  // the capability token its host page fetched, and every request is made
-  // engine-side behind the local network guard.
-  app.options("/v1/sandbox/net", () =>
-    new Response(null, {
-      status: 204,
-      headers: {
-        "access-control-allow-origin": "*",
-        "access-control-allow-methods": "POST",
-        "access-control-allow-headers": "*",
-        "access-control-max-age": "600",
-      },
-    }),
-  );
-  /** git from the sandbox shell (SHELL_PRELUDE): the arguments come in
-   *  the body, stdout goes back as the body, stderr and the exit status as
-   *  headers. The shell's cwd picks the folder pathspecs are relative to. */
-  const sandboxGit = async (c: Context<AppEnv>, username: string): Promise<Response> => {
-    const headers: Record<string, string> = { "access-control-allow-origin": "*", "access-control-expose-headers": "*", "content-type": "text/plain; charset=utf-8" };
-    const reply = (stdout: string, stderr: string, exit: number) =>
-      c.body(stdout, 200, { ...headers, "x-git-exit": String(exit), ...(stderr ? { "x-git-stderr": Buffer.from(stderr.slice(0, 4000)).toString("base64") } : {}) });
-    const capped = await readCappedBody(c, 256 * 1024);
-    if (!capped.ok) return reply("", `git: ${capped.error}\n`, 128);
-    let forwarded: [string, string][] = [];
-    try {
-      forwarded = JSON.parse(decodeURIComponent(c.req.header("x-sandbox-headers") ?? "[]")) as [string, string][];
-    } catch { /* no cwd: the workspace root */ }
-    const pwd = forwarded.find((h) => Array.isArray(h) && String(h[0]).toLowerCase() === "x-git-cwd")?.[1] ?? "/workspace";
-    const norm = String(pwd).replace(/\/+$/, "");
-    if (norm !== "/workspace" && !norm.startsWith("/workspace/")) {
-      return reply("", "fatal: not a git repository: the workspace repository is /workspace\n", 128);
-    }
-    try {
-      const out = await runGitArgs(
-        {
-          dir: userPaths(dataDir, username).root,
-          username,
-          readOnly: false,
-          cwd: norm.slice("/workspace".length).replace(/^\//, ""),
-          http: readSandboxSettings(userPaths(dataDir, username).sandbox).internet ? guardedGitHttp : undefined,
-        },
-        decodeGitArgs(new TextDecoder().decode(capped.bytes)),
-      );
-      return reply(out && !out.endsWith("\n") ? `${out}\n` : out, "", 0);
-    } catch (e) {
-      return reply("", `${e instanceof GitCliError ? "" : "fatal: "}${(e as Error).message}\n`, e instanceof GitCliError ? 1 : 128);
-    }
-  };
-  app.post("/v1/sandbox/net", async (c) => {
-    const cors = { "access-control-allow-origin": "*" };
-    const auth = netTokenUser(c.req.header("x-sandbox-token"));
-    const user = auth ? users.get(auth.username) : undefined;
-    // a token from before internet was switched off carries an older epoch
-    if (!auth || !user || user.enabled === false || auth.epoch !== readSandboxEpoch(userPaths(dataDir, auth.username).sandbox)) {
-      return c.body("sandbox network: not signed in\n", 401, cors);
-    }
-    const target = c.req.header("x-sandbox-url") ?? "";
-    if (URL.canParse(target) && new URL(target).hostname === SANDBOX_GIT_HOST) return sandboxGit(c, auth.username);
-    if (!readSandboxSettings(userPaths(dataDir, auth.username).sandbox).internet) {
-      return c.body("sandbox network: internet access is off (Settings, Agent)\n", 403, cors);
-    }
-    const capped = await readCappedBody(c, 16 * 1024 * 1024);
-    if (!capped.ok) return c.body(`sandbox network: ${capped.error}\n`, 413, cors);
-    let headers: [string, string][] = [];
-    try {
-      const raw = JSON.parse(decodeURIComponent(c.req.header("x-sandbox-headers") ?? "[]")) as unknown;
-      if (Array.isArray(raw)) headers = raw.filter((h): h is [string, string] => Array.isArray(h) && typeof h[0] === "string" && typeof h[1] === "string");
-    } catch { /* no forwarded headers */ }
-    return proxySandboxRequest({
-      url: c.req.header("x-sandbox-url") ?? "",
-      method: (c.req.header("x-sandbox-method") ?? "GET").toUpperCase(),
-      headers,
-      body: capped.bytes,
-    });
-  });
-
-  /** Kandelo-compatible network proxy: the guest's fetch URL is a prefix
-   *  (`/v1/sandbox/proxy?token=<t>&url=<encoded-target>`), so there are no
-   *  custom headers to attach. Auth is the token in the query; without one the
-   *  route stays closed unless CHRYSALIS_SANDBOX_OPEN_PROXY=1 (loopback tests). */
+  /** The network proxy for the sandbox runtime: the guest's fetch URL is a
+   *  prefix (`/v1/sandbox/proxy?token=<t>&url=<encoded-target>`), so there are
+   *  no custom headers to attach. Auth is the token in the query; without one
+   *  the route stays closed unless CHRYSALIS_SANDBOX_OPEN_PROXY=1 (tests). */
   const sandboxProxy = async (c: Context<AppEnv>): Promise<Response> => {
     const cors = { "access-control-allow-origin": "*" };
     const token = c.req.query("token") ?? c.req.header("x-sandbox-token");

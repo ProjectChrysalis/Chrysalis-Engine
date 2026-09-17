@@ -517,3 +517,52 @@ describe("image models served on a dedicated images endpoint", () => {
     }
   }, 30_000);
 });
+
+describe("app-requested prompt cache (GenerateRequest.cache)", () => {
+  it("retention rides the stream call; depth adds the payload rewrite on Anthropic transports", async () => {
+    const svc = makeService();
+    const models = svc.models as unknown as { streamSimple: (...args: unknown[]) => unknown };
+    let captured: { cacheRetention?: string; onPayload?: (p: unknown) => unknown } | null = null;
+    models.streamSimple = (...args: unknown[]) => {
+      captured = args[2] as typeof captured;
+      throw new Error("stream stubbed");
+    };
+    const claude = {
+      id: "claude-test", provider: "custom", api: "anthropic-messages", baseUrl: "https://example.test",
+      reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 0, maxTokens: 0,
+    };
+    const gen = (svc as unknown as { generateModel: (m: unknown, r: unknown) => Promise<unknown> }).generateModel.bind(svc);
+    await expect(gen(claude, {
+      messages: [{ role: "user", content: "hi" }],
+      cache: { depth: 0, retention: "long" },
+    })).rejects.toThrow("stream stubbed");
+    expect(captured!.cacheRetention).toBe("long");
+    expect(typeof captured!.onPayload).toBe("function");
+    const payload: Record<string, unknown> = { messages: [{ role: "user", content: "hi" }] };
+    expect(captured!.onPayload!(payload)).toBe(payload);
+    const marked = ((payload.messages as Record<string, unknown>[])[0]!.content as Record<string, unknown>[])[0]!;
+    expect(marked.cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  it("a model without marker support keeps only the retention choice", async () => {
+    const svc = makeService();
+    const handle = fauxProvider({ models: [{ id: "faux-cache" }] });
+    handle.setResponses([fauxAssistantMessage("OK")]);
+    svc.models.setProvider(handle.provider);
+    let captured: { cacheRetention?: string; onPayload?: unknown } | null = null;
+    const models = svc.models as unknown as { streamSimple: (...args: unknown[]) => unknown };
+    const original = models.streamSimple.bind(models);
+    models.streamSimple = (...args: unknown[]) => {
+      captured = args[2] as typeof captured;
+      return original(...args);
+    };
+    await svc.generate({
+      model: "faux/faux-cache",
+      messages: [{ role: "user", content: "hi" }],
+      cache: { depth: 0, retention: "long" },
+    });
+    expect(captured!.cacheRetention).toBe("long");
+    expect(captured!.onPayload).toBeUndefined();
+  });
+});
