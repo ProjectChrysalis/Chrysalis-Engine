@@ -85,7 +85,7 @@ export class BrowserSandbox implements SandboxRunner {
     const known = [...this.hosts.values()].filter((h) => Date.now() - h.lastSeen <= HOST_TTL);
     const ready = known.filter((h) => h.ready).length;
     const reason = ready
-      ? "commands run in this browser, in a WebAssembly shell: busybox ash with coreutils, grep, sed, awk, find, workspace mounted at /workspace, no host access"
+      ? "commands run in this browser, in a WebAssembly shell: busybox ash with coreutils, git, python, node, rg, jq, tar, curl, workspace mounted at /workspace, no host access"
       : known.some((h) => h.stale)
         ? "this page is running an older sandbox than the engine; reload the tab to start the shell"
         : known.length
