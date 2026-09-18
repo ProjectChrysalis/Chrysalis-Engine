@@ -229,14 +229,31 @@ function result(id: unknown, r: Record<string, unknown>): void {
   });
 }
 
-/** The mount for one command: a packed repo's object database is tens of MB,
- *  so only git commands carry it. */
+/** The mount for one command. `.git` is always visible (a shell that cannot
+ *  see the repository reads as "no git here"), but a packed object database is
+ *  tens of MB and only git needs it: the pack rides along when the command
+ *  mentions git or runs a script that does. */
 function contentsFor(command: string): Record<string, Uint8Array> {
   const all = workspace!.contents();
-  if (/(^|[\s|&;(])git(\s|$)/.test(command)) return all;
+  const needsObjects = (() => {
+    if (/(^|[\s|&;(])git(\s|$)/.test(command)) return true;
+    for (const token of command.split(/[\s|&;()<>'"]+/).filter(Boolean)) {
+      const rel = token.replace(/^\.\//, "").replace(/^\/workspace\//, "");
+      if (rel.startsWith("/") || rel.includes("..")) continue;
+      const bytes = all[rel];
+      if (!bytes) continue;
+      try {
+        if (/\bgit\b/.test(new TextDecoder().decode(bytes.subarray(0, 65536)))) return true;
+      } catch {
+        /* binary */
+      }
+    }
+    return false;
+  })();
+  if (needsObjects) return all;
   const out: Record<string, Uint8Array> = {};
   for (const [path, bytes] of Object.entries(all)) {
-    if (path === ".git" || path.startsWith(".git/")) continue;
+    if (path.startsWith(".git/objects/pack/")) continue;
     out[path] = bytes;
   }
   return out;

@@ -155,9 +155,21 @@ describe("mcp.json is out of the shell's reach", () => {
   });
 });
 
-/** A page loaded before the engine rebuilt its host bundle never mounts the
- *  workspace, so the runner must wait out a booting page, then say plainly
- *  that the tab needs a reload instead of "try again" forever. */
+describe("workspace mount caps", () => {
+  it("mounts git object packs over the file cap, while big regular files stay out", () => {
+    const p = bootstrapUserDir(tmp, "alice");
+    const big = Buffer.alloc(3 * 1024 * 1024, 7);
+    const packDir = path.join(p.root, ".git", "objects", "pack");
+    fs.mkdirSync(packDir, { recursive: true });
+    fs.writeFileSync(path.join(packDir, "big.pack"), big);
+    fs.writeFileSync(path.join(p.root, "big.bin"), big);
+    const tree = workspaceFs(p.root, { op: "tree" }) as { tree?: { files: { path: string; size: number }[] } };
+    const paths = (tree.tree?.files ?? []).map((f) => f.path);
+    expect(paths).toContain(".git/objects/pack/big.pack");
+    expect(paths).not.toContain("big.bin");
+  });
+});
+
 describe("browser runner readiness", () => {
   const cfg = defaultSandboxConfig();
   function busStub() {
