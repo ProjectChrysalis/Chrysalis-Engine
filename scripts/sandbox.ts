@@ -13,9 +13,9 @@ import { unzipSync } from "fflate";
 import { resourcesDir } from "../src/install";
 
 const RELEASE = {
-  version: "0.3.2",
-  url: "https://github.com/ProjectChrysalis/chrysalis-sandbox/releases/download/v0.3.2/sandbox-0.3.2.zip",
-  sha256: "0700a02194e54fbaab5ad9d265137d6328eb26637382df0ce3df1ae9d910bd11",
+  version: "0.3.3",
+  url: "https://github.com/ProjectChrysalis/chrysalis-sandbox/releases/download/v0.3.3/sandbox-0.3.3.zip",
+  sha256: "cde0782a1899a61c5035caaf19c285c939fa746dd3d3481763ee63a4802d2164",
 };
 
 const dest = path.join(resourcesDir(), "prebuilt", "sandbox-k");

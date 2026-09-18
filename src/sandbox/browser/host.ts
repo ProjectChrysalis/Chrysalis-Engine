@@ -25,6 +25,7 @@ interface ExecReply {
   stdout: string;
   stderr: string;
   files: Record<string, Uint8Array>;
+  scratch: Record<string, Uint8Array>;
   wallMs: number;
 }
 
@@ -167,6 +168,9 @@ function startHeartbeat(): void {
 let execWorker: Worker | null = null;
 let execSeq = 0;
 const execPending = new Map<number, (reply: ExecReply) => void>();
+/** /tmp handoff between commands: the engine only syncs /workspace, so the
+ *  host carries scratch files itself while the tab lives. */
+let scratch: Record<string, Uint8Array> = {};
 
 function execWorkerHandle(): Worker {
   if (execWorker) return execWorker;
@@ -181,7 +185,7 @@ function execWorkerHandle(): Worker {
   worker.onerror = (event: ErrorEvent) => {
     for (const [id, settle] of execPending) {
       execPending.delete(id);
-      settle({ exitCode: null, stdout: "", stderr: `sandbox worker failed: ${event.message || "script error"}`, files: {}, wallMs: 0 });
+      settle({ exitCode: null, stdout: "", stderr: `sandbox worker failed: ${event.message || "script error"}`, files: {}, scratch, wallMs: 0 });
     }
     execWorker = null;
   };
@@ -194,10 +198,10 @@ function runInWorker(command: string, files: Record<string, Uint8Array>, gitProx
     const id = ++execSeq;
     execPending.set(id, resolve);
     try {
-      execWorkerHandle().postMessage({ type: "exec", id, command, files, gitProxy });
+      execWorkerHandle().postMessage({ type: "exec", id, command, files, scratch, gitProxy });
     } catch (error) {
       execPending.delete(id);
-      resolve({ exitCode: null, stdout: "", stderr: `sandbox worker refused the run: ${(error as Error)?.message ?? error}`, files: {}, wallMs: 0 });
+      resolve({ exitCode: null, stdout: "", stderr: `sandbox worker refused the run: ${(error as Error)?.message ?? error}`, files: {}, scratch, wallMs: 0 });
     }
   });
 }
@@ -237,6 +241,7 @@ async function execute(id: unknown, command: string, _timeoutMs: number): Promis
   const cfg = await sandboxConfig();
   const gitProxy = cfg.token ? `${location.origin}/v1/sandbox/proxy?token=${encodeURIComponent(cfg.token)}&url=` : undefined;
   const out = await runInWorker(command, workspace.contents(), gitProxy);
+  scratch = out.scratch ?? {};
   try {
     await workspace.push(out.files);
   } catch (e) {
