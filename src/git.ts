@@ -3,6 +3,7 @@
  * git boundary). Pure JS: no git binary required on any platform.
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
 import { gitBoundaryIgnored } from "./paths.js";
@@ -124,9 +125,28 @@ async function statusRows(dir: string): Promise<StatusRow[]> {
 }
 
 export async function initRepo(dir: string): Promise<void> {
-  if (!fs.existsSync(path.join(dir, ".git"))) {
-    await git.init({ fs, dir, defaultBranch: "main" });
+  const gitDir = path.join(dir, ".git");
+  if (fs.existsSync(path.join(gitDir, "HEAD"))) return;
+  // A .git without HEAD is not a repository: an emptied or crashed skeleton.
+  // Re-init, salvaging any surviving object database (outside .git, which is
+  // about to be removed) so recovery never costs more than it must.
+  const salvage = fs.mkdtempSync(path.join(os.tmpdir(), "chrysalis-git-salvage-"));
+  let salvaged = false;
+  const objects = path.join(gitDir, "objects");
+  if (fs.existsSync(objects)) {
+    for (const entry of fs.readdirSync(objects)) {
+      fs.cpSync(path.join(objects, entry), path.join(salvage, entry), { recursive: true });
+      salvaged = true;
+    }
   }
+  fs.rmSync(gitDir, { recursive: true, force: true });
+  await git.init({ fs, dir, defaultBranch: "main" });
+  if (salvaged) {
+    for (const entry of fs.readdirSync(salvage)) {
+      fs.cpSync(path.join(salvage, entry), path.join(gitDir, "objects", entry), { recursive: true });
+    }
+  }
+  fs.rmSync(salvage, { recursive: true, force: true });
 }
 
 /** Idempotent: init if missing, then return. Callers may assume a repo exists. */

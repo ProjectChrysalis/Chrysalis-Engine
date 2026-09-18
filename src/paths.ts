@@ -188,7 +188,7 @@ apps/.staging/
  * the built-in agent directly. No secrets: the file is git-tracked. Its job:
  * teach the file-first contract + how to drive the engine.
  */
-const AGENTS_MD_VERSION = 12;
+const AGENTS_MD_VERSION = 14;
 const USER_AGENTS_MD_BODY = `# Chrysalis workspace
 
 Everything here is files you can edit like code — this user's whole Chrysalis world. The engine hot-reloads as you save.
@@ -197,6 +197,13 @@ Everything here is files you can edit like code — this user's whole Chrysalis 
 - The repo is preconfigured (identity, reflog). The agent's browser shell has real git (status, diff, log, branch, add, commit, clone), so it works here exactly as it does in a terminal; its file tools commit on their own.
 - Writes made through app HTTP routes auto-commit with the route in the message.
 - Your own direct edits stay pending until you commit them (\`git add -A && git commit\`); if an app request fires first, the engine commits them under an honest \`out-of-band: <files>\` label — nothing is lost, check \`git log\`.
+
+## The shell (know what you are working with)
+- busybox ash, not bash; the usual coreutils, plus rg, jq (paths, arithmetic, pipes, map/select), tar/gzip/zip, diff/cmp, fd, base64, curl and wget (through the engine when internet access is on). \`head\`/\`tail\` take -n and -c.
+- \`python3\` is MicroPython: no pip, no urllib or sockets. Use \`curl\`/\`wget\` for HTTP, or run JavaScript with \`node\`.
+- \`node\` is QuickJS plus fs/path/os/crypto/Buffer: no npm, no child_process, no sockets.
+- \`/tmp\` survives between commands while your shell stays open; the workspace is the durable place for anything that matters.
+- git histories can be large: the workspace repository mounts in full only for commands that invoke git.
 
 ## Layout
 - \`apps/<id>/\` — installed apps: a React + tailwind web project with vite conventions (\`index.html\`, \`src/\`, \`package.json\`; built in the browser, \`vite.config.*\` is not run) + \`plugins/<id>/\` (backend ES modules) + \`data/\` (whatever the app stores). \`node_modules/\`/\`dist/\` are derived (outside git). Dependencies install and uninstall engine-side with lifecycle scripts disabled (the built-in agent's \`app_deps\` tool); the sandbox itself has no node or npm.

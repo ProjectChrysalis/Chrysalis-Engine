@@ -168,6 +168,20 @@ describe("workspace mount caps", () => {
     expect(paths).toContain(".git/objects/pack/big.pack");
     expect(paths).not.toContain("big.bin");
   });
+
+  it("refuses to delete HEAD, config and the index; refs still delete", () => {
+    const p = bootstrapUserDir(tmp, "bob");
+    const gitDir = path.join(p.root, ".git");
+    fs.mkdirSync(path.join(gitDir, "refs", "heads"), { recursive: true });
+    for (const name of ["HEAD", "config", "index"]) {
+      fs.writeFileSync(path.join(gitDir, name), name === "HEAD" ? "ref: refs/heads/main\n" : "x");
+      expect(() => workspaceFs(p.root, { op: "delete", paths: [`.git/${name}`] })).toThrow(/git metadata/);
+      expect(fs.existsSync(path.join(gitDir, name))).toBe(true);
+    }
+    fs.writeFileSync(path.join(gitDir, "refs", "heads", "old"), "0000000\n");
+    expect(workspaceFs(p.root, { op: "delete", paths: [".git/refs/heads/old"] })).toEqual({ ok: true });
+    expect(fs.existsSync(path.join(gitDir, "refs", "heads", "old"))).toBe(false);
+  });
 });
 
 describe("browser runner readiness", () => {

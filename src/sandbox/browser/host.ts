@@ -27,6 +27,7 @@ interface ExecReply {
   files: Record<string, Uint8Array>;
   scratch: Record<string, Uint8Array>;
   wallMs: number;
+  runtime?: string;
 }
 
 const api = (path: string, init?: RequestInit) =>
@@ -97,7 +98,7 @@ class Workspace {
   }
 
   /** Runtime result -> engine. Writes changed files, deletes removed ones. */
-  async push(result: Record<string, Uint8Array>): Promise<void> {
+  async push(result: Record<string, Uint8Array>, mounted: Set<string>): Promise<void> {
     const writes: { path: string; b64: string }[] = [];
     for (const [rel, bytes] of Object.entries(result)) {
       const cur = this.files.get(rel);
@@ -108,6 +109,9 @@ class Workspace {
     const deletes: string[] = [];
     for (const rel of [...this.files.keys()]) {
       if (rel in result) continue;
+      // Only a mounted path can be "gone": files the mount deliberately left
+      // out (a repo's pack, say) are not the sandbox's to delete.
+      if (!mounted.has(rel)) continue;
       this.files.delete(rel);
       deletes.push(rel);
     }
@@ -167,7 +171,26 @@ function startHeartbeat(): void {
 // never imports or links it, so the sandbox stays a separate program.
 let execWorker: Worker | null = null;
 let execSeq = 0;
+let workerRuntime: string | null = null;
 const execPending = new Map<number, (reply: ExecReply) => void>();
+
+/** Debug surface (`ChrysalisSandbox.runtime`): the release the worker loaded. */
+function publishRuntime(): void {
+  const api = (window as unknown as { ChrysalisSandbox?: { runtime?: string | null } }).ChrysalisSandbox;
+  if (api) api.runtime = workerRuntime;
+}
+
+/** What release the engine is serving right now (sources.json, no cache). */
+async function servedRuntimeVersion(): Promise<string | null> {
+  try {
+    const r = await fetch("/client/sandbox/k/sources.json", { cache: "no-cache" });
+    if (!r.ok) return null;
+    const d = (await r.json()) as { runtime?: { version?: unknown } };
+    return typeof d.runtime?.version === "string" ? d.runtime.version : null;
+  } catch {
+    return null;
+  }
+}
 /** /tmp handoff between commands: the engine only syncs /workspace, so the
  *  host carries scratch files itself while the tab lives. */
 let scratch: Record<string, Uint8Array> = {};
@@ -176,8 +199,12 @@ function execWorkerHandle(): Worker {
   if (execWorker) return execWorker;
   const worker = new Worker(EXEC_WORKER_URL, { type: "module" });
   worker.onmessage = (event: MessageEvent) => {
-    const reply = event.data as { type?: string; id?: number };
+    const reply = event.data as { type?: string; id?: number; runtime?: unknown };
     if (reply?.type !== "result" || typeof reply.id !== "number") return;
+    if (typeof reply.runtime === "string") {
+      workerRuntime = reply.runtime;
+      publishRuntime();
+    }
     const settle = execPending.get(reply.id);
     execPending.delete(reply.id);
     settle?.(reply as unknown as ExecReply);
@@ -232,8 +259,9 @@ function result(id: unknown, r: Record<string, unknown>): void {
 /** The mount for one command. `.git` is always visible (a shell that cannot
  *  see the repository reads as "no git here"), but a packed object database is
  *  tens of MB and only git needs it: the pack rides along when the command
- *  mentions git or runs a script that does. */
-function contentsFor(command: string): Record<string, Uint8Array> {
+ *  mentions git or runs a script that does. The returned `mounted` set is what
+ *  the sync-back may delete from: anything left out here is untouchable. */
+function contentsFor(command: string): { files: Record<string, Uint8Array>; mounted: Set<string> } {
   const all = workspace!.contents();
   const needsObjects = (() => {
     if (/(^|[\s|&;(])git(\s|$)/.test(command)) return true;
@@ -250,13 +278,14 @@ function contentsFor(command: string): Record<string, Uint8Array> {
     }
     return false;
   })();
-  if (needsObjects) return all;
-  const out: Record<string, Uint8Array> = {};
+  const files: Record<string, Uint8Array> = {};
+  const mounted = new Set<string>();
   for (const [path, bytes] of Object.entries(all)) {
-    if (path.startsWith(".git/objects/pack/")) continue;
-    out[path] = bytes;
+    if (!needsObjects && path.startsWith(".git/objects/pack/")) continue;
+    files[path] = bytes;
+    mounted.add(path);
   }
-  return out;
+  return { files, mounted };
 }
 
 async function execute(id: unknown, command: string, _timeoutMs: number): Promise<void> {
@@ -270,10 +299,21 @@ async function execute(id: unknown, command: string, _timeoutMs: number): Promis
   }
   const cfg = await sandboxConfig();
   const gitProxy = cfg.token ? `${location.origin}/v1/sandbox/proxy?token=${encodeURIComponent(cfg.token)}&url=` : undefined;
-  const out = await runInWorker(command, contentsFor(command), gitProxy);
+  const mount = contentsFor(command);
+  // A new release on disk means this tab's worker is running old code; drop it
+  // so the next run loads the files the engine is actually serving. A worker
+  // that never reported a version predates the check and counts as stale.
+  const served = await servedRuntimeVersion();
+  if (served && served !== workerRuntime) {
+    execWorker?.terminate();
+    execWorker = null;
+    workerRuntime = served; // the replacement loads exactly what is served now
+    publishRuntime();
+  }
+  const out = await runInWorker(command, mount.files, gitProxy);
   scratch = out.scratch ?? {};
   try {
-    await workspace.push(out.files);
+    await workspace.push(out.files, mount.mounted);
   } catch (e) {
     result(id, { exitCode: out.exitCode, stdout: out.stdout, stderr: `${out.stderr}${out.stderr ? "\n" : ""}sync back failed: ${String((e as Error)?.message ?? e)}`, timedOut: false, truncated: false });
     return;
@@ -326,4 +366,4 @@ busListeners.add((type) => {
 });
 ensureBus();
 
-(window as unknown as { ChrysalisSandbox: unknown }).ChrysalisSandbox = { version: VERSION, host: HOST_ID };
+(window as unknown as { ChrysalisSandbox: unknown }).ChrysalisSandbox = { version: VERSION, host: HOST_ID, runtime: null };

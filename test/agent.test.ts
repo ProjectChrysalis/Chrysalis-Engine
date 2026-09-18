@@ -13,6 +13,7 @@ import { UserAgent, archiveSession, listSessions, renameSession, sessionFile, ty
 import { UserModelService } from "../src/models.js";
 import { defaultInstanceConfig } from "../src/config.js";
 import { bootstrapUserDir, userPaths } from "../src/paths.js";
+import { commitAll } from "../src/git.js";
 import { UserService } from "../src/users.js";
 import { invalidatePluginCache } from "../src/plugins/runtime.js";
 import { defaultSandboxConfig, type SandboxRunner } from "../src/sandbox/index.js";
@@ -311,6 +312,18 @@ describe("agent tools", () => {
     expect(JSON.stringify(written)).toContain("committed");
     const [head] = await isomorphicGit.log({ fs, dir: p.root, depth: 1 });
     expect(head!.commit.message).toContain("agent: write");
+  });
+
+  it("repairs a .git skeleton with no HEAD instead of failing every commit", async () => {
+    const p = bootstrapUserDir(dataDir, "bob");
+    fs.rmSync(path.join(p.root, ".git"), { recursive: true, force: true });
+    fs.mkdirSync(path.join(p.root, ".git", "objects", "pack"), { recursive: true });
+    fs.writeFileSync(path.join(p.root, "note.txt"), "hi");
+    const oid = await commitAll(p.root, "bob", "baseline after repair", false);
+    expect(oid).toBeTruthy();
+    expect(fs.existsSync(path.join(p.root, ".git", "HEAD"))).toBe(true);
+    const [head] = await isomorphicGit.log({ fs, dir: p.root, depth: 1 });
+    expect(head!.commit.message).toContain("baseline after repair");
   });
 });
 

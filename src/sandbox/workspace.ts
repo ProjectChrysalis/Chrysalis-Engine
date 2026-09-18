@@ -84,6 +84,9 @@ export function isGitPath(rel: string): boolean {
   return norm === ".git" || norm.startsWith(".git/");
 }
 
+/** Repository metadata whose loss breaks every reader; never deletable. */
+const KEEP_IN_GIT = new Set([".git/HEAD", ".git/config", ".git/index"]);
+
 export function sandboxPathAllowed(rel: string): string | null {
   const norm = rel.replace(/\\/g, "/").replace(/^\.\//, "");
   if (!norm || norm.startsWith("/") || norm.split("/").includes("..")) return "path escapes the workspace";
@@ -195,6 +198,9 @@ export function workspaceFs(root: string, op: FsOp): FsOpResult {
   for (const rel of op.paths.slice(0, MAX_BATCH)) {
     const bad = sandboxPathAllowed(rel) ?? (isGitPath(rel) ? null : agentWriteDenied(rel));
     if (bad) throw new Error(`Refused: ${bad}`);
+    // Deleting these breaks the repository for every reader (the engine's file
+    // tools included); no supported sandbox git operation removes them.
+    if (KEEP_IN_GIT.has(rel)) throw new Error(`Refused: ${rel} is git metadata the engine keeps`);
     const abs = path.resolve(root, rel);
     guard.assertWritable(abs, rel);
     try {
