@@ -15,6 +15,9 @@ const MOUNT_SKIP_DIRS = new Set(["node_modules", "dist", "agent", "assets-store"
 export const MAX_MOUNT_FILE = 2 * 1024 * 1024;
 /** Total mounted bytes before the tree is marked truncated. */
 export const MAX_MOUNT_TOTAL = 64 * 1024 * 1024;
+/** Git needs its whole object database to read history or write a tree; a pack
+ *  is one file, so .git gets its own larger budget instead of the 2MB file cap. */
+export const MAX_GIT_MOUNT_TOTAL = 256 * 1024 * 1024;
 /** A single synced-back file cap. */
 export const MAX_WRITE_FILE = 4 * 1024 * 1024;
 /** A single fs request cap. */
@@ -124,8 +127,9 @@ export function listWorkspaceFiles(root: string): { files: WorkspaceFileInfo[]; 
         } catch {
           continue;
         }
-        if (st.size > MAX_MOUNT_FILE) continue;
-        if (total + st.size > MAX_MOUNT_TOTAL) {
+        const inGit = rel === ".git" || rel.startsWith(".git/");
+        if (!inGit && st.size > MAX_MOUNT_FILE) continue;
+        if (total + st.size > (inGit ? MAX_GIT_MOUNT_TOTAL : MAX_MOUNT_TOTAL)) {
           truncated = true;
           return;
         }

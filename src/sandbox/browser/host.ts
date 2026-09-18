@@ -229,6 +229,19 @@ function result(id: unknown, r: Record<string, unknown>): void {
   });
 }
 
+/** The mount for one command: a packed repo's object database is tens of MB,
+ *  so only git commands carry it. */
+function contentsFor(command: string): Record<string, Uint8Array> {
+  const all = workspace!.contents();
+  if (/(^|[\s|&;(])git(\s|$)/.test(command)) return all;
+  const out: Record<string, Uint8Array> = {};
+  for (const [path, bytes] of Object.entries(all)) {
+    if (path === ".git" || path.startsWith(".git/")) continue;
+    out[path] = bytes;
+  }
+  return out;
+}
+
 async function execute(id: unknown, command: string, _timeoutMs: number): Promise<void> {
   if (!workspace) {
     workspace = new Workspace();
@@ -240,7 +253,7 @@ async function execute(id: unknown, command: string, _timeoutMs: number): Promis
   }
   const cfg = await sandboxConfig();
   const gitProxy = cfg.token ? `${location.origin}/v1/sandbox/proxy?token=${encodeURIComponent(cfg.token)}&url=` : undefined;
-  const out = await runInWorker(command, workspace.contents(), gitProxy);
+  const out = await runInWorker(command, contentsFor(command), gitProxy);
   scratch = out.scratch ?? {};
   try {
     await workspace.push(out.files);
