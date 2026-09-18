@@ -13,23 +13,19 @@ declare const __SANDBOX_VERSION__: string;
 const VERSION = typeof __SANDBOX_VERSION__ === "string" ? __SANDBOX_VERSION__ : "dev";
 const HOST_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
 const HEARTBEAT_MS = 15_000;
-const RUNTIME_URL = "/client/sandbox/k/runtime/sandbox.mjs";
+const EXEC_WORKER_URL = "/client/sandbox/k/runtime/exec-worker.mjs";
 
 interface SandboxConfig {
   internet: boolean;
   token: string | null;
 }
 
-interface RunResult {
-  exitCode: number;
+interface ExecReply {
+  exitCode: number | null;
   stdout: string;
   stderr: string;
   files: Record<string, Uint8Array>;
   wallMs: number;
-}
-
-interface RuntimeModule {
-  exec: (command: string, options?: { files?: Record<string, Uint8Array>; gitProxy?: string }) => Promise<RunResult>;
 }
 
 const api = (path: string, init?: RequestInit) =>
@@ -148,7 +144,6 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 // ---------- the running host ----------
-let runtime: Promise<RuntimeModule> | null = null;
 let workspace: Workspace | null = null;
 let heartbeat: ReturnType<typeof setInterval> | undefined;
 let ready = false;
@@ -166,9 +161,45 @@ function startHeartbeat(): void {
   heartbeat = setInterval(beat, HEARTBEAT_MS);
 }
 
-async function loadRuntime(): Promise<RuntimeModule> {
-  runtime ??= import(/* @vite-ignore */ RUNTIME_URL) as Promise<RuntimeModule>;
-  return runtime;
+// ---------- the sandbox worker ----------
+// Commands go to the runtime behind a worker boundary: the engine's page
+// never imports or links it, so the sandbox stays a separate program.
+let execWorker: Worker | null = null;
+let execSeq = 0;
+const execPending = new Map<number, (reply: ExecReply) => void>();
+
+function execWorkerHandle(): Worker {
+  if (execWorker) return execWorker;
+  const worker = new Worker(EXEC_WORKER_URL, { type: "module" });
+  worker.onmessage = (event: MessageEvent) => {
+    const reply = event.data as { type?: string; id?: number };
+    if (reply?.type !== "result" || typeof reply.id !== "number") return;
+    const settle = execPending.get(reply.id);
+    execPending.delete(reply.id);
+    settle?.(reply as unknown as ExecReply);
+  };
+  worker.onerror = (event: ErrorEvent) => {
+    for (const [id, settle] of execPending) {
+      execPending.delete(id);
+      settle({ exitCode: null, stdout: "", stderr: `sandbox worker failed: ${event.message || "script error"}`, files: {}, wallMs: 0 });
+    }
+    execWorker = null;
+  };
+  execWorker = worker;
+  return worker;
+}
+
+function runInWorker(command: string, files: Record<string, Uint8Array>, gitProxy?: string): Promise<ExecReply> {
+  return new Promise((resolve) => {
+    const id = ++execSeq;
+    execPending.set(id, resolve);
+    try {
+      execWorkerHandle().postMessage({ type: "exec", id, command, files, gitProxy });
+    } catch (error) {
+      execPending.delete(id);
+      resolve({ exitCode: null, stdout: "", stderr: `sandbox worker refused the run: ${(error as Error)?.message ?? error}`, files: {}, wallMs: 0 });
+    }
+  });
 }
 
 /** Boot = pull the workspace once; the runtime has no persistent state. */
@@ -203,16 +234,16 @@ async function execute(id: unknown, command: string, _timeoutMs: number): Promis
   } else {
     await workspace.pull();
   }
-  const mod = await loadRuntime();
   const cfg = await sandboxConfig();
   const gitProxy = cfg.token ? `${location.origin}/v1/sandbox/proxy?token=${encodeURIComponent(cfg.token)}&url=` : undefined;
+  const out = await runInWorker(command, workspace.contents(), gitProxy);
   try {
-    const out = await mod.exec(command, { files: workspace.contents(), gitProxy });
     await workspace.push(out.files);
-    result(id, { exitCode: out.exitCode, stdout: out.stdout, stderr: out.stderr, timedOut: false, truncated: false });
   } catch (e) {
-    result(id, { exitCode: null, stdout: "", stderr: String((e as Error)?.message ?? e), timedOut: false, truncated: false });
+    result(id, { exitCode: out.exitCode, stdout: out.stdout, stderr: `${out.stderr}${out.stderr ? "\n" : ""}sync back failed: ${String((e as Error)?.message ?? e)}`, timedOut: false, truncated: false });
+    return;
   }
+  result(id, { exitCode: out.exitCode, stdout: out.stdout, stderr: out.stderr, timedOut: false, truncated: false });
 }
 
 /** Network access and the proxy token, fetched fresh for every run. */
