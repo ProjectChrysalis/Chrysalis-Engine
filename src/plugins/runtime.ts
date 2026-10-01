@@ -26,7 +26,7 @@
  *     uiPanel(ctx, host)      → a declarative settings panel
  *     llmRequest(ctx, host)   → a patch over a sibling's model request
  *     llmResponse(ctx, host)  → a patch over a sibling's model result
- *     onTick(host)                                (when schedule is set)
+ *     onTick(ctx, host)       (when schedule is set; ctx is { pluginId })
  *     onAppUpdate({ from, to }, host) → the app's own data upgrades, run
  *                               once after its code moved between versions
  */
@@ -902,7 +902,7 @@ export interface PluginManifest {
   origin?: "local" | "imported";
   permissions: PluginPermission[];
   hooks?: string[];
-  /** Interval scheduler: calls the plugin's onTick(host) hook. */
+  /** Interval scheduler: calls the plugin's onTick(ctx, host) hook. */
   schedule?: { intervalMs: number };
   /** Cross-plugin hook order (llmRequest): lower runs first, higher runs
    *  later so its patch wins on conflicts. Default 0; ties break by id. */

@@ -31,6 +31,7 @@ import { radiusProvider } from "@earendil-works/pi-ai/providers/radius";
 import type { AuthPrompt, Credential, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { curatedProviders, loadCustomProviders, reservedProviderIds } from "../providers/custom.js";
 import { UserAgent, instructionDocsStamp, listSessions, renameSession, archiveSession, sessionDir, isReasoningLevel, type ReasoningLevel } from "../agent/agent.js";
+import { summarizeSession } from "../agent/compact.js";
 import { listConnections, createConnection, updateConnection, deleteConnection, validateConnectionInput, validatePromptFormatInput, readConnections, connectionKeyUsable, type ConnectionInfo } from "../connections.js";
 import { PROMPT_FORMATS, type PromptFormat } from "../providers/prompt-formats.js";
 import {
@@ -2306,9 +2307,11 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
             : 0;
       // count cached tokens too — they're part of the context the model re-reads
       const nextContext = result.usage ? result.usage.input + result.usage.cacheRead + result.usage.output : 0;
-      if (limit > 0 && nextContext >= limit && !result.error) {
+      // an overflow the in-run retry could not absorb: without compacting,
+      // every next message in this session would be refused the same way
+      if ((limit > 0 && nextContext >= limit && !result.error) || result.contextOverflow) {
         try {
-          await compactSession(u, agent.sessionId, { auto: true });
+          await compactSession(u, agent.sessionId, { auto: true, model: agent.model.ref });
           autoCompacted = true;
           bus.emit(u.username, "agent_event", { sessionId: agent.sessionId, ev: { type: "autocompact" } });
         } catch (e) {
@@ -2469,23 +2472,24 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   // History stays in the file (the UI keeps it scrollable behind a divider);
   // the model's context restarts from the summary (loadSessionDialogue drops
   // everything before the marker).
-  const compactSession = async (u: UserRecord, id: string, opts: { auto?: boolean } = {}): Promise<{ summary: string; runsBefore: number }> => {
+  const compactSession = async (u: UserRecord, id: string, opts: { auto?: boolean; model?: string } = {}): Promise<{ summary: string; runsBefore: number }> => {
     const p = userPaths(dataDir, u.username);
     const file = path.join(sessionDir(p), `${id}.jsonl`);
     if (!fs.existsSync(file)) throw new HttpError(404, "session not found");
     const pre = fs.readFileSync(file, "utf8");
-    const runs = (readRuns(p, id) ?? []).filter((r) => r.type === "run");
-    const lines: string[] = [];
-    for (const r of runs) {
-      if (typeof r.user === "string" && r.user.trim()) lines.push(`User: ${r.user}`);
-      if (typeof r.assistant === "string" && r.assistant.trim()) lines.push(`Assistant: ${r.assistant}`);
-    }
-    const transcript = lines.join("\n\n").slice(0, 100_000);
-    if (!transcript.trim()) throw new HttpError(400, "nothing to compact");
+    const records = readRuns(p, id) ?? [];
+    const runs = records.filter((r) => r.type === "run");
 
+    // summarize on the model the session runs on, never the account default:
+    // the default may be a different (paid) connection. A manual compact
+    // names no model, so take the one a live agent of this session holds.
+    let model = opts.model;
+    if (!model) {
+      for (const [key, a] of agentInstances) if (key.startsWith(`${u.username}:${id}:`)) model = a.model.ref;
+    }
     let agent: UserAgent;
     try {
-      agent = await getAgent(u, id);
+      agent = await getAgent(u, id, model);
     } catch (e) {
       if (/no models configured/i.test((e as Error).message)) throw new HttpError(503, (e as Error).message);
       throw e;
@@ -2493,18 +2497,28 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const runKey = `${u.username}:${agent.sessionId}`;
     activeRuns.set(runKey, agent);
     try {
-      const result = await agent.run(
-        `Summarize the conversation below into a compact session memory. Preserve: what the user wants, decisions made, every file path created or edited, plugin/app/MCP state, and open threads / next steps. Write it as a self-contained briefing a coding agent can continue from, in plain text with short sections. No preamble, no commentary about summarizing.\n\n<conversation>\n${transcript}\n</conversation>`,
-        {
-          onDelta: (d) => bus.emit(u.username, "agent_delta", { sessionId: agent.sessionId, delta: d }),
-          onEvent: (ev) => bus.emit(u.username, "agent_event", { sessionId: agent.sessionId, ev }),
+      // a one-shot call, NOT a run of the session agent: the session is what
+      // no longer fits, so its history must not ride along (see compact.ts)
+      const svc = getModels(u);
+      const { ref, contextWindow, maxTokens } = agent.model;
+      const folded = await summarizeSession({
+        model: { contextWindow, maxTokens },
+        records,
+        generate: async (prompt, max) => {
+          const res = await svc.generate(
+            { messages: [{ role: "user", content: prompt }], model: ref, sessionId: `${id}-compact`, presetParams: { max_tokens: max }, source: "agent-compact" },
+            (d) => bus.emit(u.username, "agent_delta", { sessionId: agent.sessionId, delta: d }),
+          );
+          if (res.error) throw new HttpError(500, res.error);
+          return res.text;
         },
-      );
-      if (result.error) throw new HttpError(500, result.error);
-      const summary = result.finalText.trim();
-      if (!summary) throw new HttpError(500, "compaction produced no summary (check that a model is configured)");
-      // keep prior history, append the marker; the summarization run that
-      // agent.run persisted is dropped (it would duplicate the summary)
+      }).catch((e: Error) => {
+        if (e instanceof HttpError) throw e;
+        throw new HttpError(/nothing to compact/.test(e.message) ? 400 : 500, e.message);
+      });
+      if (folded.droppedRuns) log.warn(`[agent] compact ${u.username}/${id}: ${folded.droppedRuns} oldest runs left out (too long to fold)`);
+      const summary = folded.summary;
+      // keep prior history, append the marker
       const rec: { type: "compact"; at: number; summary: string; auto?: boolean } = {
         type: "compact",
         at: Date.now(),

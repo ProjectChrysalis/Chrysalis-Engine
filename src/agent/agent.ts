@@ -18,7 +18,8 @@ import type { UserService } from "../users.js";
 import type { McpRegistry, McpToolInfo } from "../mcp/registry.js";
 import { Type } from "typebox";
 import { log } from "../logger.js";
-import { clampThinkingLevel } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, isContextOverflow, type AssistantMessage } from "@earendil-works/pi-ai";
+import { clampMaxTokens, fitContext, newTrimState } from "./context-budget.js";
 import { readSandboxSettings } from "../sandbox/network.js";
 
 const ADMIN_TOOLS_PROMPT = `You are also the ADMIN agent for this instance: create users with admin_create_user, list them with admin_list_users. New user tokens are shown exactly once.`;
@@ -51,6 +52,9 @@ export interface AgentRunResult {
   stopped?: boolean;
   /** Set when the model stream ended in error (bad key, provider down…). */
   error?: string;
+  /** The provider refused the request as too long for the model's window
+   *  (even after the in-run retry): the session needs compacting. */
+  contextOverflow?: boolean;
 }
 
 /** Live agent progress (WS): reasoning deltas + sequential tool execution. */
@@ -245,6 +249,7 @@ export class UserAgent {
     private agent: Agent,
     readonly sessionId: string,
     private sFile: string,
+    private budget: { force: boolean },
   ) {}
 
   /** Async factory: model resolution requires provider auth state. */
@@ -323,7 +328,23 @@ export class UserAgent {
       model as Parameters<typeof clampThinkingLevel>[0],
       opts.reasoning ?? readUserReasoning(paths, model.reasoning === true),
     );
-    const agent = new Agent({
+    // context budget: trim what is sent when it outgrows the window, and never
+    // ask for more output than the window has left (see context-budget.ts)
+    const budget = { force: false };
+    const trim = newTrimState();
+    const agent: Agent = new Agent({
+      transformContext: async (msgs) => {
+        // pi-agent-core's contract: this hook must never throw
+        try {
+          const st = agent.state;
+          const fit = fitContext(st.model, { systemPrompt: st.systemPrompt, messages: msgs, tools: st.tools }, { force: budget.force, state: trim });
+          if (fit.advanced) log.info(`[agent:${sessionId}] context trimmed ~${fit.before} → ~${fit.after} tokens (window ${st.model.contextWindow})`);
+          return fit.messages;
+        } catch (e) {
+          log.warn(`[agent:${sessionId}] context trim failed, sending as is: ${(e as Error).message}`);
+          return msgs;
+        }
+      },
       initialState: {
         model,
         systemPrompt: systemPromptFor(username, isAdmin, paths, opts.sandbox) + (opts.mode === "plan" ? PLAN_MODE_PROMPT : ""),
@@ -332,9 +353,18 @@ export class UserAgent {
         // pi-agent-core reads the level from state; undefined = "off"
         ...(level !== "off" ? { thinkingLevel: level } : {}),
       },
-      streamFn: (m, c, o) => svc.streamFn(m, c, o, sessionId),
+      streamFn: (m, c, o) => {
+        const maxTokens = clampMaxTokens(m, c, o?.maxTokens);
+        return svc.streamFn(m, c, maxTokens !== undefined ? { ...o, maxTokens } : o, sessionId);
+      },
     });
-    return new UserAgent(agent, sessionId, sFile);
+    return new UserAgent(agent, sessionId, sFile, budget);
+  }
+
+  /** The model this session runs on, for one-shot calls made on its behalf. */
+  get model(): { ref: string; contextWindow: number; maxTokens: number } {
+    const m = this.agent.state.model;
+    return { ref: `${m.provider}/${m.id}`, contextWindow: m.contextWindow, maxTokens: m.maxTokens };
   }
 
   /** Abort the active run; partial output settles with stopReason "aborted". */
@@ -444,6 +474,26 @@ export class UserAgent {
     try {
       const images = (opts.images ?? []).map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
       await this.agent.prompt(promptText, images.length ? images : undefined);
+      // The provider refused the context as too long: our estimate missed.
+      // Drop the refusal and retry once with a deep trim instead of stopping.
+      const last = this.agent.state.messages.at(-1) as AssistantMessage | undefined;
+      if (last?.role === "assistant" && last.stopReason === "error" && isOverflow(last)) {
+        log.warn(`[agent:${this.sessionId}] context overflow, retrying with a deep trim: ${last.errorMessage}`);
+        this.agent.state.messages = this.agent.state.messages.slice(0, -1);
+        // the refusal usually names the real window: trust it over a catalog
+        // that is missing or larger
+        const named = windowFromError(last.errorMessage);
+        const model = this.agent.state.model;
+        if (named && (!(model.contextWindow > 0) || named < model.contextWindow)) {
+          this.agent.state.model = { ...model, contextWindow: named };
+        }
+        this.budget.force = true;
+        try {
+          await this.agent.continue();
+        } finally {
+          this.budget.force = false;
+        }
+      }
     } finally {
       unsub();
     }
@@ -501,6 +551,7 @@ export class UserAgent {
     const stop = (finalAssistant as { stopReason?: string } | undefined)?.stopReason;
     const errorMessage = (finalAssistant as { errorMessage?: string } | undefined)?.errorMessage;
     const error = stop === "error" ? humanizeProviderError(errorMessage) : undefined;
+    const contextOverflow = stop === "error" && isOverflow(finalAssistant as AssistantMessage);
     // A reasoning model can stop after thinking with no text and no tool
     // call; without this the turn would end in silence. Display only: the
     // session keeps the empty reply so the note never enters model context.
@@ -524,6 +575,7 @@ export class UserAgent {
       ...(resolvedModel?.contextWindow ? { contextWindow: resolvedModel.contextWindow } : {}),
       ...(stop === "aborted" ? { stopped: true } : {}),
       ...(error ? { error } : {}),
+      ...(contextOverflow ? { contextOverflow: true } : {}),
     };
   }
 
@@ -729,6 +781,24 @@ function loadSessionDialogue(sFile: string, model: { api: string; provider: stri
   } catch {
     return [];
   }
+}
+
+/** pi-ai's overflow patterns (minus the bodiless-status guess), plus wordings
+ *  seen from OpenAI-compatible servers. */
+function isOverflow(m: AssistantMessage): boolean {
+  // pi-ai reads any bodiless 400/413 as an overflow (Cerebras); free-tier
+  // gateways send those for unrelated refusals, and a false overflow costs a
+  // retry plus a compaction. Without a message there is nothing to go on.
+  if (/\(no body\)/i.test(m.errorMessage ?? "")) return false;
+  if (isContextOverflow(m)) return true;
+  return /exceeds the model'?s context length|maximum context length|context length exceeded/i.test(m.errorMessage ?? "");
+}
+
+/** The context window a provider's overflow message states, if it states one. */
+export function windowFromError(message: string | undefined): number | undefined {
+  const m = /(?:maximum context length(?: is| of)?|max(?:imum)? context tokens:?|context length(?: is| of)?|context size(?: is| of)?)\s*\(?([\d,]{4,})/i.exec(message ?? "");
+  const n = m ? Number(m[1]!.replace(/,/g, "")) : NaN;
+  return Number.isFinite(n) && n >= 1024 ? n : undefined;
 }
 
 function agentText(m: AgentMessage | undefined): string {
@@ -991,10 +1061,10 @@ plugin.js is an ES MODULE — use ESM syntax exactly like this (NOT CommonJS \`e
 Exports:
 - handleRoute(req, host) → { status, json | text } for HTTP routes under /v1/apps/<activeApp>/<path> (permission: routes). req = { method, path, query, body }. EVERY bundled plugin receives the same app-scoped path (the plugin's folder id is NOT part of the URL) and the first plugin that responds wins, so namespace your routes with your own prefix (e.g. chats/…, import/…) or another plugin's catch-all will answer for you. Return { __llmPending: true } on pass A after host.llm.request(key, genReq); on the next pass read host.llm.results[key] and commit — write NOTHING on pass A (stateless two-phase).
 - TOOLS + handleTool(name, args, host) → { text, isError? } for model tools (permission: tools).
-- uiPanel(ctx, host) → a declarative settings panel the app renders for this plugin. onTick(host) fires on the manifest's schedule (permission: schedule). appTools(host) → { tools } contributes model tools to sibling generations that request them (permission: tools). llmRequest(ctx, host) → a patch object over a sibling plugin's model request (ctx.request is a JSON snapshot; permission: hooks + llm; manifest priority orders multiple patchers, lower runs first and higher wins conflicts). It may also set streamMuted: true to keep a wire-format generation out of the live stream entirely (the result still commits; Stop still works), or streamDecode: { fields, replace? } to decode JSON string fields out of the wire format live (in wire order), so the real text streams as the model writes it. llmResponse(ctx, host) → a patch object over a sibling's model result (ctx.request is the request that was sent, ctx.result the GenerateResult; same permission and ordering; fields: text/json/reasoning/assistantPrefill). These and the route/tool exports above are the exports the engine calls.
+- uiPanel(ctx, host) → a declarative settings panel the app renders for this plugin. onTick(ctx, host) fires on the manifest's schedule (permission: schedule). appTools(host) → { tools } contributes model tools to sibling generations that request them (permission: tools). llmRequest(ctx, host) → a patch object over a sibling plugin's model request (ctx.request is a JSON snapshot; permission: hooks + llm; manifest priority orders multiple patchers, lower runs first and higher wins conflicts). It may also set streamMuted: true to keep a wire-format generation out of the live stream entirely (the result still commits; Stop still works), or streamDecode: { fields, replace? } to decode JSON string fields out of the wire format live (in wire order), so the real text streams as the model writes it. llmResponse(ctx, host) → a patch object over a sibling's model result (ctx.request is the request that was sent, ctx.result the GenerateResult; same permission and ordering; fields: text/json/reasoning/assistantPrefill). These and the route/tool exports above are the exports the engine calls.
 host API: host.fs (read/write/readBase64/list/remove — scoped to the app's data/ for bundled plugins), host.store (get/put/delete/keys — persists), host.llm.request/results, host.log.
 Permissions: routes, tools, llm, store, fs, schedule, hooks, network. network = two-phase host.net, fetch-class (method/headers/body/form/json/binary/timeout/maxBytes/redirects; results carry status, headers, json/text/base64 — same pattern as llm; optional manifest networkHosts allowlist). Imported plugins need grants (settings.json pluginGrants); origin local = trusted.
-manifest.json may declare schedule: { intervalMs } → onTick(host) fires on a timer, and priority (number) → cross-plugin hook order.
+manifest.json may declare schedule: { intervalMs } → onTick(ctx, host) fires on a timer, and priority (number) → cross-plugin hook order.
 
 # App UI authoring (React + tailwind, with the module conventions you know best)
 - package.json holds REAL package deps (any package works — edit it, then call app_deps; remove one with app_deps { remove: ["name"] }. Both run engine-side with lifecycle scripts disabled; npm does not run in the shell). shadcn/ui and any React library drops in natively. Tailwind v4 is built in (no need to install it); @plugin/@source work.
