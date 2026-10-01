@@ -1,5 +1,5 @@
 /**
- * Agent tools (SPEC §5.1): coding-agent-style file/git tools STRICTLY scoped
+ * Agent tools (SPEC §5.1): coding-agent-style file tools STRICTLY scoped
  * to the owning user's directory, with the write denylist from paths.ts
  * (auth.json, .git, chats/, assets-store/ are never agent-writable).
  */
@@ -11,10 +11,9 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { UserPaths } from "../paths.js";
 import { agentReadDenied, agentWriteDenied, safeResolve } from "../paths.js";
 import type { SandboxRunner } from "../sandbox/index.js";
-import { guardedGitHttp, readSandboxSettings } from "../sandbox/network.js";
+import { readSandboxSettings } from "../sandbox/network.js";
 import { makePathGuard } from "../sandbox/workspace.js";
 import * as git from "../git.js";
-import { GIT_COMMANDS, runGitCli } from "./git-cli.js";
 import { createAppSkeleton, readApp } from "../apps/manager.js";
 import { hasPackages, installApp, uninstallApp } from "../apps/packages.js";
 import { builderVersion } from "../builder/assets.js";
@@ -71,16 +70,6 @@ function fileDiff(rel: string, before: string, after: string): string | undefine
   const body = patch.replace(/^(Index [^\n]*\n)?={10,}\n/, "").trimEnd();
   if (!/^@@/m.test(body)) return undefined;
   return body.length > MAX_DIFF_CHARS ? `${body.slice(0, MAX_DIFF_CHARS)}\n… (diff truncated)` : body;
-}
-
-/** The git tool's earlier shape ({action: log|commit|restore}), which chats
- *  started before it took arguments still repeat from their history. */
-function legacyGitArgs(p: { action?: unknown; message?: unknown; limit?: unknown; path?: unknown; commit?: unknown }): string | null {
-  const q = (v: unknown) => `'${String(v).replace(/'/g, `'\\''`)}'`;
-  if (p.action === "log") return `log --oneline -n ${Number(p.limit) > 0 ? Math.floor(Number(p.limit)) : 20}`;
-  if (p.action === "commit" && typeof p.message === "string") return `commit -m ${q(p.message)}`;
-  if (p.action === "restore" && typeof p.path === "string" && typeof p.commit === "string") return `restore --source ${q(p.commit)} -- ${q(p.path)}`;
-  return null;
 }
 
 export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOptions = { dataDir: "." }): AgentTool[] {
@@ -297,24 +286,6 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
         path: rel,
         ...(diff ? { diff } : {}),
       });
-    },
-  };
-
-  const gitTool: AgentTool = {
-    name: "git",
-    label: "Git",
-    description:
-      `Git for the workspace repository, with the command line's own arguments (no leading "git"): ${GIT_COMMANDS}. Examples: "status", "diff HEAD~3 -- apps/roleplay/src", "log --oneline -n 10 -- apps/roleplay", "show abc1234:apps/roleplay/src/App.tsx", "restore --source abc1234 -- apps/roleplay/src/App.tsx", "revert abc1234", "commit -m \"what changed\"", "clone https://github.com/owner/repo". File tools commit on their own; commit after bash changes. There is one line of history (main) and no staging area, branches or remotes. clone copies another repository's files (no .git) into repos/<name>, which stays out of that history, so you can read, grep or copy from it; it needs the user's internet access on. The same git works in the bash shell when you want pipes or redirects.`,
-    parameters: Type.Object({
-      args: Type.String({ description: "The git arguments, as typed after `git` on a command line" }),
-    }),
-    async execute(_id, params) {
-      const given = params as { args?: unknown; action?: unknown; message?: unknown; limit?: unknown; path?: unknown; commit?: unknown };
-      const args = typeof given.args === "string" ? given.args : legacyGitArgs(given);
-      if (!args?.trim()) throw new Error(`git needs arguments. Supported: ${GIT_COMMANDS}.`);
-      const http = readSandboxSettings(p.sandbox).internet ? guardedGitHttp : undefined;
-      const out = await runGitCli({ dir: p.root, username, readOnly: opts.mode === "plan", http }, args);
-      return textResult(out || "(no output)", { args });
     },
   };
 
@@ -543,7 +514,7 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
     name: "bash",
     label: "Run shell command",
     description:
-      "Run a shell command in the agent sandbox (by default a WebAssembly sandbox in the user's browser: bash, 88 standard utilities and python3, workspace mounted, internet unless the user turned it off in Settings, never this machine or its network, no host access). Changes under the workspace are the user's files; commit them with the git tool afterwards. Use it for scripts, batch transforms, data crunching and checking your work — not for reading/editing single files (read_file/edit_file are better there). Output is capped (~64KB/stream, head+tail kept).",
+      "Run a shell command in the sandbox in the user's browser (busybox ash, coreutils, git, python3, node, jq, rg, curl; the workspace at /workspace), never on this machine. Files the command changes are saved to the user's files when it finishes; commit them with git in the shell. Use it for scripts, data work, edits across many files and checking your work, not for reading or editing one file (read_file/edit_file). Output is capped (~64KB per stream, head and tail kept).",
     parameters: Type.Object({
       command: Type.String({ description: "The shell command line. Runs with cwd = the user's workspace" }),
       timeout_ms: Type.Optional(
@@ -590,5 +561,5 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
       }
     : bash;
 
-  return [readFile, writeFile, editFile, grepFiles, gitTool, appCreate, appDeps, appCheck, appRebuild, appConsole, shell, askUser];
+  return [readFile, writeFile, editFile, grepFiles, appCreate, appDeps, appCheck, appRebuild, appConsole, shell, askUser];
 }

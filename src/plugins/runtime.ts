@@ -24,13 +24,16 @@
  *     handleRoute(req, host)  → { status, json | text }   (permission: routes)
  *     TOOLS + handleTool(name, args, host)                (permission: tools)
  *     uiPanel(ctx, host)      → a declarative settings panel
- *     onTick(host)                                (when schedule is set)
+ *     llmRequest(ctx, host)   → a patch over a sibling's model request
+ *     llmResponse(ctx, host)  → a patch over a sibling's model result
+ *     onTick(ctx, host)       (when schedule is set; ctx is { pluginId })
  *     onAppUpdate({ from, to }, host) → the app's own data upgrades, run
  *                               once after its code moved between versions
  */
 import fs from "node:fs";
 import path from "node:path";
 import { PluginSandbox, sandbox, type SandboxResponse } from "./sandbox.js";
+import { JsonFieldStreamDecoder, normalizeStreamDecodeSpec } from "./stream-decode.js";
 import type { PluginStoreService } from "./store.js";
 import type { UserModelService, GenerateRequest, GenerateResult } from "../models.js";
 import { log } from "../logger.js";
@@ -39,7 +42,7 @@ import { assertPublicHost } from "../net-guard.js";
 /** Exports the engine calls on its own (routes and tools are dispatched by
  *  request, not from here). Only these names fire — a plugin exporting
  *  anything else is never reached. */
-export const PLUGIN_HOOKS = ["onTick", "uiPanel", "onAppUpdate", "appTools", "llmRequest"] as const;
+export const PLUGIN_HOOKS = ["onTick", "uiPanel", "onAppUpdate", "appTools", "llmRequest", "llmResponse"] as const;
 export type PluginHook = (typeof PLUGIN_HOOKS)[number];
 
 export type PluginPermissionCap = "llm" | "store" | "schedule" | "network" | "tools" | "routes" | "fs" | "zip" | "hooks";
@@ -96,6 +99,10 @@ export interface PluginRuntimeDeps {
   /** App plugins whose llmRequest hook may patch this plugin's model
    *  requests (permissions: hooks + llm). Set by app-route dispatch. */
   llmHooks?: (self: LoadedPlugin) => Promise<LlmRequestHook[]>;
+  /** App plugins whose llmResponse hook may patch this plugin's model
+   *  RESULTS (permissions: hooks + llm). Same ordering and crash isolation
+   *  as llmHooks; the hook sees the request that was actually sent. */
+  llmResponseHooks?: (self: LoadedPlugin) => Promise<LlmRequestHook[]>;
   /** Register an abort signal for a streamed llm request (keyed by its stream
    *  descriptor's chatId by the dispatch layer). Cancelling aborts the
    *  provider stream; the kernel salvages whatever partial text exists. */
@@ -321,10 +328,14 @@ export async function collectSiblingTools(
 /** Request fields an llmRequest hook may patch. Everything else is host-only
  *  (tools, executeTool, signal, trace source, stream routing) and can never be
  *  set from a hook: the allowlist is the boundary, so a patch cannot take over
- *  execution, cancel a generation, or spoof the trace. */
+ *  execution, cancel a generation, or spoof the trace. `streamMuted` is a
+ *  routing request, not a model field: the generation runs normally and its
+ *  result commits, but its live deltas are not surfaced (a wire format the
+ *  user should not watch arrive). `streamDecode` is the same idea with the
+ *  wire format stripped live, so the decoded text still streams. */
 const LLM_PATCH_FIELDS = [
   "messages", "systemPrompt", "model", "sessionId", "reasoning", "thinkingBudget",
-  "reasoningTags", "assistantPrefill", "promptFormat", "presetParams", "schema",
+  "reasoningTags", "assistantPrefill", "promptFormat", "presetParams", "cache", "schema", "streamMuted", "streamDecode",
 ] as const;
 
 /** Sibling plugins that can patch this plugin's llm requests: llmRequest
@@ -337,13 +348,14 @@ export async function collectSiblingLlmHooks(
   appPlugins: LoadedPlugin[],
   self: LoadedPlugin,
   deps: PluginRuntimeDeps,
+  exportName: "llmRequest" | "llmResponse" = "llmRequest",
 ): Promise<LlmRequestHook[]> {
   const hooks: LlmRequestHook[] = [];
   for (const sibling of appPlugins) {
     if (sibling.id === self.id) continue;
     if (!hasCapAny(sibling, "hooks", deps) || !hasCapAny(sibling, "llm", deps)) continue;
     // cheap pre-check before paying for a sandbox eval: no name, no export
-    if (!sibling.source.includes("llmRequest")) continue;
+    if (!sibling.source.includes(exportName)) continue;
     hooks.push({
       plugin: sibling,
       priority: typeof sibling.manifest.priority === "number" ? sibling.manifest.priority : 0,
@@ -387,6 +399,56 @@ export async function applyLlmRequestHooks(
     if (!Object.keys(applied).length) continue;
     log.info(`[plugin:${self.id}] llm "${key}" patched by ${plugin.id}`);
     out = { ...out, ...applied } as GenerateRequest;
+  }
+  return out;
+}
+
+/** Result fields an llmResponse hook may patch. The result is the model's
+ *  output, not the execution: usage, timing, tool trace and model identity
+ *  stay as measured (a hook can reshape what the text says, never what it
+ *  cost or which model produced it). `assistantPrefill` is included because
+ *  a hook that consumed the prefill turn must also clear the echo the
+ *  caller would otherwise prepend to the reply. */
+const LLM_RESULT_PATCH_FIELDS = ["text", "json", "reasoning", "assistantPrefill"] as const;
+
+/** Run the sibling llmResponse pipeline over one model result. Mirrors
+ *  applyLlmRequestHooks: hooks run in manifest priority order, each sees the
+ *  result as patched so far, and a crashed hook is skipped. */
+export async function applyLlmResponseHooks(
+  self: LoadedPlugin,
+  key: string,
+  req: GenerateRequest,
+  res: GenerateResult,
+  deps: PluginRuntimeDeps,
+): Promise<GenerateResult> {
+  if (!deps.llmResponseHooks) return res;
+  const hooks = await deps.llmResponseHooks(self).catch(() => [] as LlmRequestHook[]);
+  if (!hooks.length) return res;
+  const request = JSON.parse(JSON.stringify(req)) as Record<string, unknown>;
+  let out = res;
+  for (const { plugin } of hooks) {
+    const snapshot = JSON.parse(JSON.stringify(out)) as Record<string, unknown>;
+    let patch: Record<string, unknown> | null = null;
+    try {
+      patch = await runPluginHook(plugin, "llmResponse", { request, result: snapshot, plugin: self.id, key }, deps);
+    } catch (e) {
+      // a response hook must never be able to break a generation it patches
+      log.warn(`[plugin:${plugin.id}] llmResponse hook crashed: ${(e as Error).message}`);
+      continue;
+    }
+    if (!patch || typeof patch !== "object") continue;
+    const applied: Record<string, unknown> = {};
+    for (const field of LLM_RESULT_PATCH_FIELDS) {
+      if (!Object.prototype.hasOwnProperty.call(patch, field)) continue;
+      if (field !== "json" && typeof patch[field] !== "string") {
+        log.warn(`[plugin:${plugin.id}] llmResponse ignored invalid ${field}`);
+        continue;
+      }
+      applied[field] = patch[field];
+    }
+    if (!Object.keys(applied).length) continue;
+    log.info(`[plugin:${self.id}] llm "${key}" result patched by ${plugin.id}`);
+    out = { ...out, ...applied } as GenerateResult;
   }
   return out;
 }
@@ -668,17 +730,44 @@ async function runPassRequests(
       if (wantsTools === true && deps.siblingTools) toolBridge = mergeToolBridges(toolBridge, await deps.siblingTools(plugin));
     }
     delete clean.tools;
+    const patched = mode === "route" ? await applyLlmRequestHooks(plugin, key, clean, deps) : clean;
+    // routing requests a patch may carry, not model fields: a quiet stream
+    // (no live deltas at all) or a live decoder for a wire format. Neither
+    // must ever reach the provider.
+    const streamMuted = mode === "route" && (patched as { streamMuted?: unknown }).streamMuted === true;
+    const streamDecode = mode === "route" ? normalizeStreamDecodeSpec((patched as { streamDecode?: unknown }).streamDecode) : null;
+    const request = { ...patched } as GenerateRequest;
+    delete (request as { streamMuted?: unknown }).streamMuted;
+    delete (request as { streamDecode?: unknown }).streamDecode;
+    // muting silences deltas, not cancellation: a muted generation is still
+    // abortable through its stream descriptor
     const streamTag = mode === "route" ? stream : undefined;
-    const request = mode === "route" ? await applyLlmRequestHooks(plugin, key, clean, deps) : clean;
-    const onDelta = streamTag && deps.onLlmDelta ? (d: string) => deps.onLlmDelta!(streamTag, d) : undefined;
-    const onThinking = streamTag && deps.onLlmThinking ? (d: string) => deps.onLlmThinking!(streamTag, d) : undefined;
-    const onToolEvent = streamTag && deps.onLlmTool ? (ev: Parameters<NonNullable<PluginRuntimeDeps["onLlmTool"]>>[1]) => deps.onLlmTool!(streamTag, ev) : undefined;
+    const liveTag = streamTag && !streamMuted ? streamTag : undefined;
+    let decoder: JsonFieldStreamDecoder | null = null;
+    let onDelta: ((delta: string) => void) | undefined;
+    if (liveTag && deps.onLlmDelta) {
+      const tag = liveTag;
+      if (streamDecode) {
+        decoder = new JsonFieldStreamDecoder(streamDecode, (d) => deps.onLlmDelta!(tag, d));
+        onDelta = (d) => decoder!.push(d);
+      } else {
+        onDelta = (d) => deps.onLlmDelta!(tag, d);
+      }
+    }
+    const onThinking = liveTag && deps.onLlmThinking ? (d: string) => deps.onLlmThinking!(liveTag, d) : undefined;
+    const onToolEvent = liveTag && deps.onLlmTool ? (ev: Parameters<NonNullable<PluginRuntimeDeps["onLlmTool"]>>[1]) => deps.onLlmTool!(liveTag, ev) : undefined;
     const abortSignal = streamTag && deps.abortCtlFor ? deps.abortCtlFor(streamTag) : null;
     try {
-      const out = await deps.models.generate({ ...request, ...toolBridge, ...(onToolEvent ? { onToolEvent } : {}), ...(abortSignal ? { signal: abortSignal } : {}), source: llmSourceOf(plugin) }, onDelta, onThinking);
+      let out = await deps.models.generate({ ...request, ...toolBridge, ...(onToolEvent ? { onToolEvent } : {}), ...(abortSignal ? { signal: abortSignal } : {}), source: llmSourceOf(plugin) }, onDelta, onThinking);
+      // whatever the decoder still holds is decidable now (end of stream)
+      decoder?.flush();
       // cancelled generations never commit: the client owns what a cancel
       // keeps (it froze the exact on-screen bytes) and writes them itself
-      results.llm[key] = streamTag && deps.consumeCancel?.(streamTag) ? emptyGeneration() : out;
+      if (streamTag && deps.consumeCancel?.(streamTag)) out = emptyGeneration();
+      // sibling post-processing runs on what will commit, not on what the
+      // provider streamed: it sees the request that was sent and the result
+      else if (mode === "route" && deps.llmResponseHooks) out = await applyLlmResponseHooks(plugin, key, request, out, deps);
+      results.llm[key] = out;
     } catch (e) {
       const msg = (e as Error).message;
       log.warn(`[plugin:${plugin.id}] llm "${key}" failed: ${msg}`);
@@ -813,7 +902,7 @@ export interface PluginManifest {
   origin?: "local" | "imported";
   permissions: PluginPermission[];
   hooks?: string[];
-  /** Interval scheduler: calls the plugin's onTick(host) hook. */
+  /** Interval scheduler: calls the plugin's onTick(ctx, host) hook. */
   schedule?: { intervalMs: number };
   /** Cross-plugin hook order (llmRequest): lower runs first, higher runs
    *  later so its patch wins on conflicts. Default 0; ties break by id. */

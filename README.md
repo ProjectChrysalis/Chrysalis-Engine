@@ -130,7 +130,7 @@ Chrysalis keeps your data in its own folder, so an update never touches it.
 - Bun: `bun add -g chrysalis-engine@latest`.
 - Docker: `docker compose pull && docker compose up -d` (the `:staging` tag for
   staging), or `git pull && docker compose up -d --build` to build it yourself.
-- From source: `git pull && bun install && (cd client-agent && bun install) && bun run build:client`, then restart.
+- From source: `git pull && bun install && (cd client-agent && bun install) && bun run sandbox:fetch && bun run build:client`, then restart.
 
 Apps you have changed are never overwritten: the **Where to?** page marks apps
 with an update, and updating merges it with your edits. To move an app to another device, or keep a copy
@@ -145,6 +145,7 @@ git clone https://github.com/ProjectChrysalis/Chrysalis-Engine
 cd Chrysalis-Engine
 bun install
 (cd client-agent && bun install)
+bun run sandbox:fetch
 bun run build:client
 bun start
 ```
@@ -208,7 +209,7 @@ frontend, and its agent runs on pi's own libraries.
 | [Hono](https://hono.dev) | HTTP server and routing | MIT |
 | [Model Context Protocol SDK](https://github.com/modelcontextprotocol/typescript-sdk) | Connecting to external MCP servers for agent tools | MIT |
 | [QuickJS-ng](https://github.com/quickjs-ng/quickjs) via [quickjs-emscripten](https://github.com/justjake/quickjs-emscripten) | The app plugin sandbox | MIT |
-| [wasmsh](https://github.com/mayflower/wasmsh) with [Pyodide](https://pyodide.org) | The agent's in-browser sandbox: an actual shell and a Python runtime, both in wasm | Apache-2.0 |
+| [Chrysalis Sandbox](https://github.com/ProjectChrysalis/chrysalis-sandbox) | The agent's in-browser shell, Git, Python, Node-style JavaScript and utilities; distributed as separate runtime files | GPL-2.0-only; [source/build materials](https://github.com/ProjectChrysalis/chrysalis-sandbox/releases/download/v0.4.1/sandbox-0.4.1-sources.zip), component notices in packaged `sources.json` |
 | [isomorphic-git](https://isomorphic-git.org) | Workspace version control, and installing apps from git without a git program | MIT |
 | [esbuild](https://esbuild.github.io) | Bundling app frontends and app builds (WASM inside the browser builder) | MIT |
 | [React](https://react.dev) | The web client shell and the agent chat UI | MIT |

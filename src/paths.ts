@@ -188,18 +188,23 @@ apps/.staging/
  * the built-in agent directly. No secrets: the file is git-tracked. Its job:
  * teach the file-first contract + how to drive the engine.
  */
-const AGENTS_MD_VERSION = 12;
+const AGENTS_MD_VERSION = 15;
 const USER_AGENTS_MD_BODY = `# Chrysalis workspace
 
 Everything here is files you can edit like code — this user's whole Chrysalis world. The engine hot-reloads as you save.
 
 ## Git (who commits what)
-- The repo is preconfigured (identity, reflog): an agent running on the host uses plain \`git add/commit/log/reflog\`; the built-in agent's browser sandbox has no git binary, so it commits through its git tools (git_status/git_log/git_commit/git_restore) on this same repo.
+- The repo is preconfigured (identity, reflog). The agent's browser shell has real git (status, diff, log, show, branch, switch, add, commit, restore, clone), so it works here as it does in a terminal; its file tools commit on their own.
 - Writes made through app HTTP routes auto-commit with the route in the message.
 - Your own direct edits stay pending until you commit them (\`git add -A && git commit\`); if an app request fires first, the engine commits them under an honest \`out-of-band: <files>\` label — nothing is lost, check \`git log\`.
 
+## The shell (know what you are working with)
+- The built-in agent's shell runs in the user's browser, never on the host: busybox ash with the bash basics (no arrays, no {a,b} expansion), coreutils and findutils with GNU options, rg, fd, jq, curl, wget, tar/gzip/zip, and real git.
+- \`python3\` is CPython 3.14 with the standard library; no pip. \`node\` runs Node-style JavaScript (fs, path, child_process, fetch, CommonJS and ES modules); no npm.
+- The workspace stays mounted between commands and \`/tmp\` lasts too; a command past its time limit is stopped and its changes are discarded.
+
 ## Layout
-- \`apps/<id>/\` — installed apps: a React + tailwind web project with vite conventions (\`index.html\`, \`src/\`, \`package.json\`; built in the browser, \`vite.config.*\` is not run) + \`plugins/<id>/\` (backend ES modules) + \`data/\` (whatever the app stores). \`node_modules/\`/\`dist/\` are derived (outside git). Dependencies install and uninstall engine-side with lifecycle scripts disabled (the built-in agent's \`app_deps\` tool); the sandbox itself has no node or npm.
+- \`apps/<id>/\` — installed apps: a React + tailwind web project with vite conventions (\`index.html\`, \`src/\`, \`package.json\`; built in the browser, \`vite.config.*\` is not run) + \`plugins/<id>/\` (backend ES modules) + \`data/\` (whatever the app stores). \`node_modules/\`/\`dist/\` are derived (outside git). Dependencies install and uninstall engine-side with lifecycle scripts disabled (the built-in agent's \`app_deps\` tool); npm does not run in the sandbox.
 - An app is free to be anything: a chat studio, a visual novel, a game, a tool. Each carries its own \`AGENTS.md\` and \`data/README.md\` (its field-shape map) — read those before editing that app.
 - \`plugins/<id>/\` — top-level always-on plugins (same format as app plugins).
 - \`providers.json\` — custom model endpoints. \`settings.json\` — activeApp etc. (the Settings UI owns it; agents do not read or edit it).

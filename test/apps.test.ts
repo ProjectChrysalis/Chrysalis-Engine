@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import { discoverAppPlugins, discoverPlugins, invalidatePluginCache } from "../src/plugins/runtime.js";
 import { CURATED_PROVIDERS, curatedProviders, mapOpenAiModelsResponse } from "../src/providers/custom.js";
 import { UserModelService } from "../src/models.js";
@@ -145,7 +146,7 @@ describe("curated providers", () => {
       bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
       return new Response("nope", { status: 400 });
     };
-    const context = { messages: [{ role: "user" as const, content: "hi", timestamp: 0 }] };
+    const context = normalizeContext({ messages: [{ role: "user" as const, content: "hi", timestamp: 0 }] });
     for (const model of prov.getModels()) {
       const events = prov.streamSimple(model, context, { apiKey: "k", fetch: fakeFetch as never, reasoning: "low" });
       for await (const ev of events) if (ev.type === "error" || ev.type === "done") break;

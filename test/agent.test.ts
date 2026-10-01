@@ -13,6 +13,7 @@ import { UserAgent, archiveSession, listSessions, renameSession, sessionFile, ty
 import { UserModelService } from "../src/models.js";
 import { defaultInstanceConfig } from "../src/config.js";
 import { bootstrapUserDir, userPaths } from "../src/paths.js";
+import { commitAll } from "../src/git.js";
 import { UserService } from "../src/users.js";
 import { invalidatePluginCache } from "../src/plugins/runtime.js";
 import { defaultSandboxConfig, type SandboxRunner } from "../src/sandbox/index.js";
@@ -303,26 +304,26 @@ describe("agent tools", () => {
     expect(weird).toContain("--:--:--");
   });
 
-  it("git tool takes command-line arguments; plan mode keeps reads but refuses writes", async () => {
+  it("there is one git: the shell's; file tools commit on their own", async () => {
     const p = bootstrapUserDir(dataDir, "alice");
     const tools = buildUserTools("alice", p, { dataDir: p.root });
-    const git = tools.find((t) => t.name === "git")!;
-    await tools.find((t) => t.name === "write_file")!.execute("t1", { path: "apps/roleplay/data/note.txt", content: "hi" });
-    expect(JSON.stringify(await git.execute("t2", { args: "log --oneline -n 5" }))).toContain("agent: write");
+    expect(tools.find((t) => t.name === "git")).toBeUndefined();
+    const written = await tools.find((t) => t.name === "write_file")!.execute("t1", { path: "apps/roleplay/data/note.txt", content: "hi" });
+    expect(JSON.stringify(written)).toContain("committed");
+    const [head] = await isomorphicGit.log({ fs, dir: p.root, depth: 1 });
+    expect(head!.commit.message).toContain("agent: write");
+  });
 
-    const plan = buildUserTools("alice", p, { dataDir: p.root, mode: "plan" });
-    const gitPlan = plan.find((t) => t.name === "git")!;
-    expect(JSON.stringify(await gitPlan.execute("t3", { args: "git show HEAD --stat" }))).toContain("apps/roleplay/data/note.txt");
-    await expect(gitPlan.execute("t4", { args: "commit -m x" })).rejects.toThrow(/Plan mode/);
-    await expect(gitPlan.execute("t5", { args: "restore --source HEAD -- apps/roleplay/data/note.txt" })).rejects.toThrow(/Plan mode/);
-
-    // chats from before the tool took arguments repeat its old shape
-    expect(JSON.stringify(await git.execute("t6", { action: "log", limit: 5 }))).toContain("agent: write");
-    const [written] = await isomorphicGit.log({ fs, dir: p.root, depth: 1 });
-    await tools.find((t) => t.name === "write_file")!.execute("t7", { path: "apps/roleplay/data/note.txt", content: "it's changed" });
-    await git.execute("t8", { action: "commit", message: "it's a no-op" });
-    expect(JSON.stringify(await git.execute("t9", { action: "restore", path: "apps/roleplay/data/note.txt", commit: written!.oid.slice(0, 8) }))).toContain("restored");
-    expect(fs.readFileSync(path.join(p.root, "apps/roleplay/data/note.txt"), "utf8")).toBe("hi");
+  it("repairs a .git skeleton with no HEAD instead of failing every commit", async () => {
+    const p = bootstrapUserDir(dataDir, "bob");
+    fs.rmSync(path.join(p.root, ".git"), { recursive: true, force: true });
+    fs.mkdirSync(path.join(p.root, ".git", "objects", "pack"), { recursive: true });
+    fs.writeFileSync(path.join(p.root, "note.txt"), "hi");
+    const oid = await commitAll(p.root, "bob", "baseline after repair", false);
+    expect(oid).toBeTruthy();
+    expect(fs.existsSync(path.join(p.root, ".git", "HEAD"))).toBe(true);
+    const [head] = await isomorphicGit.log({ fs, dir: p.root, depth: 1 });
+    expect(head!.commit.message).toContain("baseline after repair");
   });
 });
 

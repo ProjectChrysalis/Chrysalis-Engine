@@ -366,6 +366,171 @@ export function uiPanel(ctx) {
     expect(seen[0]!.source).toBe("app:asker");
   }, 30_000);
 
+  it("llmResponse hooks: sibling patches run in priority order over the committed result", async () => {
+    writePlugin(
+      "asker",
+      { name: "A", version: "1", permissions: ["routes", "llm"], origin: "local" },
+      `export function handleRoute(req, host) {
+        const r = host.llm.results.a;
+        if (r) return { status: 200, json: { text: r.text, json: r.json ?? null, model: r.model, input: r.usage.input } };
+        host.llm.request("a", { messages: [{ role: "user", content: "go" }], assistantPrefill: "Once" });
+        return { __llmPending: true };
+      }`,
+    );
+    writePlugin(
+      "res-low",
+      { name: "L", version: "1", permissions: ["hooks", "llm"], origin: "local", priority: 0 },
+      `export function llmResponse(ctx) {
+        return {
+          text: "[" + ctx.result.text + "]",
+          json: { saw: ctx.request.assistantPrefill },
+          assistantPrefill: "",
+          model: "spoofed",
+          usage: { input: 999, output: 999, cacheRead: 0, cacheWrite: 0, costTotal: 999 },
+        };
+      }`,
+    );
+    writePlugin(
+      "res-high",
+      { name: "H", version: "1", permissions: ["hooks", "llm"], origin: "local", priority: 5 },
+      `export function llmResponse(ctx) {
+        return { text: ctx.result.text + "!", json: { saw: ctx.request.assistantPrefill, other: true } };
+      }`,
+    );
+    const plugins = discoverPlugins(path.join(dir, "plugins"));
+    const asker = plugins.find((p) => p.id === "asker")!;
+    const base = deps();
+    const fakeModels = {
+      generate: async () => ({ text: "hello", model: "fake/model", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, costTotal: 0, priced: false } }),
+    };
+    const res = await runPluginRoute(asker, { method: "POST", path: "/go", query: {}, body: {} }, {
+      ...base,
+      models: fakeModels as never,
+      llmResponseHooks: (self) => collectSiblingLlmHooks(plugins, self, base, "llmResponse"),
+    });
+    const out = res?.json as { text?: string; json?: Record<string, unknown>; model?: string; input?: number } | undefined;
+    // low ran first (brackets), high saw its patch and appended; each hook saw
+    // the request that was sent (assistantPrefill included)
+    expect(out?.text).toBe("[hello]!");
+    expect(out?.json).toEqual({ saw: "Once", other: true });
+    // model identity and usage are measurements, not patchable
+    expect(out?.model).toBe("fake/model");
+    expect(out?.input).toBe(1);
+  }, 30_000);
+
+  it("llmResponse ignores invalid text field types while applying valid patches", async () => {
+    writePlugin("asker", { name: "A", version: "1", permissions: ["routes", "llm"], origin: "local" }, `export function handleRoute(req, host) {
+      if (host.llm.results.a) return { status: 200, json: host.llm.results.a };
+      host.llm.request("a", { messages: [{ role: "user", content: "go" }] });
+      return { __llmPending: true };
+    }`);
+    writePlugin("invalid-result", { name: "R", version: "1", permissions: ["hooks", "llm"], origin: "local" }, `export function llmResponse() { return { text: { bad: true }, reasoning: 42, assistantPrefill: null, json: { ok: true } }; }`);
+    const plugins = discoverPlugins(path.join(dir, "plugins"));
+    const base = deps();
+    const res = await runPluginRoute(plugins.find((p) => p.id === "asker")!, { method: "POST", path: "/go", query: {}, body: {} }, {
+      ...base,
+      models: { generate: async () => ({ text: "good", model: "fake/model", assistantPrefill: "prefix", reasoning: "thought", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, costTotal: 0, priced: false } }) } as never,
+      llmResponseHooks: (self) => collectSiblingLlmHooks(plugins, self, base, "llmResponse"),
+    });
+    expect(res?.json).toMatchObject({ text: "good", reasoning: "thought", assistantPrefill: "prefix", json: { ok: true } });
+  }, 30_000);
+
+  it("streamMuted silences live deltas but leaves the generation abortable", async () => {
+    writePlugin(
+      "asker",
+      { name: "A", version: "1", permissions: ["routes", "llm"], origin: "local" },
+      `export function handleRoute(req, host) {
+        const r = host.llm.results.a;
+        if (r) return { status: 200, json: { text: r.text } };
+        host.llm.request("a", { messages: [{ role: "user", content: "go" }], stream: { chatId: "c1" } });
+        return { __llmPending: true };
+      }`,
+    );
+    writePlugin(
+      "quiet",
+      { name: "Q", version: "1", permissions: ["hooks", "llm"], origin: "local" },
+      `export function llmRequest(ctx) { return { streamMuted: true, systemPrompt: (ctx.request.systemPrompt ?? "") + "+q" }; }`,
+    );
+    const plugins = discoverPlugins(path.join(dir, "plugins"));
+    const asker = plugins.find((p) => p.id === "asker")!;
+    const base = deps();
+    const deltas: string[] = [];
+    const aborts: unknown[] = [];
+    const fakeModels = {
+      generate: async (_req: unknown, onDelta?: (d: string) => void) => {
+        onDelta?.("X");
+        return { text: "done", model: "fake/model", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, costTotal: 0, priced: false } };
+      },
+    };
+    // control: without the request hook the delta is routed live
+    const control = await runPluginRoute(asker, { method: "POST", path: "/go", query: {}, body: {} }, {
+      ...base,
+      models: fakeModels as never,
+      onLlmDelta: (_tag: unknown, d: string) => { deltas.push(d); },
+      abortCtlFor: (tag: unknown) => { aborts.push(tag); return null; },
+    });
+    expect((control?.json as { text?: string } | undefined)?.text).toBe("done");
+    expect(deltas).toEqual(["X"]);
+    deltas.length = 0;
+    aborts.length = 0;
+    const muted = await runPluginRoute(asker, { method: "POST", path: "/go", query: {}, body: {} }, {
+      ...base,
+      models: fakeModels as never,
+      llmHooks: (self) => collectSiblingLlmHooks(plugins, self, base),
+      onLlmDelta: (_tag: unknown, d: string) => { deltas.push(d); },
+      abortCtlFor: (tag: unknown) => { aborts.push(tag); return null; },
+    });
+    expect((muted?.json as { text?: string } | undefined)?.text).toBe("done");
+    // muted: provider deltas stay off the wire; the request still registered
+    // its abort controller so Stop can cancel the generation
+    expect(deltas).toEqual([]);
+    expect(aborts.length).toBe(1);
+  }, 30_000);
+
+  it("streamDecode: live deltas carry the decoded wire text, not the JSON", async () => {
+    writePlugin(
+      "asker",
+      { name: "A", version: "1", permissions: ["routes", "llm"], origin: "local" },
+      `export function handleRoute(req, host) {
+        const r = host.llm.results.a;
+        if (r) return { status: 200, json: { text: r.text } };
+        host.llm.request("a", { messages: [{ role: "user", content: "go" }], stream: { chatId: "c1" } });
+        return { __llmPending: true };
+      }`,
+    );
+    writePlugin(
+      "wire",
+      { name: "W", version: "1", permissions: ["hooks", "llm"], origin: "local" },
+      `export function llmRequest() {
+        return { streamDecode: { fields: ["response"], replace: [{ from: "\\\\n", to: "\\n" }] } };
+      }`,
+    );
+    const plugins = discoverPlugins(path.join(dir, "plugins"));
+    const asker = plugins.find((p) => p.id === "asker")!;
+    const base = deps();
+    const deltas: string[] = [];
+    const seen: Record<string, unknown>[] = [];
+    const wire = '{"response":"line one\\\\nline two"}';
+    const fakeModels = {
+      generate: async (req: Record<string, unknown>, onDelta?: (d: string) => void) => {
+        seen.push(req);
+        for (let cut = 1; cut < wire.length; cut += 4) onDelta?.(wire.slice(cut - 1, cut + 3));
+        return { text: wire, model: "fake/model", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, costTotal: 0, priced: false } };
+      },
+    };
+    const res = await runPluginRoute(asker, { method: "POST", path: "/go", query: {}, body: {} }, {
+      ...base,
+      models: fakeModels as never,
+      llmHooks: (self) => collectSiblingLlmHooks(plugins, self, base),
+      onLlmDelta: (_tag: unknown, d: string) => { deltas.push(d); },
+    });
+    expect((res?.json as { text?: string } | undefined)?.text).toBe(wire);
+    // the decoded value streamed live, token replacement included
+    expect(deltas.join("")).toBe("line one\nline two");
+    // routing fields never reach the provider
+    expect(seen[0]!.streamDecode).toBeUndefined();
+  }, 30_000);
+
   it("runPluginTool: a tool can make a two-phase net call", async () => {
     writePlugin(
       "netty",

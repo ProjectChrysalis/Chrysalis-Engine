@@ -17,16 +17,16 @@
     "build:client": "bun run scripts/build-frontends.ts",
     "dev:shell": "bun run scripts/dev/shell.ts",
     "dev:agent": "bun run scripts/dev/agent.ts",
-    "dist": "bun run scripts/dist.ts"
+    "dist": "bun run scripts/dist.ts",
+    "sandbox:fetch": "bun run scripts/sandbox.ts"
   },
   "dependencies": {
     "@babel/standalone": "^7.29.8",
-    "@earendil-works/pi-agent-core": "^0.85.1",
-    "@earendil-works/pi-ai": "^0.85.1",
+    "@earendil-works/pi-agent-core": "^0.87.1",
+    "@earendil-works/pi-ai": "^0.87.1",
     "@fontsource-variable/inter": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@jitl/quickjs-ng-wasmfile-release-sync": "^0.32.0",
-    "@mayflowergmbh/wasmsh-pyodide": "0.8.0",
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@sebastianwessel/quickjs": "^3.1.0",
     "diff": "8.0.4",

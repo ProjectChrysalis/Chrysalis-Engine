@@ -1,6 +1,6 @@
 /**
  * The agent shell runs ONLY in the user's browser: commands execute inside a
- * WebAssembly sandbox (wasmsh) in a sandboxed, network-less frame on every
+ * WebAssembly shell in a sandboxed, network-less frame on every
  * platform — Windows, macOS, Linux, Android — and never on the host. There is
  * no local execution path: `provider: "off"` just disables the shell.
  */

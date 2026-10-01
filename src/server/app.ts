@@ -31,6 +31,7 @@ import { radiusProvider } from "@earendil-works/pi-ai/providers/radius";
 import type { AuthPrompt, Credential, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { curatedProviders, loadCustomProviders, reservedProviderIds } from "../providers/custom.js";
 import { UserAgent, instructionDocsStamp, listSessions, renameSession, archiveSession, sessionDir, isReasoningLevel, type ReasoningLevel } from "../agent/agent.js";
+import { lastSessionModel, summarizeSession } from "../agent/compact.js";
 import { listConnections, createConnection, updateConnection, deleteConnection, validateConnectionInput, validatePromptFormatInput, readConnections, connectionKeyUsable, type ConnectionInfo } from "../connections.js";
 import { PROMPT_FORMATS, type PromptFormat } from "../providers/prompt-formats.js";
 import {
@@ -42,11 +43,9 @@ import * as assets from "../assets/store.js";
 import { createSandbox, type SandboxRunner } from "../sandbox/index.js";
 import { sandboxConfigOf } from "../config.js";
 import { BrowserSandbox } from "../sandbox/browser.js";
-import { sandboxAsset, sandboxFrameCsp, sandboxVersion, wasmshAsset } from "../sandbox/assets.js";
-import { workspaceFs, type FsOp as WorkspaceFsOp } from "../sandbox/workspace.js";
-import { decodeGitArgs, guardedGitHttp, initNetTokens, issueNetToken, netTokenUser, proxySandboxRequest, readSandboxEpoch, readSandboxSettings, writeSandboxSettings } from "../sandbox/network.js";
-import { SANDBOX_GIT_HOST } from "../sandbox/browser/prelude.js";
-import { GitCliError, runGitArgs } from "../agent/git-cli.js";
+import { sandboxAsset, sandboxFrameCsp, sandboxVersion } from "../sandbox/assets.js";
+import { MAX_SANDBOX_FILE, SANDBOX_HIDDEN, readWorkspaceFile, workspaceFs, writeWorkspaceFile, type FsOp as WorkspaceFsOp } from "../sandbox/workspace.js";
+import { PROXY_ERROR, fsTokenUser, initNetTokens, issueFsToken, issueNetToken, netTokenUser, proxySandboxRequest, readSandboxEpoch, readSandboxSettings, writeSandboxSettings } from "../sandbox/network.js";
 import { log } from "../logger.js";
 import type { EventBus } from "./ws.js";
 import { ensureLookWatcher } from "./look-watch.js";
@@ -125,7 +124,7 @@ function sha256(s: string): string {
 
 /** Route-scoped error with an HTTP status (compact helper throws these). */
 class HttpError extends Error {
-  constructor(readonly status: 400 | 404 | 500 | 503, message: string) {
+  constructor(readonly status: 400 | 404 | 409 | 500 | 503, message: string) {
     super(message);
   }
 }
@@ -219,7 +218,11 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     }
   })();
   const hostAllowed = (hostName: string): boolean =>
-    hostName === "" || hostName === "localhost" || hostName === machineName || IP_LITERAL.test(hostName) || config.allowedHosts.includes(hostName);
+    hostName === "" ||
+    hostName === "localhost" ||
+    hostName === machineName ||
+    IP_LITERAL.test(hostName) ||
+    config.allowedHosts.includes(hostName);
   // CSRF guard for cookie sessions: browsers always send Origin on
   // cross-origin writes; same-origin pages match the request Host, and
   // non-browser bearer clients send no Origin at all — anything else is a
@@ -444,6 +447,9 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       // sibling request patching: an app plugin's llmRequest hook may patch
       // this plugin's model requests (permissions: hooks + llm)
       llmHooks: (self) => collectSiblingLlmHooks(enabledAppPlugins(userPaths(dataDir, u.username).apps, appId, userPaths(dataDir, u.username).settings), self, base),
+      // sibling result patching: the same plugins may post-process what comes
+      // back with llmResponse (same grants)
+      llmResponseHooks: (self) => collectSiblingLlmHooks(enabledAppPlugins(userPaths(dataDir, u.username).apps, appId, userPaths(dataDir, u.username).settings), self, base, "llmResponse"),
     };
   };
   /** The MCP tools one app's generations may call: the engine servers that
@@ -632,6 +638,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     ".png": "image/png",
     ".woff2": "font/woff2",
     ".json": "application/json",
+    ".wasm": "application/wasm",
+    ".zip": "application/zip",
   };
   const serveClientFile = (rel: string, c: Context<AppEnv>) => {
     const full = path.resolve(clientDir, rel);
@@ -643,6 +651,9 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     // forever; index.html and the unhashed public/ files revalidate. Serving
     // the whole tree no-store re-downloaded the entire client on every load.
     c.header("cache-control", IMMUTABLE_NAME.test(full) ? "public, max-age=31536000, immutable" : "no-store");
+    // app frames are cross-origin (opaque origin) and now carry COEP, so
+    // shell assets they load (the bridge, fonts) need a resource policy
+    c.header("cross-origin-resource-policy", "cross-origin");
     // binary-safe: utf8 decoding would corrupt pngs/woff2
     return c.body(new Uint8Array(fs.readFileSync(full)), 200, { "content-type": mime });
   };
@@ -674,23 +685,41 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     }
     return c.body(new Uint8Array(asset.body), 200, headers);
   });
-  // the browser sandbox's code (src/sandbox/browser) and the wasmsh runtime
-  // under a version-scoped path. The sandbox frame is opaque-origin, so its
-  // fetches are cross-origin and credentialless: everything here answers with
-  // CORS open, and serves only these files.
-  app.get("/client/sandbox/wasmsh/*", async (c) => {
-    const rest = c.req.path.slice("/client/sandbox/wasmsh/".length);
-    const slash = rest.indexOf("/");
-    const ver = slash === -1 ? rest : rest.slice(0, slash);
-    if (ver !== (await sandboxVersion())) return c.body("not found", 404);
-    const asset = wasmshAsset(slash === -1 ? "" : rest.slice(slash + 1));
-    if (!asset) return c.body("not found", 404);
-    return c.body(new Uint8Array(asset.body), 200, {
-      "content-type": asset.type,
+  // ---------- the agent sandbox ----------
+  // Every page loads host.js (src/sandbox/browser/host.ts), the broker: it
+  // syncs the workspace, holds the tokens and enforces timeouts. Commands run
+  // in frame.html, an opaque-origin sandboxed frame whose worker loads the
+  // runtime from /client/sandbox/r/<version>/: no cookies, no storage, and
+  // connect-src limited to the runtime's own files, the network proxy and the
+  // workspace file route, each of which answers only to a token.
+  const sandboxDir = process.env.CHRYSALIS_SANDBOX_DIR ?? path.join(resourcesDir(), "prebuilt", "sandbox-k");
+  let runtimeInfo: { mtime: number; version: string | null } = { mtime: -1, version: null };
+  /** The runtime release on disk (sources.json), re-read when it changes. */
+  const sandboxRuntimeVersion = (): string | null => {
+    const file = path.join(sandboxDir, "sources.json");
+    try {
+      const mtime = fs.statSync(file).mtimeMs;
+      if (mtime !== runtimeInfo.mtime) {
+        const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { runtime?: { version?: unknown } };
+        runtimeInfo = { mtime, version: typeof parsed.runtime?.version === "string" ? parsed.runtime.version : null };
+      }
+    } catch {
+      runtimeInfo = { mtime: -1, version: null };
+    }
+    return runtimeInfo.version;
+  };
+  app.get("/client/sandbox/frame.html", async (c) => {
+    const origin = frameOriginOf(c);
+    const runtime = sandboxRuntimeVersion();
+    if (!runtime) return c.body("the sandbox runtime is not installed (bun run sandbox:fetch)", 503);
+    const entry = `/client/sandbox/r/${encodeURIComponent(runtime)}/runtime/session.mjs`;
+    const html = `<!doctype html><meta charset="utf-8"><title>sandbox</title><script src="/client/sandbox/frame.js?v=${await sandboxVersion()}" data-runtime="${entry}"></script>`;
+    return c.body(html, 200, {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-cache",
       "x-content-type-options": "nosniff",
-      "cross-origin-resource-policy": "cross-origin",
-      "access-control-allow-origin": "*",
-      "cache-control": "public, max-age=604800, immutable",
+      "content-security-policy": sandboxFrameCsp(origin),
+      "connection-allowlist": FRAME_CONNECTION_ALLOWLIST,
     });
   });
   app.get("/client/sandbox/:file", async (c) => {
@@ -706,13 +735,34 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       "access-control-allow-origin": "*",
       "cache-control": c.req.query("v") === (await sandboxVersion()) ? "public, max-age=31536000, immutable" : "no-cache",
     };
-    if (name === "frame.html") {
-      headers["content-security-policy"] = sandboxFrameCsp(frameOriginOf(c));
-      headers["connection-allowlist"] = FRAME_CONNECTION_ALLOWLIST;
-      headers["cache-control"] = "no-store";
-    }
     return c.body(new Uint8Array(asset.body), 200, headers);
   });
+  // The runtime's files, under the release they belong to: a version in the
+  // path lets the browser keep compiled wasm across loads, and a page still
+  // holding an older release gets a 404 rather than a mix of the two.
+  const SANDBOX_SERVED = new Set(["runtime", "vendor", "LICENSE", "sources.json"]);
+  app.get("/client/sandbox/r/:version/*", (c) => {
+    const version = decodeURIComponent(c.req.param("version"));
+    if (version !== sandboxRuntimeVersion()) return c.body("stale sandbox runtime", 404, { "access-control-allow-origin": "*" });
+    const rel = c.req.path.slice(`/client/sandbox/r/${c.req.param("version")}/`.length);
+    const root = path.resolve(sandboxDir);
+    const first = rel.replace(/^\/+/, "").split("/")[0] ?? "";
+    if (!SANDBOX_SERVED.has(first)) return c.body("not found", 404);
+    const full = path.resolve(root, rel);
+    if (full !== root && !full.startsWith(root + path.sep)) return c.body("not found", 404);
+    if (!fs.existsSync(full) || fs.statSync(full).isDirectory()) return c.body("not found", 404);
+    const ext = path.extname(full);
+    const mime = ext === ".mjs" || ext === ".js" ? "text/javascript; charset=utf-8" : extMimes[ext] ?? "application/octet-stream";
+    return c.body(new Uint8Array(fs.readFileSync(full)), 200, {
+      "content-type": mime,
+      "x-content-type-options": "nosniff",
+      "cross-origin-resource-policy": "cross-origin",
+      "access-control-allow-origin": "*",
+      // a local build (CHRYSALIS_SANDBOX_DIR) changes under the same version
+      "cache-control": process.env.CHRYSALIS_SANDBOX_DIR ? "no-cache" : "public, max-age=31536000, immutable",
+    });
+  });
+
   app.get("/client/*", (c) => serveClientFile(c.req.path.slice("/client/".length), c));
 
   // ---------- agent chat UI (client-agent/dist, framed by the launcher tab) ----------
@@ -759,81 +809,73 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     return { ok: true, bytes: merged };
   };
 
-  // ---------- agent sandbox internet (before auth: the frame has no session) ----------
-  // The sandbox frame is opaque-origin and cookieless; it authenticates with
-  // the capability token its host page fetched, and every request is made
-  // engine-side behind the local network guard.
-  app.options("/v1/sandbox/net", () =>
-    new Response(null, {
-      status: 204,
-      headers: {
-        "access-control-allow-origin": "*",
-        "access-control-allow-methods": "POST",
-        "access-control-allow-headers": "*",
-        "access-control-max-age": "600",
-      },
-    }),
-  );
-  /** git from the sandbox shell (SHELL_PRELUDE): the arguments come in
-   *  the body, stdout goes back as the body, stderr and the exit status as
-   *  headers. The shell's cwd picks the folder pathspecs are relative to. */
-  const sandboxGit = async (c: Context<AppEnv>, username: string): Promise<Response> => {
-    const headers: Record<string, string> = { "access-control-allow-origin": "*", "access-control-expose-headers": "*", "content-type": "text/plain; charset=utf-8" };
-    const reply = (stdout: string, stderr: string, exit: number) =>
-      c.body(stdout, 200, { ...headers, "x-git-exit": String(exit), ...(stderr ? { "x-git-stderr": Buffer.from(stderr.slice(0, 4000)).toString("base64") } : {}) });
-    const capped = await readCappedBody(c, 256 * 1024);
-    if (!capped.ok) return reply("", `git: ${capped.error}\n`, 128);
-    let forwarded: [string, string][] = [];
-    try {
-      forwarded = JSON.parse(decodeURIComponent(c.req.header("x-sandbox-headers") ?? "[]")) as [string, string][];
-    } catch { /* no cwd: the workspace root */ }
-    const pwd = forwarded.find((h) => Array.isArray(h) && String(h[0]).toLowerCase() === "x-git-cwd")?.[1] ?? "/workspace";
-    const norm = String(pwd).replace(/\/+$/, "");
-    if (norm !== "/workspace" && !norm.startsWith("/workspace/")) {
-      return reply("", "fatal: not a git repository: the workspace repository is /workspace\n", 128);
-    }
-    try {
-      const out = await runGitArgs(
-        {
-          dir: userPaths(dataDir, username).root,
-          username,
-          readOnly: false,
-          cwd: norm.slice("/workspace".length).replace(/^\//, ""),
-          http: readSandboxSettings(userPaths(dataDir, username).sandbox).internet ? guardedGitHttp : undefined,
-        },
-        decodeGitArgs(new TextDecoder().decode(capped.bytes)),
-      );
-      return reply(out && !out.endsWith("\n") ? `${out}\n` : out, "", 0);
-    } catch (e) {
-      return reply("", `${e instanceof GitCliError ? "" : "fatal: "}${(e as Error).message}\n`, e instanceof GitCliError ? 1 : 128);
-    }
-  };
-  app.post("/v1/sandbox/net", async (c) => {
-    const cors = { "access-control-allow-origin": "*" };
-    const auth = netTokenUser(c.req.header("x-sandbox-token"));
+  /** The network proxy for the sandbox runtime: the guest's fetch URL is a
+   *  prefix (`/v1/sandbox/proxy?token=<t>&url=<encoded-target>`), so there are
+   *  no custom headers to attach. Auth is the token in the query; without one
+   *  the route stays closed unless CHRYSALIS_SANDBOX_OPEN_PROXY=1 (tests). */
+  const sandboxProxy = async (c: Context<AppEnv>): Promise<Response> => {
+    const cors = { "access-control-allow-origin": "*", "access-control-expose-headers": "*", ...PROXY_ERROR };
+    const token = c.req.query("token") ?? c.req.header("x-sandbox-token");
+    const auth = netTokenUser(token);
     const user = auth ? users.get(auth.username) : undefined;
-    // a token from before internet was switched off carries an older epoch
-    if (!auth || !user || user.enabled === false || auth.epoch !== readSandboxEpoch(userPaths(dataDir, auth.username).sandbox)) {
+    const open = process.env.CHRYSALIS_SANDBOX_OPEN_PROXY === "1";
+    if (!open && (!auth || !user || user.enabled === false || auth.epoch !== readSandboxEpoch(userPaths(dataDir, auth.username).sandbox))) {
       return c.body("sandbox network: not signed in\n", 401, cors);
     }
-    const target = c.req.header("x-sandbox-url") ?? "";
-    if (URL.canParse(target) && new URL(target).hostname === SANDBOX_GIT_HOST) return sandboxGit(c, auth.username);
-    if (!readSandboxSettings(userPaths(dataDir, auth.username).sandbox).internet) {
+    if (!open && auth && user && !readSandboxSettings(userPaths(dataDir, auth.username).sandbox).internet) {
       return c.body("sandbox network: internet access is off (Settings, Agent)\n", 403, cors);
     }
+    const target = c.req.query("url") ?? "";
+    if (!target) return c.body("sandbox network: missing url\n", 400, cors);
     const capped = await readCappedBody(c, 16 * 1024 * 1024);
     if (!capped.ok) return c.body(`sandbox network: ${capped.error}\n`, 413, cors);
-    let headers: [string, string][] = [];
-    try {
-      const raw = JSON.parse(decodeURIComponent(c.req.header("x-sandbox-headers") ?? "[]")) as unknown;
-      if (Array.isArray(raw)) headers = raw.filter((h): h is [string, string] => Array.isArray(h) && typeof h[0] === "string" && typeof h[1] === "string");
-    } catch { /* no forwarded headers */ }
+    const headers: [string, string][] = [];
+    const drop = new Set(["host", "connection", "content-length", "accept-encoding", "origin", "referer", "cookie", "te", "trailer", "upgrade", "keep-alive"]);
+    for (const [name, value] of Object.entries(c.req.header())) {
+      if (value === undefined) continue;
+      const lower = name.toLowerCase();
+      // headers a browser request may not carry (User-Agent, Cookie,
+      // Referer) arrive prefixed; the page's own copies are dropped
+      if (lower.startsWith("x-chrysalis-h-")) headers.push([lower.slice("x-chrysalis-h-".length), value]);
+      else if (!drop.has(lower) && !lower.startsWith("sec-")) headers.push([name, value]);
+    }
     return proxySandboxRequest({
-      url: c.req.header("x-sandbox-url") ?? "",
-      method: (c.req.header("x-sandbox-method") ?? "GET").toUpperCase(),
+      url: target,
+      method: (c.req.method ?? "GET").toUpperCase(),
       headers,
       body: capped.bytes,
     });
+  };
+  app.get("/v1/sandbox/proxy", sandboxProxy);
+  app.post("/v1/sandbox/proxy", sandboxProxy);
+  app.put("/v1/sandbox/proxy", sandboxProxy);
+  app.patch("/v1/sandbox/proxy", sandboxProxy);
+  app.delete("/v1/sandbox/proxy", sandboxProxy);
+  // The frame is cross-origin, so a request with its own headers (curl -H,
+  // a JSON body) is preflighted. The token is still what authorizes it.
+  app.options("/v1/sandbox/proxy", (c) =>
+    c.body(null, 204, {
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET, HEAD, POST, PUT, PATCH, DELETE",
+      "access-control-allow-headers": c.req.header("access-control-request-headers") ?? "*",
+      "access-control-max-age": "600",
+    }),
+  );
+
+  /** A workspace file for the sandbox frame, read the first time a command
+   *  needs it. The frame is cookieless; the token it holds reads the user's
+   *  workspace under the sandbox mount rules and nothing else. */
+  app.get("/v1/sandbox/file", (c) => {
+    const headers = { "access-control-allow-origin": "*", "cache-control": "no-store", "x-content-type-options": "nosniff" };
+    const username = fsTokenUser(c.req.query("token"));
+    const user = username ? users.get(username) : undefined;
+    if (!username || !user || user.enabled === false) return c.body("not signed in", 401, headers);
+    try {
+      const bytes = readWorkspaceFile(userPaths(dataDir, username).root, c.req.query("path") ?? "");
+      return c.body(new Uint8Array(bytes), 200, { ...headers, "content-type": "application/octet-stream" });
+    } catch (e) {
+      return c.body((e as Error).message, 404, headers);
+    }
   });
 
   // ---------- sign-in (user picker + optional password) ----------
@@ -1336,8 +1378,9 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const u = c.get("user");
     const file = c.get("paths").sandbox;
     const { internet } = readSandboxSettings(file);
-    // the token is issued with internet off too: the shell's git rides it
-    return c.json({ internet, token: issueNetToken(u.username, readSandboxEpoch(file)) });
+    // the net token is issued with internet off too: the proxy itself says
+    // why a request is refused
+    return c.json({ internet, token: issueNetToken(u.username, readSandboxEpoch(file)), fsToken: issueFsToken(u.username), hidden: SANDBOX_HIDDEN });
   });
 
   // Browser sandbox host bridge: heartbeat (registration + liveness), run
@@ -1345,10 +1388,23 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   // another provider there is no browser host, and these answer plainly.
   app.post("/v1/sandbox/host", async (c) => {
     if (!(sandbox instanceof BrowserSandbox)) return c.json({ error: "this instance does not use the browser sandbox" }, 409);
-    const body = await c.req.json<{ host?: unknown; ready?: unknown }>().catch(() => ({}) as { host?: unknown; ready?: unknown });
+    const body = await c.req
+      .json<{ host?: unknown; ready?: unknown; version?: unknown; error?: unknown; gone?: unknown }>()
+      .catch(() => ({}) as { host?: unknown; ready?: unknown; version?: unknown; error?: unknown; gone?: unknown });
     if (typeof body.host !== "string" || !/^[a-z0-9]{8,64}$/.test(body.host)) return c.json({ error: "host required" }, 400);
-    sandbox.hello(c.get("user").username, body.host, body.ready === true);
-    return c.json({ ok: true });
+    if (body.gone === true) {
+      sandbox.forget(c.get("user").username, body.host);
+      return c.json({ ok: true });
+    }
+    // A page loaded before the engine rebuilt its host bundle keeps running the
+    // old code; it can never mount the workspace, so tell it (and the run path)
+    // that only a reload helps.
+    const hostVersion = typeof body.version === "string" ? body.version : null;
+    const current = await sandboxVersion();
+    const stale = hostVersion !== null && hostVersion !== current;
+    const error = typeof body.error === "string" ? body.error.slice(0, 300) : null;
+    sandbox.hello(c.get("user").username, body.host, body.ready === true, stale, error);
+    return c.json(stale ? { ok: true, stale: true, version: current } : { ok: true });
   });
 
   app.post("/v1/sandbox/result", async (c) => {
@@ -1383,6 +1439,12 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   };
   app.post("/v1/sandbox/fs", sandboxFsHandler);
   app.put("/v1/sandbox/fs", sandboxFsHandler);
+  // one large file, raw: packs and big data files skip base64 and batching
+  app.put("/v1/sandbox/fs/file", async (c) => {
+    const capped = await readCappedBody(c, MAX_SANDBOX_FILE);
+    if (!capped.ok) return c.json({ error: capped.error }, 413);
+    return c.json({ results: [writeWorkspaceFile(c.get("paths").root, c.req.query("path") ?? "", capped.bytes)] });
+  });
 
   // ---------- image generation (pi-ai images API; creds never leave) ----------
   app.get("/v1/images/models", async (c) => {
@@ -2245,9 +2307,11 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
             : 0;
       // count cached tokens too — they're part of the context the model re-reads
       const nextContext = result.usage ? result.usage.input + result.usage.cacheRead + result.usage.output : 0;
-      if (limit > 0 && nextContext >= limit && !result.error) {
+      // an overflow the in-run retry could not absorb: without compacting,
+      // every next message in this session would be refused the same way
+      if ((limit > 0 && nextContext >= limit && !result.error) || result.contextOverflow) {
         try {
-          await compactSession(u, agent.sessionId, { auto: true });
+          await compactSession(u, agent.sessionId, { auto: true, model: agent.model.ref });
           autoCompacted = true;
           bus.emit(u.username, "agent_event", { sessionId: agent.sessionId, ev: { type: "autocompact" } });
         } catch (e) {
@@ -2408,44 +2472,58 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   // History stays in the file (the UI keeps it scrollable behind a divider);
   // the model's context restarts from the summary (loadSessionDialogue drops
   // everything before the marker).
-  const compactSession = async (u: UserRecord, id: string, opts: { auto?: boolean } = {}): Promise<{ summary: string; runsBefore: number }> => {
+  const compactSession = async (u: UserRecord, id: string, opts: { auto?: boolean; model?: string } = {}): Promise<{ summary: string; runsBefore: number }> => {
     const p = userPaths(dataDir, u.username);
     const file = path.join(sessionDir(p), `${id}.jsonl`);
     if (!fs.existsSync(file)) throw new HttpError(404, "session not found");
     const pre = fs.readFileSync(file, "utf8");
-    const runs = (readRuns(p, id) ?? []).filter((r) => r.type === "run");
-    const lines: string[] = [];
-    for (const r of runs) {
-      if (typeof r.user === "string" && r.user.trim()) lines.push(`User: ${r.user}`);
-      if (typeof r.assistant === "string" && r.assistant.trim()) lines.push(`Assistant: ${r.assistant}`);
-    }
-    const transcript = lines.join("\n\n").slice(0, 100_000);
-    if (!transcript.trim()) throw new HttpError(400, "nothing to compact");
+    const records = readRuns(p, id) ?? [];
+    const runs = records.filter((r) => r.type === "run");
 
+    // Use an explicit choice or the recorded session model, including after
+    // restart. Legacy sessions without model metadata can use a live agent;
+    // only when neither is known does normal account model selection apply.
+    let model = opts.model ?? lastSessionModel(records);
+    if (!model) {
+      for (const [key, a] of agentInstances) if (key.startsWith(`${u.username}:${id}:`)) model = a.model.ref;
+    }
     let agent: UserAgent;
     try {
-      agent = await getAgent(u, id);
+      agent = await getAgent(u, id, model);
     } catch (e) {
       if (/no models configured/i.test((e as Error).message)) throw new HttpError(503, (e as Error).message);
       throw e;
     }
+    if (model && model.includes("/") && agent.model.ref !== model) throw new HttpError(503, "the session model is unavailable; choose a model for compaction");
     const runKey = `${u.username}:${agent.sessionId}`;
+    if (activeRuns.has(runKey)) throw new HttpError(409, "stop the current run before compacting this session");
     activeRuns.set(runKey, agent);
     try {
-      const result = await agent.run(
-        `Summarize the conversation below into a compact session memory. Preserve: what the user wants, decisions made, every file path created or edited, plugin/app/MCP state, and open threads / next steps. Write it as a self-contained briefing a coding agent can continue from, in plain text with short sections. No preamble, no commentary about summarizing.\n\n<conversation>\n${transcript}\n</conversation>`,
-        {
-          onDelta: (d) => bus.emit(u.username, "agent_delta", { sessionId: agent.sessionId, delta: d }),
-          onEvent: (ev) => bus.emit(u.username, "agent_event", { sessionId: agent.sessionId, ev }),
+      // a one-shot call, NOT a run of the session agent: the session is what
+      // no longer fits, so its history must not ride along (see compact.ts)
+      const svc = getModels(u);
+      const { ref, contextWindow, maxTokens } = agent.model;
+      const folded = await summarizeSession({
+        model: { contextWindow, maxTokens },
+        records,
+        generate: async (prompt, max) => {
+          const res = await svc.generate(
+            { messages: [{ role: "user", content: prompt }], model: ref, sessionId: `${id}-compact`, presetParams: { max_tokens: max }, source: "agent-compact" },
+            (d) => bus.emit(u.username, "agent_delta", { sessionId: agent.sessionId, delta: d }),
+          );
+          if (res.error) throw new HttpError(500, res.error);
+          return res.text;
         },
-      );
-      if (result.error) throw new HttpError(500, result.error);
-      const summary = result.finalText.trim();
-      if (!summary) throw new HttpError(500, "compaction produced no summary (check that a model is configured)");
-      // keep prior history, append the marker; the summarization run that
-      // agent.run persisted is dropped (it would duplicate the summary)
-      const rec: { type: "compact"; at: number; summary: string; auto?: boolean } = {
+      }).catch((e: Error) => {
+        if (e instanceof HttpError) throw e;
+        throw new HttpError(/nothing to compact/.test(e.message) ? 400 : 500, e.message);
+      });
+      if (folded.droppedRuns) log.warn(`[agent] compact ${u.username}/${id}: ${folded.droppedRuns} oldest runs left out (too long to fold)`);
+      const summary = folded.summary;
+      // keep prior history, append the marker
+      const rec: { type: "compact"; at: number; model: string; summary: string; auto?: boolean } = {
         type: "compact",
+        model: ref,
         at: Date.now(),
         summary,
         ...(opts.auto ? { auto: true } : {}),
@@ -2466,11 +2544,13 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const id = c.req.param("id");
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id)) return c.json({ error: "invalid sessionId" }, 400);
     try {
-      const r = await compactSession(u, id);
+      const body = await c.req.json<{ model?: unknown }>().catch(() => null);
+      if (body?.model !== undefined && (typeof body.model !== "string" || body.model.length > 200 || !/^[^\s/]+\/[^\s]+$/.test(body.model))) return c.json({ error: "model must be provider/model" }, 400);
+      const r = await compactSession(u, id, typeof body?.model === "string" ? { model: body.model } : {});
       return c.json({ sessionId: id, ...r });
     } catch (e) {
       const status = e instanceof HttpError ? e.status : 500;
-      return c.json({ error: (e as Error).message }, status as 400 | 404 | 500 | 503);
+      return c.json({ error: (e as Error).message }, status as 400 | 404 | 409 | 500 | 503);
     }
   });
 

@@ -96,9 +96,23 @@ const builder = await buildBuilderForRelease();
 writePrebuilt(path.join(resources, "prebuilt", "builder"), builder);
 const sandbox = await buildSandboxForRelease();
 writePrebuilt(path.join(resources, "prebuilt", "sandbox"), sandbox);
-for (const part of ["browser-worker.js", "package.json", "lib", "assets"]) {
-  fs.cpSync(path.join(sandbox.wasmshDir, part), path.join(resources, "prebuilt", "wasmsh", part), { recursive: true });
+// the pinned, checksummed runtime release (scripts/sandbox.ts), or a local
+// build when CHRYSALIS_SANDBOX_DIR points at one
+if (!process.env.CHRYSALIS_SANDBOX_DIR) run(process.execPath, ["run", "scripts/sandbox.ts"]);
+const sandboxK = process.env.CHRYSALIS_SANDBOX_DIR ?? path.join(repo, "prebuilt", "sandbox-k");
+if (!fs.existsSync(path.join(sandboxK, "runtime", "session.mjs"))) throw new Error(`the sandbox runtime is missing from ${sandboxK}`);
+const sandboxDest = path.join(resources, "prebuilt", "sandbox-k");
+for (const part of ["runtime", "vendor", "LICENSE", "sources.json"]) {
+  fs.cpSync(path.join(sandboxK, part), path.join(sandboxDest, part), { recursive: true });
 }
+const runtimeVersion = (JSON.parse(fs.readFileSync(path.join(sandboxDest, "sources.json"), "utf8")) as { runtime: { version: string } }).runtime.version;
+fs.writeFileSync(path.join(resources, "SANDBOX-NOTICE.txt"),
+  `Chrysalis Sandbox ${runtimeVersion} is distributed under GPL-2.0-only.\n` +
+  `Its runtime files and license are in prebuilt/sandbox-k/.\n` +
+  `Source and build materials: https://github.com/ProjectChrysalis/chrysalis-sandbox/releases/download/v${runtimeVersion}/sandbox-${runtimeVersion}-sources.zip\n` +
+  `Component notices: prebuilt/sandbox-k/sources.json and the vendor license files.\n` +
+  `The engine retains its AGPL-3.0-only license; runtime files run in a separate browser worker.\n`,
+);
 console.log(`builder ${builder.version}, sandbox ${sandbox.version}`);
 
 // ---------- engine bundles ----------

@@ -2,6 +2,7 @@ import { afterEach, describe, it, expect, beforeEach } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { UserModelService } from "../src/models.js";
 import { defaultInstanceConfig } from "../src/config.js";
@@ -49,7 +50,7 @@ describe("UserModelService message construction (regression: assistant history)"
     let seen: { systemPrompt?: string; roles: string[]; contents: string[] } | null = null;
     handle.setResponses([(context) => {
       seen = {
-        ...(context.systemPrompt !== undefined ? { systemPrompt: context.systemPrompt } : {}),
+        systemPrompt: getCurrentSystemPrompt(context.messages),
         roles: context.messages.map((m) => m.role),
         contents: context.messages.map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))),
       };
@@ -72,11 +73,12 @@ describe("UserModelService message construction (regression: assistant history)"
 
     const got = seen as unknown as { systemPrompt?: string; roles: string[]; contents: string[] };
     expect(got.systemPrompt).toBe("SYS-A\n\nSYS-B");
+    // the leading system run became the transcript's leading system message;
     // the two later system entries did not move to the front and did not
     // vanish: they sit exactly where the caller put them, spoken as the user
-    expect(got.roles).toEqual(["user", "assistant", "user", "user", "user"]);
-    expect(got.contents[2]).toBe("AT-DEPTH");
-    expect(got.contents[4]).toBe("POST-HISTORY");
+    expect(got.roles).toEqual(["system", "user", "assistant", "user", "user", "user"]);
+    expect(got.contents[3]).toBe("AT-DEPTH");
+    expect(got.contents[5]).toBe("POST-HISTORY");
   }, 20_000);
 
   it("tool loop: executes tools host-side and returns final text + trace", async () => {
@@ -516,4 +518,53 @@ describe("image models served on a dedicated images endpoint", () => {
       stub.restore();
     }
   }, 30_000);
+});
+
+describe("app-requested prompt cache (GenerateRequest.cache)", () => {
+  it("retention rides the stream call; depth adds the payload rewrite on Anthropic transports", async () => {
+    const svc = makeService();
+    const models = svc.models as unknown as { streamSimple: (...args: unknown[]) => unknown };
+    let captured: { cacheRetention?: string; onPayload?: (p: unknown) => unknown } | null = null;
+    models.streamSimple = (...args: unknown[]) => {
+      captured = args[2] as typeof captured;
+      throw new Error("stream stubbed");
+    };
+    const claude = {
+      id: "claude-test", provider: "custom", api: "anthropic-messages", baseUrl: "https://example.test",
+      reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 0, maxTokens: 0,
+    };
+    const gen = (svc as unknown as { generateModel: (m: unknown, r: unknown) => Promise<unknown> }).generateModel.bind(svc);
+    await expect(gen(claude, {
+      messages: [{ role: "user", content: "hi" }],
+      cache: { depth: 0, retention: "long" },
+    })).rejects.toThrow("stream stubbed");
+    expect(captured!.cacheRetention).toBe("long");
+    expect(typeof captured!.onPayload).toBe("function");
+    const payload: Record<string, unknown> = { messages: [{ role: "user", content: "hi" }] };
+    expect(captured!.onPayload!(payload)).toBe(payload);
+    const marked = ((payload.messages as Record<string, unknown>[])[0]!.content as Record<string, unknown>[])[0]!;
+    expect(marked.cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  it("a model without marker support keeps only the retention choice", async () => {
+    const svc = makeService();
+    const handle = fauxProvider({ models: [{ id: "faux-cache" }] });
+    handle.setResponses([fauxAssistantMessage("OK")]);
+    svc.models.setProvider(handle.provider);
+    let captured: { cacheRetention?: string; onPayload?: unknown } | null = null;
+    const models = svc.models as unknown as { streamSimple: (...args: unknown[]) => unknown };
+    const original = models.streamSimple.bind(models);
+    models.streamSimple = (...args: unknown[]) => {
+      captured = args[2] as typeof captured;
+      return original(...args);
+    };
+    await svc.generate({
+      model: "faux/faux-cache",
+      messages: [{ role: "user", content: "hi" }],
+      cache: { depth: 0, retention: "long" },
+    });
+    expect(captured!.cacheRetention).toBe("long");
+    expect(captured!.onPayload).toBeUndefined();
+  });
 });

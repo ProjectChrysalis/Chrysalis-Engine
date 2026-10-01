@@ -27,3 +27,6 @@ dist/
 Thumbs.db
 *.tsbuildinfo
 coverage/
+
+# fetched sandbox release (bun run sandbox:fetch)
+/prebuilt/
