@@ -12,6 +12,7 @@ import { radiusProvider } from "@earendil-works/pi-ai/providers/radius";
 import { loadCustomProviders, curatedProviders, buildProvider, reservedProviderIds, isLocalEndpoint, abortLocalGeneration, type CredentialWithBinding } from "./providers/custom.js";
 import { readConnections, authTarget, connectionKeyUsable, readAuth } from "./connections.js";
 import { formatFromModelName, formatFromTemplate, parsePromptFormat, promptFormatById, renderPrompt, stopStrings, type PromptFormat } from "./providers/prompt-formats.js";
+import { cacheStreamOptions, type CacheRequest } from "./providers/prompt-cache.js";
 import { log } from "./logger.js";
 import { llmLogRequest, llmLogResult, llmLogError, llmLogTool } from "./llm-logger.js";
 import type { UserPaths } from "./paths.js";
@@ -146,6 +147,16 @@ export interface GenerateRequest {
      *  other APIs ignore unknown keys. */
     params?: Record<string, unknown>;
   };
+  /**
+   * Prompt cache placement and window. `depth` pins the history breakpoint a
+   * set number of role runs back (plus one two runs deeper) for callers whose
+   * prompt tail changes every turn; transports that cache prefixes on their
+   * own ignore it. `retention` picks the short window, the endpoint's
+   * extended one where it has a switch, or "none" to drop the markers and
+   * cache hints (providers that cache automatically stay automatic).
+   * Omitted = provider default.
+   */
+  cache?: CacheRequest;
   /** Opt-in tool calling (SPEC §5.3): tools exposed to the model + executor. */
   tools?: PiTool[];
   executeTool?: (name: string, args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }>;
@@ -829,6 +840,9 @@ export class UserModelService {
     // gateway, the routing/caching session headers.
     const sessionId = req.sessionId ?? uuidv7();
     const sessionHeaders = opencodeSessionHeaders(model, sessionId);
+    // app-requested cache behavior: retention for every provider, explicit
+    // breakpoint placement for the transports that take markers
+    const cacheOptions = req.cache ? cacheStreamOptions(model, req.cache) : {};
     // text-completion connections never reach pi-ai: the chat turns flatten
     // into a single prompt and stream back through the same callbacks
     if (this.textCompletions.has(model.provider)) {
@@ -1019,6 +1033,7 @@ export class UserModelService {
       roundThinkStart = 0;
       roundThinkEnd = 0;
       const stream = this.models.streamSimple(model, context, {
+        ...cacheOptions,
         ...(reasoningLevel && reasoningLevel !== "off" ? { reasoning: reasoningLevel } : {}),
         ...(req.thinkingBudget && req.thinkingBudget > 0 && reasoningLevel && reasoningLevel !== "off"
           ? ({ thinkingBudgets: { [BUDGET_KEY[reasoningLevel ?? ""] ?? "medium"]: req.thinkingBudget } } as never)
@@ -1093,6 +1108,7 @@ export class UserModelService {
     // exhausted rounds: do one final call WITHOUT tools to force a text answer
     const context: Context = { systemPrompt, messages };
     const stream = this.models.streamSimple(model, context, {
+      ...cacheOptions,
       ...(req.signal ? ({ signal: req.signal } as never) : {}),
       sessionId,
       ...(sessionHeaders ? { headers: sessionHeaders } : {}),

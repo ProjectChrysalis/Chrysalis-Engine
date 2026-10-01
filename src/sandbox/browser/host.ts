@@ -1,11 +1,16 @@
 /**
- * Sandbox host, loaded by the shell (/client/sandbox/host.js). It owns the
- * workspace sync and drives the wasm sandbox runtime directly in a worker:
- * no iframe, no SharedArrayBuffer, no COOP/COEP. Before every run it pulls
- * changed files from the engine, passes the workspace into the runtime, and
- * writes changed files back after.
+ * Sandbox host, loaded by the shell (/client/sandbox/host.js). It is the
+ * broker between the engine and the sandbox frame: it lists the workspace,
+ * tells the runtime what changed since its last command, hands it the
+ * tokens it fetches with, enforces the time limit, and writes the files a
+ * command changed back through the engine.
  *
- * The runtime is served with the sandbox files under /client/sandbox/k/.
+ * Commands run in /client/sandbox/frame.html: a sandboxed, opaque-origin
+ * frame with no cookies and no storage, whose worker hosts the runtime. The
+ * runtime keeps its filesystem between commands and reads file contents on
+ * first use, so a command costs only what it touches. A command that runs
+ * past its limit takes the frame down with it; the next one starts a fresh
+ * frame from the workspace on disk.
  */
 
 declare const __SANDBOX_VERSION__: string;
@@ -13,22 +18,36 @@ declare const __SANDBOX_VERSION__: string;
 const VERSION = typeof __SANDBOX_VERSION__ === "string" ? __SANDBOX_VERSION__ : "dev";
 const HOST_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
 const HEARTBEAT_MS = 15_000;
-const EXEC_WORKER_URL = "/client/sandbox/k/runtime/exec-worker.mjs";
+/** Files at most this big ride a batched JSON write; larger ones go raw. */
+const INLINE_WRITE = 1024 * 1024;
+const BATCH_BYTES = 8 * 1024 * 1024;
+const BATCH_FILES = 200;
 
 interface SandboxConfig {
   internet: boolean;
   token: string | null;
+  fsToken: string | null;
+  hidden: string[];
 }
 
-interface ExecReply {
+interface RunResult {
   exitCode: number | null;
   stdout: string;
   stderr: string;
-  files: Record<string, Uint8Array>;
-  scratch: Record<string, Uint8Array>;
-  wallMs: number;
-  runtime?: string;
+  writes: [string, Uint8Array][];
+  deletes: string[];
+  runtime?: string | null;
 }
+
+interface PathResult {
+  path: string;
+  ok: boolean;
+  size?: number;
+  mtime?: number;
+  error?: string;
+}
+
+type Meta = [number, number];
 
 const api = (path: string, init?: RequestInit) =>
   fetch(path, { credentials: "same-origin", ...init, headers: { "content-type": "application/json", ...(init?.headers as Record<string, string> | undefined) } }).then(async (r) => {
@@ -59,103 +78,102 @@ function ensureBus(): void {
   open();
 }
 
-// ---------- workspace sync ----------
-type Meta = [number, number];
+// ---------- the frame ----------
+class SandboxFrame {
+  private iframe: HTMLIFrameElement;
+  private port: MessagePort | null = null;
+  private onWindowMessage: (e: MessageEvent) => void;
+  private waiting = new Map<number, (r: RunResult | { fatal: string }) => void>();
+  private seq = 0;
+  /** Resolves with the runtime version once it can run commands. */
+  ready: Promise<string | null>;
+  dead = false;
+  /** What this frame's runtime has been told about the workspace. */
+  known = new Map<string, Meta>();
+  fresh = true;
 
-class Workspace {
-  private host = new Map<string, Meta>();
-  private files = new Map<string, Uint8Array>();
-  ready = false;
-
-  /** Engine-side tree -> local contents map. Reads only what changed. */
-  async pull(): Promise<void> {
-    const tree = (await api("/v1/sandbox/fs", { method: "POST", body: JSON.stringify({ op: "tree" }) })) as {
-      tree?: { files: { path: string; size: number; mtime: number }[]; truncated: boolean };
-    };
-    const next = new Map<string, Meta>();
-    for (const f of tree.tree?.files ?? []) next.set(f.path, [f.size, f.mtime]);
-    const changed: string[] = [];
-    for (const [rel, meta] of next) {
-      const cur = this.host.get(rel);
-      if (!cur || cur[0] !== meta[0] || cur[1] !== meta[1]) changed.push(rel);
-    }
-    const removed = [...this.host.keys()].filter((rel) => !next.has(rel));
-    this.host = next;
-    for (const rel of removed) this.files.delete(rel);
-    if (changed.length) await this.readBatches(changed);
-    this.ready = true;
-  }
-
-  private async readBatches(paths: string[]): Promise<void> {
-    const READ_BATCH_FILES = 200;
-    for (let i = 0; i < paths.length; i += READ_BATCH_FILES) {
-      const batch = paths.slice(i, i + READ_BATCH_FILES);
-      const got = (await api("/v1/sandbox/fs", { method: "POST", body: JSON.stringify({ op: "read", paths: batch }) })) as {
-        files?: { path: string; b64: string }[];
+  constructor() {
+    let ok!: (v: string | null) => void;
+    let fail!: (e: Error) => void;
+    this.ready = new Promise((res, rej) => {
+      ok = res;
+      fail = rej;
+    });
+    this.ready.catch(() => {});
+    this.iframe = document.createElement("iframe");
+    this.iframe.setAttribute("sandbox", "allow-scripts");
+    this.iframe.setAttribute("aria-hidden", "true");
+    this.iframe.title = "agent sandbox";
+    this.iframe.style.cssText = "position:absolute;width:0;height:0;border:0;visibility:hidden";
+    this.onWindowMessage = (e: MessageEvent) => {
+      if (e.source !== this.iframe.contentWindow || this.port) return;
+      const d = e.data as { __chrysalisSandbox?: number; t?: string } | null;
+      if (d?.__chrysalisSandbox !== 1 || d.t !== "loaded") return;
+      const channel = new MessageChannel();
+      this.port = channel.port1;
+      this.port.onmessage = (m: MessageEvent) => {
+        const msg = m.data as { type?: string; id?: number; runtime?: string | null; error?: string };
+        if (msg?.type === "ready") ok(msg.runtime ?? null);
+        else if (msg?.type === "fatal") {
+          fail(new Error(msg.error ?? "the sandbox runtime did not start"));
+          for (const settle of this.waiting.values()) settle({ fatal: msg.error ?? "the sandbox runtime stopped" });
+          this.waiting.clear();
+          this.dispose();
+        } else if (msg?.type === "result" && typeof msg.id === "number") {
+          this.waiting.get(msg.id)?.(msg as unknown as RunResult);
+          this.waiting.delete(msg.id);
+        }
       };
-      for (const f of got.files ?? []) this.files.set(f.path, b64ToBytes(f.b64));
-    }
+      // the frame is opaque-origin: "*" is the only target it can have, and
+      // this one message carries nothing but the private channel
+      this.iframe.contentWindow?.postMessage({ __chrysalisSandbox: 1, t: "init" }, "*", [channel.port2]);
+    };
+    addEventListener("message", this.onWindowMessage);
+    this.iframe.src = `/client/sandbox/frame.html?v=${VERSION}`;
+    document.body.appendChild(this.iframe);
   }
 
-  /** Runtime result -> engine. Writes changed files, deletes removed ones. */
-  async push(result: Record<string, Uint8Array>, mounted: Set<string>): Promise<void> {
-    const writes: { path: string; b64: string }[] = [];
-    for (const [rel, bytes] of Object.entries(result)) {
-      const cur = this.files.get(rel);
-      if (cur && bytesEqual(cur, bytes)) continue;
-      this.files.set(rel, bytes);
-      writes.push({ path: rel, b64: bytesToB64(bytes) });
-    }
-    const deletes: string[] = [];
-    for (const rel of [...this.files.keys()]) {
-      if (rel in result) continue;
-      // Only a mounted path can be "gone": files the mount deliberately left
-      // out (a repo's pack, say) are not the sandbox's to delete.
-      if (!mounted.has(rel)) continue;
-      this.files.delete(rel);
-      deletes.push(rel);
-    }
-    const WRITE_BATCH = 200;
-    for (let i = 0; i < writes.length; i += WRITE_BATCH) {
-      await api("/v1/sandbox/fs", { method: "PUT", body: JSON.stringify({ op: "write", files: writes.slice(i, i + WRITE_BATCH) }) });
-    }
-    for (let i = 0; i < deletes.length; i += WRITE_BATCH) {
-      await api("/v1/sandbox/fs", { method: "PUT", body: JSON.stringify({ op: "delete", paths: deletes.slice(i, i + WRITE_BATCH) }) });
-    }
+  exec(message: Record<string, unknown>, timeoutMs: number): Promise<RunResult | { fatal: string } | { timedOut: true }> {
+    const id = ++this.seq;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.waiting.delete(id);
+        // a synchronous guest can only be stopped by ending its worker
+        this.dispose();
+        resolve({ timedOut: true });
+      }, timeoutMs);
+      this.waiting.set(id, (r) => {
+        clearTimeout(timer);
+        resolve(r);
+      });
+      this.port?.postMessage({ ...message, type: "exec", id });
+    });
   }
 
-  contents(): Record<string, Uint8Array> {
-    return Object.fromEntries(this.files);
+  dispose(): void {
+    if (this.dead) return;
+    this.dead = true;
+    removeEventListener("message", this.onWindowMessage);
+    this.port?.close();
+    this.iframe.remove();
   }
-}
-
-function b64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i) & 0xff;
-  return out;
-}
-
-function bytesToB64(bytes: Uint8Array): string {
-  let bin = "";
-  for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
-  return btoa(bin);
-}
-
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
 }
 
 // ---------- the running host ----------
-let workspace: Workspace | null = null;
+let frame: SandboxFrame | null = null;
 let heartbeat: ReturnType<typeof setInterval> | undefined;
 let ready = false;
+let runtime: string | null = null;
+/** Why the runtime did not start, for the engine to pass on. */
+let bootError: string | null = null;
 let queue: Promise<void> = Promise.resolve();
+/** Paths whose sync-back was refused: the next command resends the engine's
+ *  copy (or its absence) so the runtime stops holding a change that did not
+ *  land. */
+const refused = new Set<string>();
 
 function beat(): void {
-  void api("/v1/sandbox/host", { method: "POST", body: JSON.stringify({ host: HOST_ID, ready, version: VERSION }) }).catch(() => {
+  void api("/v1/sandbox/host", { method: "POST", body: JSON.stringify({ host: HOST_ID, ready, version: VERSION, ...(bootError ? { error: bootError } : {}) }) }).catch(() => {
     /* logged out or engine restarting — the next beat retries */
   });
 }
@@ -164,90 +182,140 @@ function startHeartbeat(): void {
   if (heartbeat) return;
   beat();
   heartbeat = setInterval(beat, HEARTBEAT_MS);
-}
-
-// ---------- the sandbox worker ----------
-// Commands go to the runtime behind a worker boundary: the engine's page
-// never imports or links it, so the sandbox stays a separate program.
-let execWorker: Worker | null = null;
-let execSeq = 0;
-let workerRuntime: string | null = null;
-const execPending = new Map<number, (reply: ExecReply) => void>();
-
-/** Debug surface (`ChrysalisSandbox.runtime`): the release the worker loaded. */
-function publishRuntime(): void {
-  const api = (window as unknown as { ChrysalisSandbox?: { runtime?: string | null } }).ChrysalisSandbox;
-  if (api) api.runtime = workerRuntime;
-}
-
-/** What release the engine is serving right now (sources.json, no cache). */
-async function servedRuntimeVersion(): Promise<string | null> {
-  try {
-    const r = await fetch("/client/sandbox/k/sources.json", { cache: "no-cache" });
-    if (!r.ok) return null;
-    const d = (await r.json()) as { runtime?: { version?: unknown } };
-    return typeof d.runtime?.version === "string" ? d.runtime.version : null;
-  } catch {
-    return null;
-  }
-}
-/** /tmp handoff between commands: the engine only syncs /workspace, so the
- *  host carries scratch files itself while the tab lives. */
-let scratch: Record<string, Uint8Array> = {};
-
-function execWorkerHandle(): Worker {
-  if (execWorker) return execWorker;
-  const worker = new Worker(EXEC_WORKER_URL, { type: "module" });
-  worker.onmessage = (event: MessageEvent) => {
-    const reply = event.data as { type?: string; id?: number; runtime?: unknown };
-    if (reply?.type !== "result" || typeof reply.id !== "number") return;
-    if (typeof reply.runtime === "string") {
-      workerRuntime = reply.runtime;
-      publishRuntime();
-    }
-    const settle = execPending.get(reply.id);
-    execPending.delete(reply.id);
-    settle?.(reply as unknown as ExecReply);
-  };
-  worker.onerror = (event: ErrorEvent) => {
-    for (const [id, settle] of execPending) {
-      execPending.delete(id);
-      settle({ exitCode: null, stdout: "", stderr: `sandbox worker failed: ${event.message || "script error"}`, files: {}, scratch, wallMs: 0 });
-    }
-    execWorker = null;
-  };
-  execWorker = worker;
-  return worker;
-}
-
-function runInWorker(command: string, files: Record<string, Uint8Array>, gitProxy?: string): Promise<ExecReply> {
-  return new Promise((resolve) => {
-    const id = ++execSeq;
-    execPending.set(id, resolve);
-    try {
-      execWorkerHandle().postMessage({ type: "exec", id, command, files, scratch, gitProxy });
-    } catch (error) {
-      execPending.delete(id);
-      resolve({ exitCode: null, stdout: "", stderr: `sandbox worker refused the run: ${(error as Error)?.message ?? error}`, files: {}, scratch, wallMs: 0 });
-    }
+  // a reload or a closed tab would otherwise stay the addressed host until
+  // its heartbeat expired, and every command sent meanwhile would wait it out
+  addEventListener("pagehide", () => {
+    navigator.sendBeacon("/v1/sandbox/host", new Blob([JSON.stringify({ host: HOST_ID, gone: true })], { type: "application/json" }));
   });
 }
 
-/** Boot = pull the workspace once; the runtime has no persistent state. */
-function warm(): Promise<void> {
-  if (!workspace) {
-    workspace = new Workspace();
-    void (async () => {
-      await workspace!.pull();
-      ready = true;
-      beat();
-    })().catch(() => {
-      workspace = null;
-    });
+function publish(): void {
+  (window as unknown as { ChrysalisSandbox: unknown }).ChrysalisSandbox = { version: VERSION, host: HOST_ID, runtime };
+}
+
+/** The frame to run in, started (and waited for) when there is none. */
+async function liveFrame(): Promise<SandboxFrame> {
+  if (!frame || frame.dead) frame = new SandboxFrame();
+  const f = frame;
+  try {
+    runtime = await f.ready;
+  } catch (e) {
+    bootError = (e as Error).message;
+    beat();
+    throw e;
   }
-  return workspace.ready ? Promise.resolve() : (async () => {
-    while (workspace && !workspace.ready) await new Promise((r) => setTimeout(r, 100));
-  })();
+  bootError = null;
+  publish();
+  if (!ready) {
+    ready = true;
+    beat();
+  }
+  return f;
+}
+
+async function listTree(): Promise<{ files: Map<string, Meta>; truncated: boolean }> {
+  const body = (await api("/v1/sandbox/fs", { method: "POST", body: JSON.stringify({ op: "tree" }) })) as {
+    tree?: { files: { path: string; size: number; mtime: number }[]; truncated: boolean };
+  };
+  const files = new Map<string, Meta>();
+  for (const f of body.tree?.files ?? []) files.set(f.path, [f.size, f.mtime]);
+  return { files, truncated: body.tree?.truncated === true };
+}
+
+async function sandboxConfig(): Promise<SandboxConfig> {
+  try {
+    const r = (await api("/v1/sandbox/config")) as Partial<SandboxConfig>;
+    return {
+      internet: r.internet === true,
+      token: typeof r.token === "string" ? r.token : null,
+      fsToken: typeof r.fsToken === "string" ? r.fsToken : null,
+      hidden: Array.isArray(r.hidden) ? r.hidden.filter((h): h is string => typeof h === "string") : [],
+    };
+  } catch {
+    return { internet: false, token: null, fsToken: null, hidden: [] };
+  }
+}
+
+/** What the runtime must learn before this command: everything, for a new
+ *  frame; otherwise only what changed on disk since it last looked. */
+function syncFor(f: SandboxFrame, tree: Map<string, Meta>): { files: [string, number, number][]; deletes: string[]; reset?: boolean } {
+  const files: [string, number, number][] = [];
+  const deletes: string[] = [];
+  const reset = f.fresh;
+  for (const [path, meta] of tree) {
+    const had = f.known.get(path);
+    if (reset || refused.has(path) || !had || had[0] !== meta[0] || had[1] !== meta[1]) files.push([path, meta[0], meta[1]]);
+  }
+  if (!reset) for (const path of f.known.keys()) if (!tree.has(path)) deletes.push(path);
+  for (const path of refused) if (!tree.has(path) && !deletes.includes(path)) deletes.push(path);
+  refused.clear();
+  f.known = new Map(tree);
+  f.fresh = false;
+  return reset ? { files, deletes, reset: true } : { files, deletes };
+}
+
+function bytesToB64(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+/** Write a command's changes; returns one line per path that did not land. */
+async function syncBack(f: SandboxFrame, writes: [string, Uint8Array][], deletes: string[]): Promise<string[]> {
+  const results: PathResult[] = [];
+  const failed = (paths: string[], error: string) => {
+    for (const path of paths) results.push({ path, ok: false, error });
+  };
+  let batch: { path: string; b64: string }[] = [];
+  let batchBytes = 0;
+  const flush = async () => {
+    if (!batch.length) return;
+    const sending = batch;
+    batch = [];
+    batchBytes = 0;
+    try {
+      const r = (await api("/v1/sandbox/fs", { method: "PUT", body: JSON.stringify({ op: "write", files: sending }) })) as { results?: PathResult[] };
+      results.push(...(r.results ?? []));
+    } catch (e) {
+      failed(sending.map((s) => s.path), (e as Error).message);
+    }
+  };
+  for (const [path, bytes] of writes) {
+    if (bytes.length > INLINE_WRITE) {
+      try {
+        const r = await fetch(`/v1/sandbox/fs/file?path=${encodeURIComponent(path)}`, { method: "PUT", credentials: "same-origin", body: bytes as BodyInit });
+        const body = (await r.json().catch(() => ({}))) as { results?: PathResult[]; error?: string };
+        if (!r.ok) failed([path], body.error ?? `HTTP ${r.status}`);
+        else results.push(...(body.results ?? []));
+      } catch (e) {
+        failed([path], (e as Error).message);
+      }
+      continue;
+    }
+    if (batch.length >= BATCH_FILES || batchBytes + bytes.length > BATCH_BYTES) await flush();
+    batch.push({ path, b64: bytesToB64(bytes) });
+    batchBytes += bytes.length;
+  }
+  await flush();
+  for (let i = 0; i < deletes.length; i += BATCH_FILES) {
+    const slice = deletes.slice(i, i + BATCH_FILES);
+    try {
+      const r = (await api("/v1/sandbox/fs", { method: "PUT", body: JSON.stringify({ op: "delete", paths: slice }) })) as { results?: PathResult[] };
+      results.push(...(r.results ?? []));
+    } catch (e) {
+      failed(slice, (e as Error).message);
+    }
+  }
+  const notes: string[] = [];
+  for (const r of results) {
+    if (r.ok && typeof r.size === "number" && typeof r.mtime === "number") f.known.set(r.path, [r.size, r.mtime]);
+    else if (r.ok) f.known.delete(r.path);
+    else {
+      refused.add(r.path);
+      notes.push(`${r.path}: ${r.error ?? "not saved"}`);
+    }
+  }
+  return notes;
 }
 
 function result(id: unknown, r: Record<string, unknown>): void {
@@ -256,79 +324,50 @@ function result(id: unknown, r: Record<string, unknown>): void {
   });
 }
 
-/** The mount for one command. `.git` is always visible (a shell that cannot
- *  see the repository reads as "no git here"), but a packed object database is
- *  tens of MB and only git needs it: the pack rides along when the command
- *  mentions git or runs a script that does. The returned `mounted` set is what
- *  the sync-back may delete from: anything left out here is untouchable. */
-function contentsFor(command: string): { files: Record<string, Uint8Array>; mounted: Set<string> } {
-  const all = workspace!.contents();
-  const needsObjects = (() => {
-    if (/(^|[\s|&;(])git(\s|$)/.test(command)) return true;
-    for (const token of command.split(/[\s|&;()<>'"]+/).filter(Boolean)) {
-      const rel = token.replace(/^\.\//, "").replace(/^\/workspace\//, "");
-      if (rel.startsWith("/") || rel.includes("..")) continue;
-      const bytes = all[rel];
-      if (!bytes) continue;
-      try {
-        if (/\bgit\b/.test(new TextDecoder().decode(bytes.subarray(0, 65536)))) return true;
-      } catch {
-        /* binary */
-      }
-    }
-    return false;
-  })();
-  const files: Record<string, Uint8Array> = {};
-  const mounted = new Set<string>();
-  for (const [path, bytes] of Object.entries(all)) {
-    if (!needsObjects && path.startsWith(".git/objects/pack/")) continue;
-    files[path] = bytes;
-    mounted.add(path);
-  }
-  return { files, mounted };
-}
-
-async function execute(id: unknown, command: string, _timeoutMs: number): Promise<void> {
-  if (!workspace) {
-    workspace = new Workspace();
-    await workspace.pull();
-    ready = true;
-    beat();
-  } else {
-    await workspace.pull();
-  }
-  const cfg = await sandboxConfig();
-  const gitProxy = cfg.token ? `${location.origin}/v1/sandbox/proxy?token=${encodeURIComponent(cfg.token)}&url=` : undefined;
-  const mount = contentsFor(command);
-  // A new release on disk means this tab's worker is running old code; drop it
-  // so the next run loads the files the engine is actually serving. A worker
-  // that never reported a version predates the check and counts as stale.
-  const served = await servedRuntimeVersion();
-  if (served && served !== workerRuntime) {
-    execWorker?.terminate();
-    execWorker = null;
-    workerRuntime = served; // the replacement loads exactly what is served now
-    publishRuntime();
-  }
-  const out = await runInWorker(command, mount.files, gitProxy);
-  scratch = out.scratch ?? {};
+async function execute(id: unknown, command: string, timeoutMs: number): Promise<void> {
+  let f: SandboxFrame;
+  let tree: { files: Map<string, Meta>; truncated: boolean };
+  let cfg: SandboxConfig;
   try {
-    await workspace.push(out.files, mount.mounted);
+    [f, tree, cfg] = await Promise.all([liveFrame(), listTree(), sandboxConfig()]);
   } catch (e) {
-    result(id, { exitCode: out.exitCode, stdout: out.stdout, stderr: `${out.stderr}${out.stderr ? "\n" : ""}sync back failed: ${String((e as Error)?.message ?? e)}`, timedOut: false, truncated: false });
+    frame?.dispose();
+    frame = null;
+    result(id, { exitCode: null, stdout: "", stderr: `sandbox: ${(e as Error).message}. Reload the page if this keeps happening.`, timedOut: false, truncated: false });
     return;
   }
-  result(id, { exitCode: out.exitCode, stdout: out.stdout, stderr: out.stderr, timedOut: false, truncated: false });
-}
-
-/** Network access and the proxy token, fetched fresh for every run. */
-async function sandboxConfig(): Promise<SandboxConfig> {
-  try {
-    const r = (await api("/v1/sandbox/config")) as Partial<SandboxConfig>;
-    return { internet: r.internet === true, token: typeof r.token === "string" ? r.token : null };
-  } catch {
-    return { internet: false, token: null };
+  const origin = location.origin;
+  const message = {
+    command,
+    sync: syncFor(f, tree.files),
+    config: {
+      fileUrl: `${origin}/v1/sandbox/file?token=${encodeURIComponent(cfg.fsToken ?? "")}&path=`,
+      proxy: cfg.internet && cfg.token ? `${origin}/v1/sandbox/proxy?token=${encodeURIComponent(cfg.token)}&url=` : null,
+      hidden: cfg.hidden,
+    },
+  };
+  const out = await f.exec(message, timeoutMs);
+  if ("timedOut" in out) {
+    frame = null;
+    result(id, {
+      exitCode: null,
+      stdout: "",
+      stderr: `The command ran past its ${Math.round(timeoutMs / 1000)}s limit and was stopped. Its file changes were discarded, and so were files in /tmp.`,
+      timedOut: true,
+      truncated: false,
+    });
+    return;
   }
+  if ("fatal" in out) {
+    frame = null;
+    result(id, { exitCode: null, stdout: "", stderr: `sandbox: ${out.fatal}`, timedOut: false, truncated: false });
+    return;
+  }
+  const notes = await syncBack(f, out.writes ?? [], out.deletes ?? []);
+  let stderr = out.stderr;
+  if (notes.length) stderr += `${stderr && !stderr.endsWith("\n") ? "\n" : ""}sandbox: these changes were not saved to your files:\n${notes.map((n) => `  ${n}`).join("\n")}\n`;
+  if (tree.truncated) stderr += "sandbox: the workspace has more files than the sandbox lists; some are not visible here.\n";
+  result(id, { exitCode: out.exitCode, stdout: out.stdout, stderr, timedOut: false, truncated: false });
 }
 
 const listener: BusListener = (type, payload) => {
@@ -342,12 +381,13 @@ const listener: BusListener = (type, payload) => {
 
 busListeners.add(listener);
 
-// The runtime boot (worker + 368KB wasm) must not compete with the shell and
-// the open app for the first seconds: warm on idle.
+// Starting the runtime (a worker and a few MB of wasm) must not compete with
+// the shell and the open app for the first seconds: start on idle.
 const scheduleWarm = () => {
+  const warm = () => void liveFrame().catch(() => undefined);
   const idle = (globalThis as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void }).requestIdleCallback;
-  if (idle) idle(() => void warm(), { timeout: 8000 });
-  else setTimeout(() => void warm(), 4000);
+  if (idle) idle(warm, { timeout: 8000 });
+  else setTimeout(warm, 4000);
 };
 
 // This script loads on every page, the sign-in screen included. The bus only
@@ -365,5 +405,4 @@ busListeners.add((type) => {
   if (type === "hello") startOnce();
 });
 ensureBus();
-
-(window as unknown as { ChrysalisSandbox: unknown }).ChrysalisSandbox = { version: VERSION, host: HOST_ID, runtime: null };
+publish();

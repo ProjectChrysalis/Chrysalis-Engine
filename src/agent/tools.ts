@@ -1,5 +1,5 @@
 /**
- * Agent tools (SPEC §5.1): coding-agent-style file/git tools STRICTLY scoped
+ * Agent tools (SPEC §5.1): coding-agent-style file tools STRICTLY scoped
  * to the owning user's directory, with the write denylist from paths.ts
  * (auth.json, .git, chats/, assets-store/ are never agent-writable).
  */
@@ -70,16 +70,6 @@ function fileDiff(rel: string, before: string, after: string): string | undefine
   const body = patch.replace(/^(Index [^\n]*\n)?={10,}\n/, "").trimEnd();
   if (!/^@@/m.test(body)) return undefined;
   return body.length > MAX_DIFF_CHARS ? `${body.slice(0, MAX_DIFF_CHARS)}\n… (diff truncated)` : body;
-}
-
-/** The git tool's earlier shape ({action: log|commit|restore}), which chats
- *  started before it took arguments still repeat from their history. */
-function legacyGitArgs(p: { action?: unknown; message?: unknown; limit?: unknown; path?: unknown; commit?: unknown }): string | null {
-  const q = (v: unknown) => `'${String(v).replace(/'/g, `'\\''`)}'`;
-  if (p.action === "log") return `log --oneline -n ${Number(p.limit) > 0 ? Math.floor(Number(p.limit)) : 20}`;
-  if (p.action === "commit" && typeof p.message === "string") return `commit -m ${q(p.message)}`;
-  if (p.action === "restore" && typeof p.path === "string" && typeof p.commit === "string") return `restore --source ${q(p.commit)} -- ${q(p.path)}`;
-  return null;
 }
 
 export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOptions = { dataDir: "." }): AgentTool[] {
@@ -524,7 +514,7 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
     name: "bash",
     label: "Run shell command",
     description:
-      "Run a shell command in the agent sandbox (by default a WebAssembly sandbox in the user's browser: bash, 88 standard utilities and python3, workspace mounted, internet unless the user turned it off in Settings, never this machine or its network, no host access). Changes under the workspace are the user's files; commit them with the git tool afterwards. Use it for scripts, batch transforms, data crunching and checking your work — not for reading/editing single files (read_file/edit_file are better there). Output is capped (~64KB/stream, head+tail kept).",
+      "Run a shell command in the sandbox in the user's browser (busybox ash, coreutils, git, python3, node, jq, rg, curl; the workspace at /workspace), never on this machine. Files the command changes are saved to the user's files when it finishes; commit them with git in the shell. Use it for scripts, data work, edits across many files and checking your work, not for reading or editing one file (read_file/edit_file). Output is capped (~64KB per stream, head and tail kept).",
     parameters: Type.Object({
       command: Type.String({ description: "The shell command line. Runs with cwd = the user's workspace" }),
       timeout_ms: Type.Optional(

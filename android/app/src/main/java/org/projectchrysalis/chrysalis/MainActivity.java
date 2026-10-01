@@ -160,13 +160,12 @@ public final class MainActivity extends Activity implements EngineService.Listen
         }, "chrysalis-open").start();
     }
 
-    /** The end of the engine log, or the service output when the engine never
-     *  got far enough to write one. */
+    /** The end of this run's server output, which carries every generation's
+     *  request and reply; the engine log file when there is no run yet. */
     private String logText() {
-        File engineLog = new File(EngineService.homeDir(this), "data/logs/chrysalis.log");
-        String text = EngineService.lastLines(engineLog, 400);
-        String output = EngineService.lastLines(EngineService.outputFile(this), 60);
-        return "Chrysalis " + BuildConfig.VERSION_NAME + " (Android " + Build.VERSION.RELEASE + ")\n\n" + (text.isEmpty() ? output : text);
+        String text = EngineService.lastLines(EngineService.outputFile(this), 400);
+        if (text.isEmpty()) text = EngineService.lastLines(new File(EngineService.homeDir(this), "data/logs/chrysalis.log"), 400);
+        return "Chrysalis " + BuildConfig.VERSION_NAME + " (Android " + Build.VERSION.RELEASE + ")\n\n" + text;
     }
 
     private void copyLog() {

@@ -42,9 +42,9 @@ import * as assets from "../assets/store.js";
 import { createSandbox, type SandboxRunner } from "../sandbox/index.js";
 import { sandboxConfigOf } from "../config.js";
 import { BrowserSandbox } from "../sandbox/browser.js";
-import { sandboxAsset, sandboxVersion } from "../sandbox/assets.js";
-import { workspaceFs, type FsOp as WorkspaceFsOp } from "../sandbox/workspace.js";
-import { initNetTokens, issueNetToken, netTokenUser, proxySandboxRequest, readSandboxEpoch, readSandboxSettings, writeSandboxSettings } from "../sandbox/network.js";
+import { sandboxAsset, sandboxFrameCsp, sandboxVersion } from "../sandbox/assets.js";
+import { MAX_SANDBOX_FILE, SANDBOX_HIDDEN, readWorkspaceFile, workspaceFs, writeWorkspaceFile, type FsOp as WorkspaceFsOp } from "../sandbox/workspace.js";
+import { PROXY_ERROR, fsTokenUser, initNetTokens, issueFsToken, issueNetToken, netTokenUser, proxySandboxRequest, readSandboxEpoch, readSandboxSettings, writeSandboxSettings } from "../sandbox/network.js";
 import { log } from "../logger.js";
 import type { EventBus } from "./ws.js";
 import { ensureLookWatcher } from "./look-watch.js";
@@ -446,6 +446,9 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       // sibling request patching: an app plugin's llmRequest hook may patch
       // this plugin's model requests (permissions: hooks + llm)
       llmHooks: (self) => collectSiblingLlmHooks(enabledAppPlugins(userPaths(dataDir, u.username).apps, appId, userPaths(dataDir, u.username).settings), self, base),
+      // sibling result patching: the same plugins may post-process what comes
+      // back with llmResponse (same grants)
+      llmResponseHooks: (self) => collectSiblingLlmHooks(enabledAppPlugins(userPaths(dataDir, u.username).apps, appId, userPaths(dataDir, u.username).settings), self, base, "llmResponse"),
     };
   };
   /** The MCP tools one app's generations may call: the engine servers that
@@ -634,6 +637,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     ".png": "image/png",
     ".woff2": "font/woff2",
     ".json": "application/json",
+    ".wasm": "application/wasm",
+    ".zip": "application/zip",
   };
   const serveClientFile = (rel: string, c: Context<AppEnv>) => {
     const full = path.resolve(clientDir, rel);
@@ -679,10 +684,43 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     }
     return c.body(new Uint8Array(asset.body), 200, headers);
   });
-  // the browser sandbox host bundle (src/sandbox/browser) under a
-  // version-scoped path. The sandbox runs cookieless and opaque-origin, so its
-  // fetches are cross-origin and credentialless: everything here answers with
-  // CORS open, and serves only these files.
+  // ---------- the agent sandbox ----------
+  // Every page loads host.js (src/sandbox/browser/host.ts), the broker: it
+  // syncs the workspace, holds the tokens and enforces timeouts. Commands run
+  // in frame.html, an opaque-origin sandboxed frame whose worker loads the
+  // runtime from /client/sandbox/r/<version>/: no cookies, no storage, and
+  // connect-src limited to the runtime's own files, the network proxy and the
+  // workspace file route, each of which answers only to a token.
+  const sandboxDir = process.env.CHRYSALIS_SANDBOX_DIR ?? path.join(resourcesDir(), "prebuilt", "sandbox-k");
+  let runtimeInfo: { mtime: number; version: string | null } = { mtime: -1, version: null };
+  /** The runtime release on disk (sources.json), re-read when it changes. */
+  const sandboxRuntimeVersion = (): string | null => {
+    const file = path.join(sandboxDir, "sources.json");
+    try {
+      const mtime = fs.statSync(file).mtimeMs;
+      if (mtime !== runtimeInfo.mtime) {
+        const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { runtime?: { version?: unknown } };
+        runtimeInfo = { mtime, version: typeof parsed.runtime?.version === "string" ? parsed.runtime.version : null };
+      }
+    } catch {
+      runtimeInfo = { mtime: -1, version: null };
+    }
+    return runtimeInfo.version;
+  };
+  app.get("/client/sandbox/frame.html", async (c) => {
+    const origin = frameOriginOf(c);
+    const runtime = sandboxRuntimeVersion();
+    if (!runtime) return c.body("the sandbox runtime is not installed (bun run sandbox:fetch)", 503);
+    const entry = `/client/sandbox/r/${encodeURIComponent(runtime)}/runtime/session.mjs`;
+    const html = `<!doctype html><meta charset="utf-8"><title>sandbox</title><script src="/client/sandbox/frame.js?v=${await sandboxVersion()}" data-runtime="${entry}"></script>`;
+    return c.body(html, 200, {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-cache",
+      "x-content-type-options": "nosniff",
+      "content-security-policy": sandboxFrameCsp(origin),
+      "connection-allowlist": FRAME_CONNECTION_ALLOWLIST,
+    });
+  });
   app.get("/client/sandbox/:file", async (c) => {
     const name = c.req.param("file");
     const asset = await sandboxAsset(name).catch((e: unknown) => {
@@ -698,13 +736,14 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     };
     return c.body(new Uint8Array(asset.body), 200, headers);
   });
-  // ---------- the sandbox runtime ----------
-  // Plain files (runtime, vendored shell, wasm) served cookieless with CORS.
-  // No COOP/COEP, no cross-origin isolation, no special headers: the runtime
-  // is single-threaded wasm and works on any origin.
-  const sandboxDir = process.env.CHRYSALIS_SANDBOX_DIR ?? path.join(resourcesDir(), "prebuilt", "sandbox-k");
+  // The runtime's files, under the release they belong to: a version in the
+  // path lets the browser keep compiled wasm across loads, and a page still
+  // holding an older release gets a 404 rather than a mix of the two.
   const SANDBOX_SERVED = new Set(["runtime", "vendor", "LICENSE", "sources.json"]);
-  const serveSandboxFile = (rel: string, c: Context<AppEnv>) => {
+  app.get("/client/sandbox/r/:version/*", (c) => {
+    const version = decodeURIComponent(c.req.param("version"));
+    if (version !== sandboxRuntimeVersion()) return c.body("stale sandbox runtime", 404, { "access-control-allow-origin": "*" });
+    const rel = c.req.path.slice(`/client/sandbox/r/${c.req.param("version")}/`.length);
     const root = path.resolve(sandboxDir);
     const first = rel.replace(/^\/+/, "").split("/")[0] ?? "";
     if (!SANDBOX_SERVED.has(first)) return c.body("not found", 404);
@@ -718,10 +757,10 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       "x-content-type-options": "nosniff",
       "cross-origin-resource-policy": "cross-origin",
       "access-control-allow-origin": "*",
-      "cache-control": "no-cache",
+      // a local build (CHRYSALIS_SANDBOX_DIR) changes under the same version
+      "cache-control": process.env.CHRYSALIS_SANDBOX_DIR ? "no-cache" : "public, max-age=31536000, immutable",
     });
-  };
-  app.get("/client/sandbox/k/*", (c) => serveSandboxFile(c.req.path.slice("/client/sandbox/k/".length), c));
+  });
 
   app.get("/client/*", (c) => serveClientFile(c.req.path.slice("/client/".length), c));
 
@@ -774,7 +813,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
    *  no custom headers to attach. Auth is the token in the query; without one
    *  the route stays closed unless CHRYSALIS_SANDBOX_OPEN_PROXY=1 (tests). */
   const sandboxProxy = async (c: Context<AppEnv>): Promise<Response> => {
-    const cors = { "access-control-allow-origin": "*" };
+    const cors = { "access-control-allow-origin": "*", "access-control-expose-headers": "*", ...PROXY_ERROR };
     const token = c.req.query("token") ?? c.req.header("x-sandbox-token");
     const auth = netTokenUser(token);
     const user = auth ? users.get(auth.username) : undefined;
@@ -792,8 +831,12 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const headers: [string, string][] = [];
     const drop = new Set(["host", "connection", "content-length", "accept-encoding", "origin", "referer", "cookie", "te", "trailer", "upgrade", "keep-alive"]);
     for (const [name, value] of Object.entries(c.req.header())) {
-      if (value === undefined || drop.has(name.toLowerCase())) continue;
-      headers.push([name, value]);
+      if (value === undefined) continue;
+      const lower = name.toLowerCase();
+      // headers a browser request may not carry (User-Agent, Cookie,
+      // Referer) arrive prefixed; the page's own copies are dropped
+      if (lower.startsWith("x-chrysalis-h-")) headers.push([lower.slice("x-chrysalis-h-".length), value]);
+      else if (!drop.has(lower) && !lower.startsWith("sec-")) headers.push([name, value]);
     }
     return proxySandboxRequest({
       url: target,
@@ -805,7 +848,34 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   app.get("/v1/sandbox/proxy", sandboxProxy);
   app.post("/v1/sandbox/proxy", sandboxProxy);
   app.put("/v1/sandbox/proxy", sandboxProxy);
+  app.patch("/v1/sandbox/proxy", sandboxProxy);
   app.delete("/v1/sandbox/proxy", sandboxProxy);
+  // The frame is cross-origin, so a request with its own headers (curl -H,
+  // a JSON body) is preflighted. The token is still what authorizes it.
+  app.options("/v1/sandbox/proxy", (c) =>
+    c.body(null, 204, {
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET, HEAD, POST, PUT, PATCH, DELETE",
+      "access-control-allow-headers": c.req.header("access-control-request-headers") ?? "*",
+      "access-control-max-age": "600",
+    }),
+  );
+
+  /** A workspace file for the sandbox frame, read the first time a command
+   *  needs it. The frame is cookieless; the token it holds reads the user's
+   *  workspace under the sandbox mount rules and nothing else. */
+  app.get("/v1/sandbox/file", (c) => {
+    const headers = { "access-control-allow-origin": "*", "cache-control": "no-store", "x-content-type-options": "nosniff" };
+    const username = fsTokenUser(c.req.query("token"));
+    const user = username ? users.get(username) : undefined;
+    if (!username || !user || user.enabled === false) return c.body("not signed in", 401, headers);
+    try {
+      const bytes = readWorkspaceFile(userPaths(dataDir, username).root, c.req.query("path") ?? "");
+      return c.body(new Uint8Array(bytes), 200, { ...headers, "content-type": "application/octet-stream" });
+    } catch (e) {
+      return c.body((e as Error).message, 404, headers);
+    }
+  });
 
   // ---------- sign-in (user picker + optional password) ----------
   // These run BEFORE the auth middleware; everything else needs a session
@@ -1307,8 +1377,9 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const u = c.get("user");
     const file = c.get("paths").sandbox;
     const { internet } = readSandboxSettings(file);
-    // the token is issued with internet off too: the shell's git rides it
-    return c.json({ internet, token: issueNetToken(u.username, readSandboxEpoch(file)) });
+    // the net token is issued with internet off too: the proxy itself says
+    // why a request is refused
+    return c.json({ internet, token: issueNetToken(u.username, readSandboxEpoch(file)), fsToken: issueFsToken(u.username), hidden: SANDBOX_HIDDEN });
   });
 
   // Browser sandbox host bridge: heartbeat (registration + liveness), run
@@ -1317,16 +1388,21 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   app.post("/v1/sandbox/host", async (c) => {
     if (!(sandbox instanceof BrowserSandbox)) return c.json({ error: "this instance does not use the browser sandbox" }, 409);
     const body = await c.req
-      .json<{ host?: unknown; ready?: unknown; version?: unknown }>()
-      .catch(() => ({}) as { host?: unknown; ready?: unknown; version?: unknown });
+      .json<{ host?: unknown; ready?: unknown; version?: unknown; error?: unknown; gone?: unknown }>()
+      .catch(() => ({}) as { host?: unknown; ready?: unknown; version?: unknown; error?: unknown; gone?: unknown });
     if (typeof body.host !== "string" || !/^[a-z0-9]{8,64}$/.test(body.host)) return c.json({ error: "host required" }, 400);
+    if (body.gone === true) {
+      sandbox.forget(c.get("user").username, body.host);
+      return c.json({ ok: true });
+    }
     // A page loaded before the engine rebuilt its host bundle keeps running the
     // old code; it can never mount the workspace, so tell it (and the run path)
     // that only a reload helps.
     const hostVersion = typeof body.version === "string" ? body.version : null;
     const current = await sandboxVersion();
     const stale = hostVersion !== null && hostVersion !== current;
-    sandbox.hello(c.get("user").username, body.host, body.ready === true, stale);
+    const error = typeof body.error === "string" ? body.error.slice(0, 300) : null;
+    sandbox.hello(c.get("user").username, body.host, body.ready === true, stale, error);
     return c.json(stale ? { ok: true, stale: true, version: current } : { ok: true });
   });
 
@@ -1362,6 +1438,12 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   };
   app.post("/v1/sandbox/fs", sandboxFsHandler);
   app.put("/v1/sandbox/fs", sandboxFsHandler);
+  // one large file, raw: packs and big data files skip base64 and batching
+  app.put("/v1/sandbox/fs/file", async (c) => {
+    const capped = await readCappedBody(c, MAX_SANDBOX_FILE);
+    if (!capped.ok) return c.json({ error: capped.error }, 413);
+    return c.json({ results: [writeWorkspaceFile(c.get("paths").root, c.req.query("path") ?? "", capped.bytes)] });
+  });
 
   // ---------- image generation (pi-ai images API; creds never leave) ----------
   app.get("/v1/images/models", async (c) => {

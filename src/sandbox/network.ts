@@ -95,6 +95,40 @@ export function netTokenUser(token: string | undefined): { username: string; epo
   }
 }
 
+/** How long a workspace read token stays valid. The host fetches a fresh one
+ *  for every command, so this only bounds a token that leaked. */
+const FS_TOKEN_TTL_MS = 6 * 60 * 60 * 1000;
+
+function fsSignature(username: string, expires: number): string {
+  return crypto.createHmac("sha256", netKey!).update(`sandbox-fs:${username}:${expires}`).digest("base64url");
+}
+
+/** A token that reads the user's workspace files (as the sandbox mount
+ *  allows them) and nothing else: the frame fetches file contents with it
+ *  the first time a command reads them. */
+export function issueFsToken(username: string, now = Date.now()): string {
+  const expires = now + FS_TOKEN_TTL_MS;
+  const payload = Buffer.from(JSON.stringify({ u: username, x: expires }), "utf8").toString("base64url");
+  return `${payload}.${fsSignature(username, expires)}`;
+}
+
+export function fsTokenUser(token: string | undefined, now = Date.now()): string | null {
+  if (!token || !netKey) return null;
+  const dot = token.indexOf(".");
+  if (dot <= 0 || dot >= token.length - 1) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(token.slice(0, dot), "base64url").toString("utf8")) as { u?: unknown; x?: unknown };
+    if (typeof parsed.u !== "string" || !/^[A-Za-z0-9_-]{1,32}$/.test(parsed.u)) return null;
+    if (typeof parsed.x !== "number" || parsed.x < now) return null;
+    const expected = Buffer.from(fsSignature(parsed.u, parsed.x));
+    const given = Buffer.from(token.slice(dot + 1));
+    if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) return null;
+    return parsed.u;
+  } catch {
+    return null;
+  }
+}
+
 /** Turn counter for the capability: switching internet off bumps it, which
  *  invalidates tokens issued before the switch. */
 export function readSandboxEpoch(file: string): number {
@@ -180,6 +214,10 @@ async function guardedRequest(url: URL, method: string, headers: Record<string, 
   return hop;
 }
 
+/** Marks an answer the proxy made itself (a refusal, a failed lookup), so the
+ *  sandbox never mistakes it for the site's own response. */
+export const PROXY_ERROR = { "x-chrysalis-proxy": "error" } as const;
+
 export interface ProxyInput {
   url: string;
   method: string;
@@ -192,7 +230,7 @@ export interface ProxyInput {
  *  the command in the sandbox prints. */
 export async function proxySandboxRequest(input: ProxyInput): Promise<Response> {
   const cors = { "access-control-allow-origin": "*", "access-control-expose-headers": "*" };
-  const fail = (message: string) => new Response(`sandbox network: ${message}\n`, { status: 502, headers: { ...cors, "content-type": "text/plain; charset=utf-8" } });
+  const fail = (message: string) => new Response(`sandbox network: ${message}\n`, { status: 502, headers: { ...cors, ...PROXY_ERROR, "content-type": "text/plain; charset=utf-8" } });
   let url: URL;
   try {
     url = new URL(input.url);

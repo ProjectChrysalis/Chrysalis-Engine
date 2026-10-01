@@ -1,8 +1,9 @@
 /**
- * The browser sandbox runner: commands execute in the user's browser, inside
- * a fork-free wasm shell in a worker, never on the host. The
- * engine owns the workspace files: the shell host mounts them, runs commands,
- * and posts changed files back through the workspace route.
+ * The browser sandbox runner: commands execute in the user's browser, in a
+ * sandboxed frame's worker running a WebAssembly shell, never on the host.
+ * The engine owns the workspace files: the page's sandbox host lists them for
+ * the runtime, which reads contents as commands need them, and posts changed
+ * files back through the workspace route.
  *
  * The engine talks to the host over the event bus (run requests go out as
  * `sandbox_run`, results come back on /v1/sandbox/result) and treats a host
@@ -26,6 +27,8 @@ interface HostState {
   ready: boolean;
   /** The page said its host bundle predates the engine's current one. */
   stale: boolean;
+  /** Why the page's runtime did not start, when it said. */
+  error: string | null;
 }
 
 interface PendingRun {
@@ -57,15 +60,21 @@ export class BrowserSandbox implements SandboxRunner {
    *  never execute the same command. `stale` marks a page from an older load
    *  whose host bundle no longer matches this engine: it cannot run commands
    *  and only a reload fixes it, so say so instead of waiting on it. */
-  hello(username: string, hostId: string, ready: boolean, stale = false): void {
+  hello(username: string, hostId: string, ready: boolean, stale = false, error: string | null = null): void {
     const cur = this.hosts.get(username);
     const same = cur?.hostId === hostId;
     this.hosts.set(username, {
       hostId,
       lastSeen: Date.now(),
-      ready: ready || (same && cur!.ready),
+      ready: ready || (same && cur!.ready && !error),
       stale: same ? stale || cur!.stale : stale,
+      error,
     });
+  }
+
+  /** A page that is going away says so, and runs stop being sent to it. */
+  forget(username: string, hostId: string): void {
+    if (this.hosts.get(username)?.hostId === hostId) this.hosts.delete(username);
   }
 
   private host(username: string): HostState | null {
@@ -84,13 +93,16 @@ export class BrowserSandbox implements SandboxRunner {
     }
     const known = [...this.hosts.values()].filter((h) => Date.now() - h.lastSeen <= HOST_TTL);
     const ready = known.filter((h) => h.ready).length;
+    const failed = known.find((h) => h.error);
     const reason = ready
-      ? "commands run in this browser, in a WebAssembly shell: busybox ash with coreutils, git, python, node, rg, jq, tar, curl, workspace mounted at /workspace, no host access"
+      ? "commands run in this browser, in a sandboxed WebAssembly shell: busybox, git, python 3, node, jq, rg, curl, with the workspace at /workspace and no access to this machine"
       : known.some((h) => h.stale)
         ? "this page is running an older sandbox than the engine; reload the tab to start the shell"
-        : known.length
-          ? "the sandbox in this tab is starting up; reload the page if this sticks"
-          : "no sandbox is connected — open Chrysalis in a browser tab to run shell commands (they never run on the host)";
+        : failed
+          ? `the sandbox in this tab did not start: ${failed.error}`
+          : known.length
+            ? "the sandbox in this tab is starting up; reload the page if this sticks"
+            : "no sandbox is connected: open Chrysalis in a browser tab to run shell commands (they never run on the host)";
     return {
       provider: "browser",
       available: ready > 0,
@@ -119,7 +131,9 @@ export class BrowserSandbox implements SandboxRunner {
         return {
           error: h.stale
             ? "The sandbox in this tab is from an older page load and cannot run commands. Reload the browser tab, then try again."
-            : "The sandbox in this tab did not start. Reload the browser tab, then try again.",
+            : h.error
+              ? `The sandbox in this tab did not start (${h.error}). Reload the browser tab, then try again.`
+              : "The sandbox in this tab did not start. Reload the browser tab, then try again.",
         };
       }
     }

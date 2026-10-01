@@ -96,10 +96,11 @@ const builder = await buildBuilderForRelease();
 writePrebuilt(path.join(resources, "prebuilt", "builder"), builder);
 const sandbox = await buildSandboxForRelease();
 writePrebuilt(path.join(resources, "prebuilt", "sandbox"), sandbox);
-const sandboxK = process.env.CHRYSALIS_SANDBOX_DIR ?? path.resolve(repo, "../chrysalis-sandbox");
-if (!fs.existsSync(path.join(sandboxK, "runtime", "sandbox.mjs"))) {
-  throw new Error("the sandbox runtime is missing: check out ../chrysalis-sandbox or set CHRYSALIS_SANDBOX_DIR");
-}
+// the pinned, checksummed runtime release (scripts/sandbox.ts), or a local
+// build when CHRYSALIS_SANDBOX_DIR points at one
+if (!process.env.CHRYSALIS_SANDBOX_DIR) run(process.execPath, ["run", "scripts/sandbox.ts"]);
+const sandboxK = process.env.CHRYSALIS_SANDBOX_DIR ?? path.join(repo, "prebuilt", "sandbox-k");
+if (!fs.existsSync(path.join(sandboxK, "runtime", "session.mjs"))) throw new Error(`the sandbox runtime is missing from ${sandboxK}`);
 const sandboxDest = path.join(resources, "prebuilt", "sandbox-k");
 for (const part of ["runtime", "vendor", "LICENSE", "sources.json"]) {
   fs.cpSync(path.join(sandboxK, part), path.join(sandboxDest, part), { recursive: true });

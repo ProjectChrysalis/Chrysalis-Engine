@@ -85,3 +85,48 @@ describe("sandbox internet setting", () => {
     expect(res.status).toBe(502);
   });
 });
+
+describe("sandbox frame routes", () => {
+  let dataDir: string;
+  let token: string;
+  let app: Hono<AppEnv>;
+  beforeEach(() => {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "sandbox-frame-"));
+    const users = new UserService(dataDir);
+    users.create("admin", "admin", { password: "admin-pass-1" });
+    token = users.create("root", "admin", { password: "test-pass-1" }).token;
+    app = buildApp({ users, sessions: new SessionService(dataDir), config: defaultInstanceConfig(), dataDir, bus: new EventBus() });
+  });
+  afterEach(() => {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+  const call = (url: string, init: Record<string, unknown> = {}) =>
+    app.request(url, { headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...init });
+
+  it("reads workspace files only with a valid token, and only what the mount allows", async () => {
+    const cfg = (await (await call("/v1/sandbox/config")).json()) as { fsToken: string };
+    const root = path.join(dataDir, "users", "root");
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, "hello.txt"), "hi there");
+    fs.writeFileSync(path.join(root, "settings.json"), "{}");
+    const read = (t: string, p: string) => app.request(`/v1/sandbox/file?token=${encodeURIComponent(t)}&path=${encodeURIComponent(p)}`);
+    const ok = await read(cfg.fsToken, "hello.txt");
+    expect(ok.status).toBe(200);
+    expect(await ok.text()).toBe("hi there");
+    expect(ok.headers.get("access-control-allow-origin")).toBe("*");
+    expect((await read("forged.token", "hello.txt")).status).toBe(401);
+    expect((await read(cfg.fsToken, "settings.json")).status).toBe(404);
+    expect((await read(cfg.fsToken, "../../users.json")).status).toBe(404);
+    // the proxy token is not a file token, nor the other way round
+    const net = (await (await call("/v1/sandbox/config")).json()) as { token: string };
+    expect((await read(net.token, "hello.txt")).status).toBe(401);
+  });
+
+  it("marks the proxy's own answers and answers preflights", async () => {
+    const res = await app.request(`/v1/sandbox/proxy?url=${encodeURIComponent("http://10.0.0.1/")}`);
+    expect(res.headers.get("x-chrysalis-proxy")).toBe("error");
+    const pre = await app.request("/v1/sandbox/proxy?token=x&url=y", { method: "OPTIONS", headers: { "access-control-request-headers": "x-a, content-type" } });
+    expect(pre.status).toBe(204);
+    expect(pre.headers.get("access-control-allow-headers")).toBe("x-a, content-type");
+  });
+});

@@ -17,6 +17,7 @@ import path from "node:path";
 import git from "isomorphic-git";
 import http from "isomorphic-git/http/node";
 import diff3Merge from "diff3";
+import { gitConfigRefused } from "../sandbox/workspace.js";
 
 const GIT_ENV = {
   ...process.env,
@@ -215,8 +216,19 @@ export async function gcRepoIfChunky(cwd: string, threshold = 4000): Promise<boo
     return false; // no repo / no objects dir
   }
   if (loose <= threshold || !systemGit()) return false;
+  // The agent's sandbox writes this repository's .git, and git runs commands
+  // its config names. A config the sandbox policy would refuse (written before
+  // that policy existed) is left alone; the rest is run with every
+  // command-running setting gc could reach forced off.
+  let config = "";
   try {
-    await runGit(["gc", "--quiet"], { cwd, timeoutMs: 300_000 });
+    config = fs.readFileSync(path.join(cwd, ".git", "config"), "utf8");
+  } catch {
+    return false;
+  }
+  if (gitConfigRefused(config) || fs.existsSync(path.join(cwd, ".git", "objects", "info", "alternates"))) return false;
+  try {
+    await runGit(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "gc.recentObjectsHook=", "-c", "core.alternateRefsCommand=", "gc", "--quiet"], { cwd, timeoutMs: 300_000 });
     return true;
   } catch {
     return false; // git missing or busy — loose objects keep working, just slower
