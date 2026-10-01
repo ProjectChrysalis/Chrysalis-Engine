@@ -105,6 +105,14 @@ const sandboxDest = path.join(resources, "prebuilt", "sandbox-k");
 for (const part of ["runtime", "vendor", "LICENSE", "sources.json"]) {
   fs.cpSync(path.join(sandboxK, part), path.join(sandboxDest, part), { recursive: true });
 }
+const runtimeVersion = (JSON.parse(fs.readFileSync(path.join(sandboxDest, "sources.json"), "utf8")) as { runtime: { version: string } }).runtime.version;
+fs.writeFileSync(path.join(resources, "SANDBOX-NOTICE.txt"),
+  `Chrysalis Sandbox ${runtimeVersion} is distributed under GPL-2.0-only.\n` +
+  `Its runtime files and license are in prebuilt/sandbox-k/.\n` +
+  `Source and build materials: https://github.com/ProjectChrysalis/chrysalis-sandbox/releases/download/v${runtimeVersion}/sandbox-${runtimeVersion}-sources.zip\n` +
+  `Component notices: prebuilt/sandbox-k/sources.json and the vendor license files.\n` +
+  `The engine retains its AGPL-3.0-only license; runtime files run in a separate browser worker.\n`,
+);
 console.log(`builder ${builder.version}, sandbox ${sandbox.version}`);
 
 // ---------- engine bundles ----------
