@@ -5,6 +5,7 @@ import path from "node:path";
 import isomorphicGit from "isomorphic-git";
 import { initRepo, commitAll, log, restoreFile, status, untrackBoundary, changedPaths, commitPaths } from "../src/git.js";
 import { ensureGitignoreEntries } from "../src/paths.js";
+import { gcRepoIfChunky } from "../src/apps/git.js";
 
 let dir: string;
 beforeEach(() => {
@@ -141,5 +142,19 @@ describe("commit ergonomics (CLI identity, reflog, path-scoped commits)", () => 
     fs.writeFileSync(path.join(dir, "agent", "x.jsonl"), "{}");
     fs.writeFileSync(path.join(dir, "c.json"), "C");
     expect(await changedPaths(dir)).toEqual(["c.json"]);
+  });
+});
+
+
+describe("workspace garbage collection", () => {
+  it.skipIf(!Bun.which("git"))("packs objects with a portable hooks directory and refuses unsafe configuration", async () => {
+    await initRepo(dir);
+    await commitAll(dir, "alice", "initial");
+    expect(await gcRepoIfChunky(dir, 0)).toBe(true);
+    expect(fs.readdirSync(path.join(dir, ".git", "objects", "pack")).some((name) => name.endsWith(".pack"))).toBe(true);
+    fs.writeFileSync(path.join(dir, "card.json"), "changed");
+    await commitAll(dir, "alice", "second");
+    fs.appendFileSync(path.join(dir, ".git", "config"), "\n[gc]\nrecentObjectsHook = evil\n");
+    expect(await gcRepoIfChunky(dir, 0)).toBe(false);
   });
 });

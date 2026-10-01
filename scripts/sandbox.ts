@@ -11,6 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { unzipSync } from "fflate";
 import { resourcesDir } from "../src/install";
+import { extractSandboxFiles } from "./sandbox-files.js";
 
 const RELEASE = {
   version: "0.4.1",
@@ -41,11 +42,5 @@ const hash = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 if (hash !== RELEASE.sha256) throw new Error(`sandbox archive sha256 mismatch: ${hash}`);
 
 const files = unzipSync(bytes);
-fs.rmSync(dest, { recursive: true, force: true });
-for (const [name, data] of Object.entries(files)) {
-  const target = path.resolve(dest, name);
-  if (!target.startsWith(path.resolve(dest))) throw new Error(`archive path escapes: ${name}`);
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(target, data);
-}
+extractSandboxFiles(files, dest);
 console.log(`sandbox ${RELEASE.version} ready at ${dest} (${Object.keys(files).length} files)`);

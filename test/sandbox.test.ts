@@ -13,7 +13,7 @@ import { WRITE_TOOLS, buildUserTools } from "../src/agent/tools.js";
 import { EventBus } from "../src/server/ws.js";
 import { BrowserSandbox } from "../src/sandbox/browser.js";
 import { capOutput, createSandbox, defaultSandboxConfig, type SandboxRunner } from "../src/sandbox/index.js";
-import { gitConfigRefused, readWorkspaceFile, workspaceFs } from "../src/sandbox/workspace.js";
+import { gitConfigRefused, readWorkspaceFile, sandboxPathAllowed, workspaceFs } from "../src/sandbox/workspace.js";
 import { bootstrapUserDir, userPaths } from "../src/paths.js";
 
 let tmp: string;
@@ -284,5 +284,32 @@ describe("git internals from the sandbox", () => {
     for (const rel of [".git/hooks/pre-commit", "repos/x/.git/hooks/post-checkout", ".git/objects/info/alternates", ".git/commondir", "apps/a/.git"]) {
       expect(write(p.root, rel, "#!/bin/sh\nevil\n")?.ok, rel).toBe(false);
     }
+  });
+});
+
+
+describe("portable sandbox path protections", () => {
+  it("protects Git config and hooks through casing and separator aliases", () => {
+    const bad = Buffer.from("[core]\nfsmonitor = evil\n").toString("base64");
+    for (const rel of [".GIT/CONFIG", "./.git/./config", "repos/x/.Git/Config", ".git\\config", ".GIT/Hooks/pre-commit", ".git/./hooks/pre-commit", "././mcp.json", ".\\.\\mcp.json"]) {
+      expect(workspaceFs(tmp, { op: "write", files: [{ path: rel, b64: bad }] }).results?.[0]?.ok, rel).toBe(false);
+    }
+    expect(fs.existsSync(path.join(tmp, ".git", "config"))).toBe(false);
+  });
+
+  it("keeps root Git metadata through normalized delete aliases", () => {
+    fs.mkdirSync(path.join(tmp, ".git"));
+    fs.writeFileSync(path.join(tmp, ".git", "HEAD"), "ref: refs/heads/main\n");
+    for (const rel of ["./.git/HEAD", ".git/./HEAD", ".GIT/head", ".git\\HEAD"]) {
+      expect(workspaceFs(tmp, { op: "delete", paths: [rel] }).results?.[0]?.ok, rel).toBe(false);
+    }
+    expect(fs.readFileSync(path.join(tmp, ".git", "HEAD"), "utf8")).toBe("ref: refs/heads/main\n");
+  });
+
+  it("rejects Windows drive, stream, device and trailing-character aliases", () => {
+    for (const rel of ["C:/outside", "C:outside", ".git/config:stream", ".git/config.", ".git/config ", "NUL", "con.txt", "a/LPT1.log", "AUTH.JSON", "SETTINGS.JSON", "apps/a/NODE_MODULES/a.js"]) {
+      expect(sandboxPathAllowed(rel), rel).toBeTruthy();
+    }
+    expect(sandboxPathAllowed("apps/a/data/card.json")).toBeNull();
   });
 });

@@ -130,7 +130,7 @@ Chrysalis keeps your data in its own folder, so an update never touches it.
 - Bun: `bun add -g chrysalis-engine@latest`.
 - Docker: `docker compose pull && docker compose up -d` (the `:staging` tag for
   staging), or `git pull && docker compose up -d --build` to build it yourself.
-- From source: `git pull && bun install && (cd client-agent && bun install) && bun run build:client`, then restart.
+- From source: `git pull && bun install && (cd client-agent && bun install) && bun run sandbox:fetch && bun run build:client`, then restart.
 
 Apps you have changed are never overwritten: the **Where to?** page marks apps
 with an update, and updating merges it with your edits. To move an app to another device, or keep a copy
@@ -145,6 +145,7 @@ git clone https://github.com/ProjectChrysalis/Chrysalis-Engine
 cd Chrysalis-Engine
 bun install
 (cd client-agent && bun install)
+bun run sandbox:fetch
 bun run build:client
 bun start
 ```

@@ -71,15 +71,19 @@ export function makePathGuard(root: string) {
   };
 }
 
+function normalizedPath(rel: string): string {
+  return path.posix.normalize(rel.replace(/\\/g, "/"));
+}
+
 /** Git internals are read and written by the sandbox bridge so real git works
  *  in the workspace; the agent's file tools still never touch them. */
 export function isGitPath(rel: string): boolean {
-  const norm = rel.replace(/\\/g, "/").replace(/^\.\//, "");
+  const norm = normalizedPath(rel).toLowerCase();
   return norm === ".git" || norm.startsWith(".git/");
 }
 
 /** Repository metadata whose loss breaks every reader; never deletable. */
-const KEEP_IN_GIT = new Set([".git/HEAD", ".git/config", ".git/index"]);
+const KEEP_IN_GIT = new Set([".git/head", ".git/config", ".git/index"]);
 
 /** Workspace files the sandbox never sees, as RegExp sources over the
  *  workspace-relative path: its git is told so a tracked one reads as
@@ -89,8 +93,11 @@ export const SANDBOX_HIDDEN: string[] = ["(^|/)auth\\.json$", ...AGENT_READ_DENY
 /** A path the sandbox may see. Rejects traversal, credentials, the user's
  *  settings and skipped trees. */
 export function sandboxPathAllowed(rel: string): string | null {
-  const norm = rel.replace(/\\/g, "/").replace(/^\.\//, "");
-  if (!norm || norm.startsWith("/") || norm.split("/").includes("..")) return "path escapes the workspace";
+  const raw = rel.replace(/\\/g, "/");
+  if (!raw || raw.startsWith("/") || raw.split("/").includes("..")) return "path escapes the workspace";
+  // Reject filesystem aliases that can hide protected files on Windows.
+  if (raw.includes(":") || Array.from(raw).some((c) => c.charCodeAt(0) < 32) || raw.split("/").some((s) => s !== "." && (/[. ]$/.test(s) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(s)))) return "path is not portable between filesystems";
+  const norm = normalizedPath(raw).toLowerCase();
   if (/(^|\/)auth\.json$/i.test(norm)) return "credentials are not sandbox-visible";
   if (isGitPath(norm)) return null;
   const denied = agentReadDenied(norm);
@@ -155,7 +162,7 @@ export function gitConfigRefused(source: string): string | null {
 
 /** Why the sandbox may not write `rel` with these bytes, or null. */
 export function gitWriteRefused(rel: string, bytes: Uint8Array): string | null {
-  const norm = rel.replace(/\\/g, "/");
+  const norm = normalizedPath(rel).toLowerCase();
   for (const [re, reason] of GIT_REFUSED) if (re.test(norm)) return reason;
   if (GIT_CONFIG_FILE.test(norm)) return gitConfigRefused(new TextDecoder().decode(bytes));
   return null;
@@ -182,7 +189,7 @@ export function listWorkspaceFiles(root: string): { files: WorkspaceFileInfo[]; 
         if (MOUNT_SKIP_DIRS.has(e.name)) continue;
         walk(path.join(dir, e.name), r);
       } else if (e.isFile()) {
-        if (/^auth\.json$/i.test(e.name) || agentReadDenied(r)) continue;
+        if (sandboxPathAllowed(r)) continue;
         let st: fs.Stats;
         try {
           st = fs.statSync(path.join(dir, e.name));
@@ -207,7 +214,7 @@ export function listWorkspaceFiles(root: string): { files: WorkspaceFileInfo[]; 
 export function readWorkspaceFile(root: string, rel: string): Buffer {
   const bad = sandboxPathAllowed(rel);
   if (bad) throw new Error(`Refused: ${bad}`);
-  const abs = path.resolve(root, rel);
+  const abs = path.resolve(root, normalizedPath(rel));
   makePathGuard(root).assertReadable(abs, rel);
   const st = fs.lstatSync(abs);
   if (!st.isFile()) throw new Error(`${rel} is not a file`);
@@ -235,10 +242,10 @@ export interface FsOpResult {
 /** Write one file the sandbox changed. */
 export function writeWorkspaceFile(root: string, rel: string, bytes: Uint8Array): FsPathResult {
   try {
-    const bad = sandboxPathAllowed(rel) ?? (isGitPath(rel) ? null : agentWriteDenied(rel)) ?? gitWriteRefused(rel, bytes);
+    const bad = sandboxPathAllowed(rel) ?? (isGitPath(rel) ? null : agentWriteDenied(normalizedPath(rel))) ?? gitWriteRefused(rel, bytes);
     if (bad) throw new Error(bad);
     if (bytes.length > MAX_SANDBOX_FILE) throw new Error("too large for the sandbox to write");
-    const abs = path.resolve(root, rel);
+    const abs = path.resolve(root, normalizedPath(rel));
     makePathGuard(root).assertWritable(abs, rel);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, bytes);
@@ -269,12 +276,12 @@ export function workspaceFs(root: string, op: FsOp): FsOpResult {
     const results: FsPathResult[] = [];
     for (const rel of op.paths.slice(0, MAX_BATCH)) {
       try {
-        const bad = sandboxPathAllowed(rel) ?? (isGitPath(rel) ? null : agentWriteDenied(rel));
+        const bad = sandboxPathAllowed(rel) ?? (isGitPath(rel) ? null : agentWriteDenied(normalizedPath(rel)));
         if (bad) throw new Error(bad);
         // Deleting these breaks the repository for every reader (the
         // engine's file tools included); no git operation removes them.
-        if (KEEP_IN_GIT.has(rel)) throw new Error(`${rel} is git metadata the engine keeps`);
-        const abs = path.resolve(root, rel);
+        if (KEEP_IN_GIT.has(normalizedPath(rel).toLowerCase())) throw new Error(`${rel} is git metadata the engine keeps`);
+        const abs = path.resolve(root, normalizedPath(rel));
         makePathGuard(root).assertWritable(abs, rel);
         fs.rmSync(abs, { force: true });
         results.push({ path: rel, ok: true });

@@ -13,6 +13,7 @@
  */
 import { execFile } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
 import http from "isomorphic-git/http/node";
@@ -227,11 +228,14 @@ export async function gcRepoIfChunky(cwd: string, threshold = 4000): Promise<boo
     return false;
   }
   if (gitConfigRefused(config) || fs.existsSync(path.join(cwd, ".git", "objects", "info", "alternates"))) return false;
+  const hooks = fs.mkdtempSync(path.join(os.tmpdir(), "chrysalis-no-hooks-"));
   try {
-    await runGit(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "gc.recentObjectsHook=", "-c", "core.alternateRefsCommand=", "gc", "--quiet"], { cwd, timeoutMs: 300_000 });
+    await runGit(["-c", "core.fsmonitor=false", "-c", `core.hooksPath=${hooks}`, "-c", "gc.recentObjectsHook=", "-c", "core.alternateRefsCommand=", "gc", "--quiet"], { cwd, timeoutMs: 300_000 });
     return true;
   } catch {
     return false; // git missing or busy — loose objects keep working, just slower
+  } finally {
+    fs.rmSync(hooks, { recursive: true, force: true });
   }
 }
 
