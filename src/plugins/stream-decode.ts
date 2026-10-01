@@ -74,7 +74,8 @@ export class JsonFieldStreamDecoder {
   push(chunk: string): void {
     if (!chunk || (this.mode === "done" && this.found)) return;
     if (this.mode === "pass") {
-      this.emit(chunk);
+      this.output += chunk;
+      this.drain();
       return;
     }
     for (const ch of chunk) {

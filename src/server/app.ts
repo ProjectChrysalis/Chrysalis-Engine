@@ -31,7 +31,7 @@ import { radiusProvider } from "@earendil-works/pi-ai/providers/radius";
 import type { AuthPrompt, Credential, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { curatedProviders, loadCustomProviders, reservedProviderIds } from "../providers/custom.js";
 import { UserAgent, instructionDocsStamp, listSessions, renameSession, archiveSession, sessionDir, isReasoningLevel, type ReasoningLevel } from "../agent/agent.js";
-import { summarizeSession } from "../agent/compact.js";
+import { lastSessionModel, summarizeSession } from "../agent/compact.js";
 import { listConnections, createConnection, updateConnection, deleteConnection, validateConnectionInput, validatePromptFormatInput, readConnections, connectionKeyUsable, type ConnectionInfo } from "../connections.js";
 import { PROMPT_FORMATS, type PromptFormat } from "../providers/prompt-formats.js";
 import {
@@ -124,7 +124,7 @@ function sha256(s: string): string {
 
 /** Route-scoped error with an HTTP status (compact helper throws these). */
 class HttpError extends Error {
-  constructor(readonly status: 400 | 404 | 500 | 503, message: string) {
+  constructor(readonly status: 400 | 404 | 409 | 500 | 503, message: string) {
     super(message);
   }
 }
@@ -2480,10 +2480,10 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const records = readRuns(p, id) ?? [];
     const runs = records.filter((r) => r.type === "run");
 
-    // summarize on the model the session runs on, never the account default:
-    // the default may be a different (paid) connection. A manual compact
-    // names no model, so take the one a live agent of this session holds.
-    let model = opts.model;
+    // Use an explicit choice or the recorded session model, including after
+    // restart. Legacy sessions without model metadata can use a live agent;
+    // only when neither is known does normal account model selection apply.
+    let model = opts.model ?? lastSessionModel(records);
     if (!model) {
       for (const [key, a] of agentInstances) if (key.startsWith(`${u.username}:${id}:`)) model = a.model.ref;
     }
@@ -2494,7 +2494,9 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       if (/no models configured/i.test((e as Error).message)) throw new HttpError(503, (e as Error).message);
       throw e;
     }
+    if (model && model.includes("/") && agent.model.ref !== model) throw new HttpError(503, "the session model is unavailable; choose a model for compaction");
     const runKey = `${u.username}:${agent.sessionId}`;
+    if (activeRuns.has(runKey)) throw new HttpError(409, "stop the current run before compacting this session");
     activeRuns.set(runKey, agent);
     try {
       // a one-shot call, NOT a run of the session agent: the session is what
@@ -2519,8 +2521,9 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       if (folded.droppedRuns) log.warn(`[agent] compact ${u.username}/${id}: ${folded.droppedRuns} oldest runs left out (too long to fold)`);
       const summary = folded.summary;
       // keep prior history, append the marker
-      const rec: { type: "compact"; at: number; summary: string; auto?: boolean } = {
+      const rec: { type: "compact"; at: number; model: string; summary: string; auto?: boolean } = {
         type: "compact",
+        model: ref,
         at: Date.now(),
         summary,
         ...(opts.auto ? { auto: true } : {}),
@@ -2541,11 +2544,13 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const id = c.req.param("id");
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id)) return c.json({ error: "invalid sessionId" }, 400);
     try {
-      const r = await compactSession(u, id);
+      const body = await c.req.json<{ model?: unknown }>().catch(() => null);
+      if (body?.model !== undefined && (typeof body.model !== "string" || body.model.length > 200 || !/^[^\s/]+\/[^\s]+$/.test(body.model))) return c.json({ error: "model must be provider/model" }, 400);
+      const r = await compactSession(u, id, typeof body?.model === "string" ? { model: body.model } : {});
       return c.json({ sessionId: id, ...r });
     } catch (e) {
       const status = e instanceof HttpError ? e.status : 500;
-      return c.json({ error: (e as Error).message }, status as 400 | 404 | 500 | 503);
+      return c.json({ error: (e as Error).message }, status as 400 | 404 | 409 | 500 | 503);
     }
   });
 

@@ -19,7 +19,7 @@ const UNKNOWN_WINDOW_CHUNK_TOKENS = 16_000;
 const SUMMARY_MAX_TOKENS = 4096;
 
 type ToolRec = { name?: unknown; ok?: unknown; summary?: unknown; args?: unknown };
-type Rec = { type?: unknown; user?: unknown; assistant?: unknown; summary?: unknown; tools?: unknown; turns?: unknown };
+type Rec = { model?: unknown; type?: unknown; user?: unknown; assistant?: unknown; summary?: unknown; tools?: unknown; turns?: unknown };
 
 /** The argument that says what a tool call touched (a path, a command…). */
 function toolTarget(args: unknown): string {
@@ -39,6 +39,15 @@ function toolLine(tools: ToolRec[]): string {
       return `${t.name as string}${target ? ` ${target}` : ""}${t.ok === false ? " (failed)" : ""}`;
     });
   return parts.length ? `[tools: ${parts.join("; ")}]` : "";
+}
+
+/** Most recent recorded session model; legacy records have no model. */
+export function lastSessionModel(records: readonly Rec[]): string | undefined {
+  for (let i = records.length - 1; i >= 0; i--) {
+    const r = records[i]!;
+    if ((r.type === "run" || r.type === "compact") && typeof r.model === "string" && /^[^\s/]+\/[^\s]+$/.test(r.model) && r.model.length <= 200) return r.model;
+  }
+  return undefined;
 }
 
 /** Plain-text transcript entries since the last compact marker. */

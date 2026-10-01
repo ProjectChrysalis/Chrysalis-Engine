@@ -101,6 +101,11 @@ describe("JsonFieldStreamDecoder", () => {
     }
   });
 
+  it("preserves a plain-text surrogate pair split across the first chunks", () => {
+    const text = "😃 plain response";
+    expect(decode({ fields: ["response"] }, [text.slice(0, 1), text.slice(1, 2), text.slice(2)])).toBe(text);
+  });
+
   it("passes plain prose through untouched instead of showing nothing", () => {
     expect(decode({ fields: ["response"] }, ["Sure, ", "here is the reply."])).toBe("Sure, here is the reply.");
     // a JSON head without the field never becomes the envelope

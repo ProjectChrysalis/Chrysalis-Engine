@@ -19,7 +19,7 @@ import {
   newTrimState,
   outputCap,
 } from "../src/agent/context-budget.js";
-import { compactionInput, summarizeSession } from "../src/agent/compact.js";
+import { compactionInput, lastSessionModel, summarizeSession } from "../src/agent/compact.js";
 import { UserAgent, windowFromError } from "../src/agent/agent.js";
 import { UserModelService } from "../src/models.js";
 import { defaultInstanceConfig } from "../src/config.js";
@@ -218,6 +218,11 @@ describe("overflow message parsing", () => {
 });
 
 describe("compaction", () => {
+  it("restores the latest recorded model while tolerating legacy and invalid metadata", () => {
+    expect(lastSessionModel([{ type: "run", model: "local/old" }, { type: "compact", model: "local/new" }, { type: "rename", model: "wrong/metadata" }])).toBe("local/new");
+    expect(lastSessionModel([{ type: "run" }, { type: "run", model: {} }, { type: "compact", model: "invalid" }])).toBeUndefined();
+  });
+
   it("folds every run even when the transcript needs more than six chunks", async () => {
     const prompts: string[] = [];
     const records = Array.from({ length: 14 }, (_, i) => ({ type: "run", user: `TASK_${i}: ${"a".repeat(20_000)}`, assistant: `done ${i}` }));

@@ -79,6 +79,8 @@ function toolResultText(content: { type: string; text?: string }[]): { summary: 
 
 interface SessionRunRecord {
   type: "run";
+  /** Provider/model used for this run, so compaction survives a restart. */
+  model?: string;
   at: number;
   user: string;
   assistant: string;
@@ -100,6 +102,7 @@ interface SessionRunRecord {
  */
 export interface SessionCompactRecord {
   type: "compact";
+  model?: string;
   at: number;
   summary: string;
 }
@@ -607,6 +610,7 @@ export class UserAgent {
       fs.mkdirSync(path.dirname(this.sFile), { recursive: true });
       const rec: SessionRunRecord = {
         type: "run",
+        model: this.model.ref,
         at: Date.now(),
         user: userMessage,
         assistant: finalText,
