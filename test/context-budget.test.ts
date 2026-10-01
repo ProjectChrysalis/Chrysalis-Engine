@@ -133,6 +133,41 @@ describe("fitContext", () => {
     expect(fit.after).toBeLessThanOrEqual(inputBudget(model));
   });
 
+  it("preserves transcript instruction and tool updates when dropping old history", () => {
+    const initial: AgentMessage = {
+      role: "system", content: "Keep the agent instructions.", timestamp: 1,
+      toolsAdded: [{ name: "read_file", description: "Read a file", parameters: { type: "object" } }],
+      sections: { rules: "Keep this section." },
+    };
+    const update: AgentMessage = { role: "system", content: "Additional instructions.", timestamp: 2, toolsRemoved: [{ name: "read_file" }] };
+    const messages: AgentMessage[] = [initial, user("build the app")];
+    for (let i = 0; i < 400; i++) {
+      if (i === 2) messages.push(update);
+      messages.push(call(`t${i}`, {}), result(`t${i}`, "x".repeat(900)));
+    }
+    const state = newTrimState();
+    const fit = fitContext(model, { messages }, { state });
+    expect(state.cut).toBeGreaterThan(10);
+    expect(fit.messages.slice(0, 2)).toEqual([initial, update]);
+    expect(fit.after).toBeLessThanOrEqual(inputBudget(model));
+    const heavy: AgentMessage = { ...initial, toolsAdded: [{ name: "large", description: "界".repeat(20_000), parameters: {} }] };
+    expect(estimateContextTokens({ messages: [heavy] })).toBeGreaterThan(20_000);
+    expect(messages[0]).toBe(initial);
+  });
+
+  it("does not clamp a trimmed request against usage from the old oversized prefix", () => {
+    const messages: AgentMessage[] = [user("keep working")];
+    for (let i = 0; i < 20; i++) messages.push(call(`t${i}`, {}), result(`t${i}`, "x".repeat(8000)));
+    messages.push(assistant([{ type: "text", text: "continue" }], { usage: { input: 30_000, output: 500, cacheRead: 0, cacheWrite: 0 } }));
+    const state = newTrimState();
+    const fit = fitContext(model, { messages }, { state });
+    expect(clampMaxTokens(model, { messages: fit.messages })).toBeGreaterThan(4096);
+    const stable = fitContext(model, { messages }, { state });
+    expect(stable.advanced).toBe(false);
+    expect(stable.messages).toEqual(fit.messages);
+    expect((messages.at(-1) as { usage: { input: number } }).usage.input).toBe(30_000);
+  });
+
   it("trims oldest first, only as far as needed: recent reads stay whole", () => {
     const messages: AgentMessage[] = [user("map the app")];
     for (let i = 0; i < 12; i++) messages.push(call(`r${i}`, { path: `f${i}.ts` }), result(`r${i}`, `file ${i}\n`.padEnd(8000, "x")));
@@ -183,6 +218,33 @@ describe("overflow message parsing", () => {
 });
 
 describe("compaction", () => {
+  it("folds every run even when the transcript needs more than six chunks", async () => {
+    const prompts: string[] = [];
+    const records = Array.from({ length: 14 }, (_, i) => ({ type: "run", user: `TASK_${i}: ${"a".repeat(20_000)}`, assistant: `done ${i}` }));
+    const out = await summarizeSession({ model: { contextWindow: 8192, maxTokens: 4096 }, records, generate: async (prompt, max) => {
+      prompts.push(prompt);
+      expect(estimateTextTokens(prompt) + max).toBeLessThanOrEqual(8192);
+      return "folded";
+    } });
+    expect(out.chunks).toBeGreaterThan(6);
+    expect(out.droppedRuns).toBe(0);
+    const transcript = prompts.map((p) => p.split("<conversation>\n")[1]!.split("\n</conversation>")[0]!).join("");
+    expect(transcript).toBe(compactionInput(records).runs.join("\n\n"));
+  });
+
+  it("fits a small window with a large previous summary and CJK transcript", async () => {
+    const out = await summarizeSession({
+      model: { contextWindow: 8192, maxTokens: 4096 },
+      records: [{ type: "compact", summary: "界".repeat(4000) }, { type: "run", user: "界".repeat(6000), assistant: "done" }],
+      generate: async (prompt, max) => {
+        expect(estimateTextTokens(prompt) + max).toBeLessThanOrEqual(8192);
+        return "界".repeat(max);
+      },
+    });
+    expect(out.chunks).toBeGreaterThan(1);
+    expect(out.droppedRuns).toBe(0);
+  });
+
   it("starts from the last marker and lists the files each run touched", () => {
     const input = compactionInput([
       { type: "run", user: "old", assistant: "old answer", tools: [] },
@@ -246,7 +308,7 @@ describe("agent loop under a tight window (faux provider)", () => {
     const seen: number[] = [];
     handle.setResponses([
       (ctx, opts) => {
-        seen.push(estimateContextTokens({ systemPrompt: ctx.systemPrompt, messages: ctx.messages as AgentMessage[], tools: ctx.tools }) + (opts?.maxTokens ?? 0));
+        seen.push(estimateContextTokens({ messages: ctx.messages as AgentMessage[] }) + (opts?.maxTokens ?? 0));
         return fauxAssistantMessage("ok");
       },
     ]);

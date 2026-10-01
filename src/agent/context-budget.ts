@@ -88,6 +88,11 @@ export function estimateMessageTokens(m: AgentMessage): number {
   let tokens = MESSAGE_OVERHEAD_TOKENS;
   if (typeof content === "string") tokens += estimateTextTokens(content);
   else if (Array.isArray(content)) for (const b of content) tokens += blockTokens(b as Block);
+  if (m.role === "system") {
+    tokens += toolsTokens(m.toolsAdded);
+    tokens += estimateTextTokens(safeJson(m.sections ?? {}));
+    tokens += estimateTextTokens(safeJson(m.toolsRemoved ?? []));
+  }
   return tokens;
 }
 
@@ -242,10 +247,12 @@ export interface TrimState {
   soft: number;
   hard: number;
   cut: number;
+  /** Usage before this index measured an older, larger request. */
+  usageFrom: number;
 }
 
 export function newTrimState(): TrimState {
-  return { soft: 0, hard: 0, cut: 0 };
+  return { soft: 0, hard: 0, cut: 0, usageFrom: 0 };
 }
 
 /**
@@ -288,7 +295,8 @@ export function fitContext(
       break;
     }
   }
-  const slimmable = (i: number) => i < tailStart && i !== lastUser;
+  const isSystem = (i: number) => messages[i]?.role === "system";
+  const slimmable = (i: number) => i < tailStart && i !== lastUser && !isSystem(i);
   const level = (i: number) => (!slimmable(i) ? 0 : i < st.hard ? 2 : i < st.soft ? 1 : 0);
   // per-message token counts at each clip level, computed on demand
   const cache: (number | undefined)[][] = [[], [], []];
@@ -298,13 +306,20 @@ export function fitContext(
   const taskCut = () => lastUser >= 0 && lastUser < st.cut;
   const total = () => {
     let t = prefix + (st.cut > 0 ? notice + (taskCut() ? tok(lastUser, 0) : 0) : 0);
+    for (let i = 0; i < st.cut; i++) if (isSystem(i)) t += tok(i, 0);
     for (let i = st.cut; i < messages.length; i++) t += tok(i);
     return t;
   };
   const build = (): AgentMessage[] => {
     const kept: AgentMessage[] = [];
+    // Replay all prior instruction and tool updates before the retained history.
+    for (let i = 0; i < st.cut; i++) if (isSystem(i)) kept.push(messages[i]!);
     if (st.cut > 0) kept.push(noticeMessage(taskCut() ? messages[lastUser] : undefined));
-    for (let i = st.cut; i < messages.length; i++) kept.push(variant(i, level(i)));
+    for (let i = st.cut; i < messages.length; i++) {
+      const m = variant(i, level(i));
+      // A pre-trim provider reading cannot calibrate a smaller request.
+      kept.push(i < st.usageFrom && m.role === "assistant" && (m.usage.input + m.usage.output + m.usage.cacheRead + m.usage.cacheWrite > 0) ? { ...m, usage: { ...m.usage, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 } } : m);
+    }
     return kept;
   };
 
@@ -318,7 +333,10 @@ export function fitContext(
   }
 
   const target = Math.floor(budget * (opts.force ? FORCED_TRIM_TARGET : TRIM_TARGET));
-  const done = () => ({ messages: build(), trimmed: true, advanced: true, before: full, after });
+  const done = () => {
+    st.usageFrom = messages.length;
+    return { messages: build(), trimmed: true, advanced: true, before: full, after };
+  };
 
   // passes 1–2: clip oldest first, one message at a time
   for (const key of ["soft", "hard"] as const) {
@@ -345,6 +363,7 @@ export function fitContext(
   // tool result (a 256 KB read into a 32k window). Share what room remains
   // between the tool results, most recent included. Not kept in the state:
   // it depends on the tail, which changes every call anyway.
+  st.usageFrom = messages.length;
   let work = build();
   const results = work.filter((m) => (m as { role?: string }).role === "toolResult").length;
   if (results) {

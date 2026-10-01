@@ -8,16 +8,14 @@
  * larger than the model's window is folded in chunks, each pass carrying the
  * summary so far.
  */
-import { estimateTextTokens, inputBudget, outputCap, type BudgetModel } from "./context-budget.js";
+import { estimateTextTokens, outputCap, type BudgetModel } from "./context-budget.js";
 
 const SUMMARY_PROMPT =
   "Summarize the conversation below into a compact session memory. Preserve: what the user wants, decisions made, every file path created or edited, plugin/app/MCP state, and open threads / next steps. Write it as a self-contained briefing a coding agent can continue from, in plain text with short sections. No preamble, no commentary about summarizing.";
 const EARLIER_NOTE = "The summary of the conversation before this part is given first: fold it into the new summary, keeping everything that still matters.";
 
-/** Chunk size when the model's window is unknown: fits any current model. */
+/** Conservative input allowance when the model catalog has no window. */
 const UNKNOWN_WINDOW_CHUNK_TOKENS = 16_000;
-/** More chunks than this and the oldest runs are left to the earlier summary. */
-const MAX_CHUNKS = 6;
 const SUMMARY_MAX_TOKENS = 4096;
 
 type ToolRec = { name?: unknown; ok?: unknown; summary?: unknown; args?: unknown };
@@ -43,15 +41,6 @@ function toolLine(tools: ToolRec[]): string {
   return parts.length ? `[tools: ${parts.join("; ")}]` : "";
 }
 
-function clipMiddle(text: string, maxTokens: number): string {
-  if (estimateTextTokens(text) <= maxTokens) return text;
-  // chars ≈ tokens × 2 is safe for any script at our estimate's rates
-  const keep = Math.max(200, maxTokens * 2);
-  const head = text.slice(0, Math.floor(keep * 0.6));
-  const tail = text.slice(text.length - Math.floor(keep * 0.4));
-  return `${head}\n…[${text.length - head.length - tail.length} chars omitted]…\n${tail}`;
-}
-
 /** Plain-text transcript entries since the last compact marker. */
 export function compactionInput(records: Rec[]): { earlier?: string; runs: string[] } {
   let earlier: string | undefined;
@@ -75,27 +64,6 @@ export function compactionInput(records: Rec[]): { earlier?: string; runs: strin
   return { ...(earlier ? { earlier } : {}), runs };
 }
 
-/** Pack runs into chunks of at most `budget` tokens, newest last. */
-function pack(runs: string[], budget: number): { text: string; runs: number }[] {
-  const chunks: { text: string; runs: number }[] = [];
-  let cur: string[] = [];
-  let curTokens = 0;
-  const flush = () => {
-    if (cur.length) chunks.push({ text: cur.join("\n\n"), runs: cur.length });
-    cur = [];
-    curTokens = 0;
-  };
-  for (const run of runs) {
-    const text = clipMiddle(run, budget);
-    const t = estimateTextTokens(text) + 2;
-    if (cur.length && curTokens + t > budget) flush();
-    cur.push(text);
-    curTokens += t;
-  }
-  flush();
-  return chunks;
-}
-
 export interface SummarizeOptions {
   model: BudgetModel;
   records: Rec[];
@@ -107,27 +75,42 @@ export interface SummarizeOptions {
 export async function summarizeSession(opts: SummarizeOptions): Promise<{ summary: string; chunks: number; droppedRuns: number }> {
   const { earlier, runs } = compactionInput(opts.records);
   if (!runs.length) throw new Error("nothing to compact");
-  const maxTokens = Math.min(SUMMARY_MAX_TOKENS, outputCap(opts.model));
-  const budget = inputBudget(opts.model);
-  // room for the prompt, the running summary and the reply
-  const chunkBudget = budget ? Math.max(2000, Math.floor(budget * 0.6) - maxTokens) : UNKNOWN_WINDOW_CHUNK_TOKENS;
-
-  let chunks = pack(runs, chunkBudget);
-  let droppedRuns = 0;
-  if (chunks.length > MAX_CHUNKS) {
-    // keep the newest; the oldest are the least likely to matter now
-    droppedRuns = chunks.slice(0, -MAX_CHUNKS).reduce((n, c) => n + c.runs, 0);
-    chunks = chunks.slice(-MAX_CHUNKS);
-  }
-
-  let summary = earlier ?? "";
-  for (const { text: chunk } of chunks) {
-    const prompt = summary
-      ? `${SUMMARY_PROMPT}\n${EARLIER_NOTE}\n\n<earlier_summary>\n${summary}\n</earlier_summary>\n\n<conversation>\n${chunk}\n</conversation>`
-      : `${SUMMARY_PROMPT}\n\n<conversation>\n${chunk}\n</conversation>`;
+  const window = opts.model.contextWindow && opts.model.contextWindow > 0 ? opts.model.contextWindow : 0;
+  const maxTokens = Math.min(SUMMARY_MAX_TOKENS, outputCap(opts.model), window ? Math.max(1, Math.floor(window / 8)) : SUMMARY_MAX_TOKENS);
+  const inputLimit = window ? window - maxTokens - Math.max(256, Math.floor(window * 0.03)) : UNKNOWN_WINDOW_CHUNK_TOKENS;
+  // The prior summary is folded too: an older engine may have written one
+  // bigger than this model can carry. Every byte of every run is visited.
+  const transcript = [...(earlier ? [`Earlier session summary:\n${earlier}`] : []), ...runs].join("\n\n");
+  let offset = 0;
+  let summary = "";
+  let chunks = 0;
+  while (offset < transcript.length) {
+    const prefix = summary
+      ? `${SUMMARY_PROMPT}\n${EARLIER_NOTE}\n\n<earlier_summary>\n${summary}\n</earlier_summary>\n\n<conversation>\n`
+      : `${SUMMARY_PROMPT}\n\n<conversation>\n`;
+    const suffix = "\n</conversation>";
+    const room = inputLimit - estimateTextTokens(prefix + suffix) - 32;
+    if (room < 1) throw new Error("compaction summary leaves no room for the conversation in this model's context window");
+    // Count the actual script instead of assuming a chars-per-token ratio.
+    let low = 0;
+    let high = transcript.length - offset;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (estimateTextTokens(transcript.slice(offset, offset + middle)) <= room) low = middle;
+      else high = middle - 1;
+    }
+    if (!low) throw new Error("model context window is too small for session compaction");
+    const endCode = transcript.charCodeAt(offset + low - 1);
+    if (endCode >= 0xd800 && endCode <= 0xdbff && offset + low < transcript.length) low--;
+    if (!low) throw new Error("model context window is too small for session compaction");
+    const chunk = transcript.slice(offset, offset + low);
+    const prompt = prefix + chunk + suffix;
+    if (estimateTextTokens(prompt) + 32 > inputLimit) throw new Error("compaction request exceeds its input budget");
     const out = (await opts.generate(prompt, maxTokens)).trim();
     if (!out) throw new Error("compaction produced no summary (check that a model is configured)");
     summary = out;
+    offset += low;
+    chunks++;
   }
-  return { summary, chunks: chunks.length, droppedRuns };
+  return { summary, chunks, droppedRuns: 0 };
 }

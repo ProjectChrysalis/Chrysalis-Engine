@@ -337,7 +337,7 @@ export class UserAgent {
         // pi-agent-core's contract: this hook must never throw
         try {
           const st = agent.state;
-          const fit = fitContext(st.model, { systemPrompt: st.systemPrompt, messages: msgs, tools: st.tools }, { force: budget.force, state: trim });
+          const fit = fitContext(st.model, { messages: msgs }, { force: budget.force, state: trim });
           if (fit.advanced) log.info(`[agent:${sessionId}] context trimmed ~${fit.before} → ~${fit.after} tokens (window ${st.model.contextWindow})`);
           return fit.messages;
         } catch (e) {
