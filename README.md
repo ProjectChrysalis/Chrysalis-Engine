@@ -209,7 +209,7 @@ frontend, and its agent runs on pi's own libraries.
 | [Hono](https://hono.dev) | HTTP server and routing | MIT |
 | [Model Context Protocol SDK](https://github.com/modelcontextprotocol/typescript-sdk) | Connecting to external MCP servers for agent tools | MIT |
 | [QuickJS-ng](https://github.com/quickjs-ng/quickjs) via [quickjs-emscripten](https://github.com/justjake/quickjs-emscripten) | The app plugin sandbox | MIT |
-| [Chrysalis Sandbox](https://github.com/ProjectChrysalis/chrysalis-sandbox) | The agent's in-browser shell, Git, Python, Node-style JavaScript and utilities; distributed as separate runtime files | GPL-2.0-only; [source/build materials](https://github.com/ProjectChrysalis/chrysalis-sandbox/releases/download/v0.4.1/sandbox-0.4.1-sources.zip), component notices in packaged `sources.json` |
+| [Chrysalis Sandbox](https://github.com/ProjectChrysalis/chrysalis-sandbox) | The agent's in-browser shell, Git, Python, Node-style JavaScript and utilities; distributed as separate runtime files | GPL-2.0-only; [source/build materials](https://github.com/ProjectChrysalis/chrysalis-sandbox/releases/download/v0.4.2/sandbox-0.4.2-sources.zip), component notices in packaged `sources.json` |
 | [isomorphic-git](https://isomorphic-git.org) | Workspace version control, and installing apps from git without a git program | MIT |
 | [esbuild](https://esbuild.github.io) | Bundling app frontends and app builds (WASM inside the browser builder) | MIT |
 | [React](https://react.dev) | The web client shell and the agent chat UI | MIT |
