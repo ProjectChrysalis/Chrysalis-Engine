@@ -122,6 +122,67 @@
     try { source.postMessage(msg, "*"); } catch { /* frame gone */ }
   }
 
+  var pendingDownload = null;
+  var downloadStyles = false;
+  function handleDownload(record, source, d) {
+    if (!(d.blob instanceof Blob) || d.blob.size > MAX_BODY || typeof d.filename !== "string" || d.filename.length > 255) {
+      send(source, { __chrysalis: 1, type: "download-error", error: "invalid file or file exceeds 64 MiB" });
+      return;
+    }
+    if (pendingDownload) {
+      send(source, { __chrysalis: 1, type: "download-error", error: "save or cancel the pending file first" });
+      return;
+    }
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: Filenames cannot contain control characters.
+    var filename = d.filename.replace(/[\\/\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, "_") || "download";
+    var blob = d.blob;
+    if (!downloadStyles) {
+      var sheet = document.createElement("link");
+      sheet.rel = "stylesheet";
+      sheet.href = "/client/app-download.css";
+      document.head.appendChild(sheet);
+      downloadStyles = true;
+    }
+    var panel = document.createElement("dialog");
+    panel.className = "chrysalis-download";
+    panel.setAttribute("aria-label", "Download from " + record.appId);
+    var title = document.createElement("strong");
+    title.textContent = "Download from " + record.appId;
+    var name = document.createElement("p");
+    name.textContent = filename;
+    var save = document.createElement("button");
+    save.type = "button";
+    save.textContent = "Save file";
+    var cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    function close() {
+      blob = null;
+      panel.close();
+      panel.remove();
+      if (pendingDownload && pendingDownload.panel === panel) pendingDownload = null;
+    }
+    save.addEventListener("click", function (event) {
+      // An app cannot synthesize a click in the shell to approve its file.
+      if (!event.isTrusted || !blob) return;
+      var url = URL.createObjectURL(new Blob([blob], { type: "application/octet-stream" }));
+      var anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 60_000);
+      close();
+    });
+    cancel.addEventListener("click", close);
+    panel.addEventListener("cancel", close);
+    panel.append(title, name, save, cancel);
+    document.body.appendChild(panel);
+    pendingDownload = { record: record, panel: panel, close: close };
+    panel.show();
+  }
+
   function handleFetch(record, source, d) {
     var method = typeof d.method === "string" ? d.method.toUpperCase() : "GET";
     var url;
@@ -267,7 +328,8 @@
       return;
     }
     if (d.nonce !== record.nonce) return;
-    if (d.type === "fetch") handleFetch(record, e.source, d);
+    if (d.type === "download") handleDownload(record, e.source, d);
+    else if (d.type === "fetch") handleFetch(record, e.source, d);
     else if (d.type === "ws-open") handleWsOpen(record, e.source, d);
     else if (d.type === "ws-send") {
       var ws = wsClients.get(wsKey(record.appId, d.wsId));
@@ -292,7 +354,10 @@
   CH.serve = function (iframe, appId, username, trusted) {
     var record = { appId: appId, username: username, nonce: randomNonce(), trusted: trusted === true };
     frames.set(iframe.contentWindow, record);
-    return function unserve() { frames.delete(iframe.contentWindow); };
+    return function unserve() {
+      frames.delete(iframe.contentWindow);
+      if (pendingDownload && pendingDownload.record === record) pendingDownload.close();
+    };
   };
 
   CH.allowedRequest = allowedRequest;

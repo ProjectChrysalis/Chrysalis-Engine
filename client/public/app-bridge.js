@@ -90,8 +90,43 @@
       else p.resolve(d);
       return;
     }
+    if (d.type === "download-error") {
+      console.error("Download failed: " + d.error);
+      return;
+    }
     if (d.type === "ws-event") deliverWs(d);
   });
+
+  // Downloads carry app-owned bytes, never a URL for the host to fetch.
+  var downloadBlobs = new Map();
+  var createObjectURL = URL.createObjectURL.bind(URL);
+  var revokeObjectURL = URL.revokeObjectURL.bind(URL);
+  URL.createObjectURL = function (value) {
+    var url = createObjectURL(value);
+    if (value instanceof Blob) downloadBlobs.set(url, value);
+    return url;
+  };
+  URL.revokeObjectURL = function (url) {
+    downloadBlobs.delete(String(url));
+    revokeObjectURL(url);
+  };
+  function downloadAnchor(anchor) {
+    if (!parentWin || !anchor.hasAttribute("download")) return false;
+    var blob = downloadBlobs.get(anchor.href);
+    if (!blob) return false;
+    if (blob.size > 64 * 1024 * 1024) throw new Error("File exceeds 64 MiB");
+    var filename = anchor.download;
+    whenReady(function () { post({ type: "download", blob: blob, filename: filename }); });
+    return true;
+  }
+  var anchorClick = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function () {
+    if (!downloadAnchor(this)) return anchorClick.call(this);
+  };
+  document.addEventListener("click", function (event) {
+    var anchor = event.target && event.target.closest ? event.target.closest("a[download]") : null;
+    if (anchor && downloadAnchor(anchor)) event.preventDefault();
+  }, true);
 
   // ---------- fetch ----------
   var TOO_BIG = 32 * 1024 * 1024;

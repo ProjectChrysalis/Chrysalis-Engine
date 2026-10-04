@@ -1,0 +1,27 @@
+.chrysalis-download {
+  position: fixed;
+  inset: auto 1rem 1rem auto;
+  z-index: 1000;
+  width: min(24rem, calc(100vw - 2rem));
+  margin: 0;
+  padding: 1rem;
+  border: 1px solid var(--c-line);
+  border-radius: 0.75rem;
+  background: var(--c-panel);
+  color: var(--c-ink);
+  box-shadow: var(--s-raised);
+  font: 14px system-ui, sans-serif;
+}
+.chrysalis-download p { margin: 0.5rem 0 1rem; overflow-wrap: anywhere; }
+.chrysalis-download button {
+  margin-right: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--c-line);
+  border-radius: 0.5rem;
+  background: var(--c-base);
+  color: var(--c-ink);
+  font: inherit;
+  cursor: pointer;
+}
+.chrysalis-download button:hover { background: var(--c-hover); }
+.chrysalis-download button:focus-visible { outline: 2px solid var(--c-line-focus); outline-offset: 2px; }
