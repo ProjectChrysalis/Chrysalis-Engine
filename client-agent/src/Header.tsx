@@ -1,51 +1,17 @@
-import { ModelSelector, type ModelOption } from "@/components/assistant-ui/elements/model-selector.aui"
+import { AgentModelPicker } from "./AgentModelPicker"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { SidebarSimple, WifiSlash } from "@phosphor-icons/react"
-import { useMemo, type ReactNode } from "react"
+import type { ReactNode } from "react"
 import { useAgent } from "./store"
-import { shortModelName } from "@/lib/utils"
 
 export function ComposerSettings(): ReactNode {
-  const models = useAgent((s) => s.models)
-  const model = useAgent((s) => s.model)
-  const reasoning = useAgent((s) => s.reasoning)
   const mode = useAgent((s) => s.mode)
-  const setModel = useAgent((s) => s.setModel)
-  const setReasoning = useAgent((s) => s.setReasoning)
   const setMode = useAgent((s) => s.setMode)
-  const options = useMemo<readonly ModelOption[]>(() => {
-    // With more than one connection, show which connection each model comes
-    // from under its name; a single connection needs no disambiguation.
-    const multi = new Set(models.map((m) => m.connectionName ?? m.provider)).size > 1
-    return models.map((m) => ({
-      id: `${m.provider}/${m.modelId}`,
-      // Keep the full provider label searchable when the button is truncated.
-      name: shortModelName(m.label),
-      ...(multi ? { description: m.connectionName ?? m.provider } : {}),
-      keywords: [m.provider, m.connectionName ?? "", m.label],
-      ...(m.reasoning && m.reasoningLevels.length
-        ? { efforts: m.reasoningLevels.map((l) => ({ id: l, name: l[0]?.toUpperCase() + l.slice(1) })) }
-        : {}),
-    }))
-  }, [models])
 
   return (
     <div className="flex min-w-0 items-center gap-1">
-      {options.length ? (
-        <ModelSelector
-          models={options}
-          value={model ?? undefined}
-          onValueChange={setModel}
-          effort={reasoning || undefined}
-          onEffortChange={(e) => setReasoning(e)}
-          variant="ghost"
-          size="sm"
-          className="h-8 min-w-0 max-w-60 shrink gap-1 rounded-full px-2 [&>span]:truncate [&>span]:gap-1.5"
-          searchable
-          align="start"
-        />
-      ) : null}
+      <AgentModelPicker />
       <Select
         items={[
           { label: "Full", value: "full" },
