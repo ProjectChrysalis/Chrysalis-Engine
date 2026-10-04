@@ -5,7 +5,7 @@
  * output text, and tokens + cost. Anyone running the engine can debug a
  * prompt straight from the terminal:
  *
- *   ╭─ LLM ▸ app:roleplay/engine · c_mocklab/mock-rp-8b via mocklab · 3 msgs · ~412t
+ *   ╭─ LLM ▸ app:roleplay/engine · c_mocklab/mock-rp-8b via mocklab · 3 msgs
  *   │ ── request ─────────────────────────────────────────────
  *   │ {
  *   │   "model": "mock-rp-8b",
@@ -23,17 +23,10 @@
  *
  * Errors print the full failure in red. Works for ANY app/plugin/agent —
  * callers tag `source` on the GenerateRequest. ANSI colors only when stdout
- * is a TTY (piped/redirected logs stay plain).
+ * is a TTY or FORCE_COLOR is set; NO_COLOR keeps output plain.
  */
-const TTY = typeof process !== "undefined" && Boolean(process.stdout?.isTTY);
-const c = TTY
-  ? {
-      dim: "\x1b[2m", bold: "\x1b[1m", cyan: "\x1b[36m", green: "\x1b[32m",
-      yellow: "\x1b[33m", red: "\x1b[31m", gray: "\x1b[90m", magenta: "\x1b[35m", reset: "\x1b[0m",
-    }
-  : { dim: "", bold: "", cyan: "", green: "", yellow: "", red: "", gray: "", magenta: "", reset: "" };
+import { consoleStyle as c } from "./console-style.js";
 
-const est = (s: string): number => Math.ceil(s.length / 4);
 const bar = (label: string): string =>
   `${c.gray}│ ${c.dim}── ${label} ${"─".repeat(Math.max(3, 46 - label.length))}${c.reset}`;
 const row = (line: string): string => `${c.gray}│${c.reset} ${line}`;
@@ -54,13 +47,10 @@ export interface TracePayload {
 export function llmLogRequest(source: string | undefined, p: TracePayload): void {
   const [provider, ...rest] = p.model.split("/");
   const via = p.connection ? ` ${c.gray}via ${c.reset}${c.bold}${p.connection}${c.reset}` : "";
-  const tokens = p.prompt != null
-    ? est(p.prompt)
-    : (p.systemPrompt ? est(p.systemPrompt) : 0) + (p.messages ?? []).reduce((n, m) => n + est(m.content), 0);
   const head =
     `${c.bold}${c.cyan}╭─ LLM${c.reset}${c.gray} ▸ ${source ?? "engine"}${c.reset} · ` +
     `${c.bold}${provider}/${c.cyan}${rest.join("/")}${c.reset}${via}` +
-    `${c.gray} · ${p.prompt != null ? "prompt" : `${(p.messages?.length ?? 0)} msgs`} · ~${tokens}t${c.reset}`;
+    `${c.gray} · ${p.prompt != null ? "prompt" : `${(p.messages?.length ?? 0)} msgs`}${c.reset}`;
 
   // one message per line, role+content compact — readable AND valid JSON
   const wire: { role: string; content: string }[] = [
@@ -70,9 +60,12 @@ export function llmLogRequest(source: string | undefined, p: TracePayload): void
   const body: string[] = [`  "model": ${JSON.stringify(rest.join("/"))},`];
   for (const [k, v] of Object.entries(p.params)) body.push(`  ${JSON.stringify(k)}: ${JSON.stringify(v)},`);
   body.push(`  "stream": true,`);
-  body.push(`  "messages": [`);
-  wire.forEach((m, i) => body.push(`    ${JSON.stringify(m)}${i < wire.length - 1 ? "," : ""}`));
-  body.push(`  ]`);
+  if (p.prompt != null) body.push(`  "prompt": ${JSON.stringify(p.prompt)}`);
+  else {
+    body.push(`  "messages": [`);
+    wire.forEach((m, i) => { body.push(`    ${JSON.stringify(m)}${i < wire.length - 1 ? "," : ""}`); });
+    body.push(`  ]`);
+  }
 
   console.log([head, bar("request"), row(c.gray + "{" + c.reset), ...body.map((l) => row(c.gray + l + c.reset)), row(c.gray + "}" + c.reset)].join("\n"));
 }
@@ -83,7 +76,7 @@ export function llmLogTool(
   args: Record<string, unknown>,
   result: { text: string; isError?: boolean },
 ): void {
-  const outcome = result.isError ? `${c.red}✗ ${result.text.slice(0, 160)}` : c.green + result.text.slice(0, 160);
+  const outcome = result.isError ? `${c.red}✗ ${result.text}` : c.green + result.text.slice(0, 160);
   console.log(
     row(`${c.magenta}⚙ tool round ${round}${c.reset} · ${c.bold}${name}${c.reset} ${JSON.stringify(args)} ${c.gray}→${c.reset} ${outcome}${c.reset}`),
   );

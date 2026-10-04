@@ -9,6 +9,8 @@
     <color name="ink_muted">#A0A0A8</color>
     <color name="accent">#7AA2F7</color>
     <color name="danger">#F2777A</color>
+    <color name="success">#7FD18B</color>
+    <color name="warning">#E3B341</color>
 
     <style name="Theme.Chrysalis" parent="android:Theme.Material.NoActionBar">
         <item name="android:colorAccent">@color/accent</item>

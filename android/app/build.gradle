@@ -4,6 +4,10 @@ plugins {
     id "com.android.application"
 }
 
+dependencies {
+    testImplementation "junit:junit:4.13.2"
+}
+
 // version and repository come from the engine's package.json (or the
 // CHRYSALIS_VERSION a CI build sets), so the APK always matches the server it carries
 def engine = new JsonSlurper().parse(file("../../package.json"))

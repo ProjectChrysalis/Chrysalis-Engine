@@ -17,10 +17,8 @@ import android.os.Looper;
 import org.json.JSONObject;
 
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
@@ -179,6 +177,7 @@ public final class EngineService extends Service {
         env.put("CHRYSALIS_SETUP_TOKEN", setupToken(this));
         env.put("CHRYSALIS_OPEN_BROWSER", "false");
         env.put("CHRYSALIS_EXIT_ON_STDIN_CLOSE", "1");
+        env.put("FORCE_COLOR", "1");
         process = pb.start();
         Process proc = process;
 
@@ -188,10 +187,11 @@ public final class EngineService extends Service {
         String url = waitForReady(proc, status);
         if (url == null) {
             if (stopping) return;
+            String reason = proc.isAlive() ? "Server did not become ready within 90 seconds." : "Server exited with code " + proc.exitValue() + ".";
             proc.destroy();
             proc.waitFor(3, TimeUnit.SECONDS);
             pump.join(1000);
-            fail(lastLines(outputFile(this), 12));
+            fail(reason + "\n" + ConsoleText.plain(lastLines(outputFile(this), 12)));
             return;
         }
         publish(Phase.RUNNING, 100, url, null);
@@ -201,7 +201,7 @@ public final class EngineService extends Service {
         pump.join(1000);
         if (stopping) return;
         if (code == 0) stopEngine();
-        else fail(lastLines(outputFile(this), 12));
+        else fail("Server exited with code " + code + ".\n" + ConsoleText.plain(lastLines(outputFile(this), 12)));
     }
 
     /** Wait for the server's status file and a health check that names the
@@ -237,16 +237,8 @@ public final class EngineService extends Service {
     }
 
     private void copyOutput(InputStream in) {
-        try (OutputStream out = new FileOutputStream(outputFile(this), false)) {
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) > 0) {
-                out.write(buf, 0, n);
-                out.flush();
-            }
-        } catch (IOException ignored) {
-            // the process closed its output
-        }
+        try { ServerLog.copy(in, outputFile(this)); }
+        catch (IOException e) { android.util.Log.e("Chrysalis", "Could not save server output", e); }
     }
 
     private void fail(String message) {
@@ -307,19 +299,5 @@ public final class EngineService extends Service {
     }
 
     /** The end of a log file, for an error message or the clipboard. */
-    static String lastLines(File file, int lines) {
-        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
-            long len = raf.length();
-            long start = Math.max(0, len - 64 * 1024);
-            byte[] bytes = new byte[(int) (len - start)];
-            raf.seek(start);
-            raf.readFully(bytes);
-            String[] all = new String(bytes, StandardCharsets.UTF_8).split("\n");
-            StringBuilder sb = new StringBuilder();
-            for (int i = Math.max(0, all.length - lines); i < all.length; i++) sb.append(all[i]).append('\n');
-            return sb.toString().trim();
-        } catch (IOException e) {
-            return "";
-        }
-    }
+    static String lastLines(File file, int lines) { return ServerLog.lastLines(file, lines); }
 }

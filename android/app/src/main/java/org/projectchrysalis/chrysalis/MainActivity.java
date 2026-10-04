@@ -90,6 +90,7 @@ public final class MainActivity extends Activity implements EngineService.Listen
     @Override
     protected void onPause() {
         EngineService.removeListener(this);
+        if (logDialog != null && logDialog.isShowing()) logDialog.dismiss();
         super.onPause();
     }
 
@@ -163,13 +164,14 @@ public final class MainActivity extends Activity implements EngineService.Listen
     /** The end of this run's server output, which carries every generation's
      *  request and reply; the engine log file when there is no run yet. */
     private String logText() {
-        String text = EngineService.lastLines(EngineService.outputFile(this), 400);
-        if (text.isEmpty()) text = EngineService.lastLines(new File(EngineService.homeDir(this), "data/logs/chrysalis.log"), 400);
+        File output = EngineService.outputFile(this);
+        String text = EngineService.lastLines(output.isFile() ? output : new File(EngineService.homeDir(this), "data/logs/chrysalis.log"), 400);
+        if (text.isEmpty()) text = getString(R.string.logs_empty);
         return "Chrysalis " + BuildConfig.VERSION_NAME + " (Android " + Build.VERSION.RELEASE + ")\n\n" + text;
     }
 
     private void copyLog() {
-        getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Chrysalis log", logText()));
+        getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Chrysalis log", ConsoleText.plain(logText())));
         Toast.makeText(this, R.string.log_copied, Toast.LENGTH_SHORT).show();
     }
 
@@ -198,17 +200,21 @@ public final class MainActivity extends Activity implements EngineService.Listen
 
         Handler handler = new Handler(Looper.getMainLooper());
         Runnable[] tail = new Runnable[1];
+        String[] last = new String[]{null};
         tail[0] = () -> {
+            if (!dialog.isShowing()) return;
             new Thread(() -> {
                 String text = logText();
                 runOnUiThread(() -> {
                     if (!dialog.isShowing()) return;
-                    boolean atBottom = atBottom(scroll);
-                    view.setText(text.isEmpty() ? getString(R.string.logs_empty) : text);
-                    if (atBottom) scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+                    if (!text.equals(last[0]) && !view.hasSelection() && (last[0] == null || atBottom(scroll))) {
+                        last[0] = text;
+                        view.setText(ConsoleText.styled(this, text));
+                        scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+                    }
+                    handler.postDelayed(tail[0], 2000);
                 });
             }, "chrysalis-log").start();
-            handler.postDelayed(tail[0], 2000);
         };
         dialog.setOnDismissListener(d -> handler.removeCallbacks(tail[0]));
         dialog.setOnShowListener(d -> {
