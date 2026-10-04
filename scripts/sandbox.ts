@@ -14,9 +14,9 @@ import { resourcesDir } from "../src/install";
 import { extractSandboxFiles } from "./sandbox-files.js";
 
 const RELEASE = {
-  version: "0.4.2",
-  url: "https://github.com/ProjectChrysalis/chrysalis-sandbox/releases/download/v0.4.2/sandbox-0.4.2.zip",
-  sha256: "df1131ddbdf4135325c87e07dcc14a19e3ec140b97372ac884a7ed6c81551ed9",
+  version: "0.4.3",
+  url: "https://github.com/ProjectChrysalis/chrysalis-sandbox/releases/download/v0.4.3/sandbox-0.4.3.zip",
+  sha256: "0114b6f881a8a98e083795f41bc9cac45b99ed32cf9bec07ba5dd214465ded5f",
 };
 
 const dest = path.join(resourcesDir(), "prebuilt", "sandbox-k");
