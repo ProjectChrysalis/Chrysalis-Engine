@@ -7,13 +7,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { createModels, getSupportedThinkingLevels, uuidv7, type Api, type AssistantMessage, type AssistantMessageEvent, type Context, type Credential, type CredentialInfo, type Message, type Model, type MutableModels, type Tool as PiTool, type ToolResultMessage, type Usage } from "@earendil-works/pi-ai";
 import type { AuthOperationOptions, CredentialStore } from "@earendil-works/pi-ai";
-import { builtinProviders, builtinImagesModels } from "@earendil-works/pi-ai/providers/all";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { radiusProvider } from "@earendil-works/pi-ai/providers/radius";
 import { loadCustomProviders, curatedProviders, buildProvider, reservedProviderIds, isLocalEndpoint, abortLocalGeneration, type CredentialWithBinding } from "./providers/custom.js";
 import { readConnections, authTarget, connectionKeyUsable, readAuth } from "./connections.js";
 import { formatFromModelName, formatFromTemplate, parsePromptFormat, promptFormatById, renderPrompt, stopStrings, type PromptFormat } from "./providers/prompt-formats.js";
 import { cacheStreamOptions, type CacheRequest } from "./providers/prompt-cache.js";
 import { log } from "./logger.js";
+import { generationError, providerError } from "./providers/errors.js";
 import { llmLogRequest, llmLogResult, llmLogError, llmLogTool } from "./llm-logger.js";
 import type { UserPaths } from "./paths.js";
 import type { InstanceConfig } from "./config.js";
@@ -279,8 +280,6 @@ const FORMAT_DETECT_TTL = 60_000;
 
 export class UserModelService {
   readonly models: MutableModels;
-  /** image-generation side (pi-ai images API) — same credential store */
-  private images: ReturnType<typeof builtinImagesModels>;
 
   constructor(
     readonly username: string,
@@ -337,7 +336,6 @@ export class UserModelService {
       Object.entries(conns.connections).map(([id, def]) => [def.oauthProvider === "radius" ? "radius" : def.providerId ?? id, def.name]),
     );
     this.models = models;
-    this.images = builtinImagesModels({ credentials });
   }
 
   private connectionNames: Map<string, string> = new Map();
@@ -578,8 +576,9 @@ export class UserModelService {
       if (req.assistantPrefill) res.assistantPrefill = req.assistantPrefill;
       return res;
     } catch (e) {
-      llmLogError(req.source, label, Date.now() - t0, e);
-      throw e;
+      const error = providerError(e);
+      llmLogError(req.source, label, Date.now() - t0, error);
+      throw error;
     }
   }
 
@@ -1051,7 +1050,7 @@ export class UserModelService {
       });
       const final = await consumeStream(stream);
       if (final.stopReason === "error") {
-        throw new Error(`model error: ${final.errorMessage ?? "unknown"}`);
+        throw generationError(final);
       }
 
       const toolCalls = final.content.filter(
@@ -1117,7 +1116,7 @@ export class UserModelService {
     roundThinkEnd = 0;
     const final = await consumeStream(stream);
     if (final.stopReason === "error") {
-      throw new Error(`model error: ${final.errorMessage ?? "unknown"}`);
+      throw generationError(final);
     }
     const exhausted = this.resultFrom(final, model, toolTrace, req, thinkMs, textBeforeTools);
     if (parts.some((p) => p.type === "tool") || final.stopReason === "aborted") {
@@ -1203,13 +1202,17 @@ export class UserModelService {
     // endpoints (deepseek etc.) read `reasoningEffort` — pass both so every
     // api layer actually receives the level.
     const opts = merged as (typeof merged & { reasoning?: string; reasoningEffort?: string }) | undefined
-    if (opts?.reasoning && !opts.reasoningEffort) {
-      return this.models.streamSimple(model, context, {
-        ...opts,
-        reasoningEffort: opts.reasoning,
-      } as Parameters<MutableModels["streamSimple"]>[2])
+    const stream = this.models.streamSimple(model, context, opts?.reasoning && !opts.reasoningEffort
+      ? { ...opts, reasoningEffort: opts.reasoning } as Parameters<MutableModels["streamSimple"]>[2]
+      : merged);
+    const signal = options?.signal;
+    if (signal && !signal.aborted && isLocalEndpoint(model.baseUrl)) {
+      const stopServer = () => abortLocalGeneration(model.baseUrl);
+      signal.addEventListener("abort", stopServer, { once: true });
+      const cleanup = () => signal.removeEventListener("abort", stopServer);
+      stream.result().then(cleanup, cleanup);
     }
-    return this.models.streamSimple(model, context, merged)
+    return stream;
   }
 
   // ---------- image generation (pi-ai images API; creds never leave) ----------
@@ -1218,15 +1221,15 @@ export class UserModelService {
   /** Image-capable models on providers the user has credentials for. */
   async imageModels(): Promise<ImageModelInfo[]> {
     const out: ImageModelInfo[] = [];
-    for (const provider of this.images.getProviders()) {
-      const auth = await this.images.getAuth(provider.id).catch(() => undefined);
+    for (const provider of this.models.getProviders()) {
+      const auth = await this.models.getAuth(provider.id).catch(() => undefined);
       if (!auth) continue; // no credentials for this provider
-      for (const m of this.images.getModels(provider.id)) {
+      for (const m of this.models.getModelsOfType("image", provider.id)) {
         out.push({ provider: String(m.provider), id: String(m.id), label: (m as { name?: string }).name ?? String(m.id), api: String(m.api), connectionName: this.connectionNames.get(String(m.provider)) ?? null });
       }
     }
     for (const src of await this.imageConnections()) {
-      for (const m of this.images.getModels(src.catalog)) {
+      for (const m of this.models.getModelsOfType("image", src.catalog)) {
         out.push({ provider: src.id, id: String(m.id), label: (m as { name?: string }).name ?? String(m.id), api: String(m.api), connectionName: src.name });
       }
     }
@@ -1270,18 +1273,18 @@ export class UserModelService {
     if (!pick) throw new Error(`image model not found: ${req.model}`);
     const ctx = { input: [{ type: "text" as const, text: req.prompt }] };
     const viaConnection = (await this.imageConnections()).find((s) => s.id === pick.provider);
-    const raw = this.images.getModel(viaConnection?.catalog ?? pick.provider, pick.id);
+    const raw = this.models.getModelOfType("image", viaConnection?.catalog ?? pick.provider, pick.id);
     if (!raw) throw new Error(`image model not found in registry: ${pick.id}`);
     const out = viaConnection
-      ? await this.images.generateImages({ ...raw, baseUrl: viaConnection.baseUrl }, ctx, { apiKey: viaConnection.key })
-      : await this.images.generateImages(raw, ctx);
+      ? await this.models.generateImages({ ...raw, baseUrl: viaConnection.baseUrl }, ctx, { apiKey: viaConnection.key })
+      : await this.models.generateImages(raw, ctx);
     if (out.stopReason === "error") {
       const message = out.errorMessage ?? "image generation failed";
       // Pure image models reject the chat call the shared adapter makes and
       // answer with the endpoint that does serve them; use it instead of
       // reporting a model the catalog lists as broken.
       if (String(raw.api) === "openrouter-images" && /\/api\/v1\/images endpoint/i.test(message)) {
-        const auth = viaConnection ? undefined : (await this.images.getAuth(pick.provider))?.auth;
+        const auth = viaConnection ? undefined : (await this.models.getAuth(pick.provider))?.auth;
         const apiKey = viaConnection?.key ?? auth?.apiKey;
         const baseUrl = viaConnection?.baseUrl ?? auth?.baseUrl ?? String(raw.baseUrl ?? "");
         if (apiKey && baseUrl) {

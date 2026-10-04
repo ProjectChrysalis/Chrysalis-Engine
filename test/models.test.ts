@@ -23,6 +23,27 @@ function makeService(username = "alice"): UserModelService {
 }
 
 describe("UserModelService message construction (regression: assistant history)", () => {
+  it("streams partial output before reporting the provider's raw filtering reason", async () => {
+    const svc = makeService();
+    const handle = fauxProvider({ models: [{ id: "filtered" }] });
+    handle.setResponses([{
+      ...fauxAssistantMessage("Keep this partial reply"),
+      stopReason: "error", rawStopReason: "content_filter", responseId: "filtered-123",
+      errorMessage: "Upstream filter stopped output",
+    }]);
+    svc.models.setProvider(handle.provider);
+    const deltas: string[] = [];
+    let error: unknown;
+    try {
+      await svc.generate({ model: "faux/filtered", messages: [{ role: "user", content: "hello" }] }, (delta) => deltas.push(delta));
+    } catch (e) { error = e; }
+    expect(deltas.join("")).toBe("Keep this partial reply");
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("stop_reason: content_filter");
+    expect((error as Error).message).toContain("filtered-123");
+    expect((error as Error).message).toContain("Upstream filter stopped output");
+  });
+
   it("builds full AssistantMessage objects — no usage-undefined crash in pi-ai estimate", async () => {
     const svc = makeService();
     const handle = fauxProvider({ models: [{ id: "faux-echo" }] });
