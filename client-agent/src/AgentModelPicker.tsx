@@ -24,6 +24,7 @@ export function AgentModelPicker() {
   const [favorites, setFavorites] = useState(() => readModelList(FAVORITES))
   const [recent, setRecent] = useState(() => readModelList(RECENT).slice(0, 8))
   const input = useRef<HTMLInputElement>(null)
+  const popup = useRef<HTMLDivElement>(null)
   const model = models.find((m) => modelKey(m) === selected)
   const api = useAui()
   useEffect(() => {
@@ -51,7 +52,7 @@ export function AgentModelPicker() {
         <span className="truncate">{model ? shortModelName(model.label) : "Choose model"}</span>
         <CaretDown className="size-3 shrink-0" />
       </DialogTrigger>
-      <DialogContent className="flex h-[min(640px,calc(100dvh-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl" initialFocus={input}>
+      <DialogContent ref={popup} className="flex h-[min(640px,calc(100dvh-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl" initialFocus={(interaction) => interaction === "touch" || window.matchMedia("(max-width: 767px), (pointer: coarse)").matches ? popup.current : input.current}>
         <div className="shrink-0 px-4 pt-4 pb-3 pr-12">
           <DialogTitle>Choose model</DialogTitle>
           <DialogDescription className="mt-1 text-xs">Search your connections or star a model to keep it handy.</DialogDescription>
