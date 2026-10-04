@@ -58,6 +58,7 @@ export interface AgentResponse {
   usage?: EngineUsage
   autoCompacted?: boolean
   stopped?: boolean
+  stopReason?: string
   error?: string
 }
 

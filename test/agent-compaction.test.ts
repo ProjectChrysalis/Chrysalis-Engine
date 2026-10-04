@@ -17,22 +17,28 @@ let modelsSent: string[];
 let summariesStarted: number;
 let releaseSummary: (() => void) | undefined;
 let holdSummary = false;
+let holdResponse = false;
+let abortRequests = 0;
 
 beforeEach(() => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "compact-http-"));
   modelsSent = [];
   summariesStarted = 0;
   holdSummary = false;
+  holdResponse = false;
+  abortRequests = 0;
   releaseSummary = undefined;
   endpoint = Bun.serve({
     hostname: "127.0.0.1", port: 0,
     async fetch(req) {
+      if (new URL(req.url).pathname === "/api/extra/abort") { abortRequests++; return Response.json({ ok: true }); }
       const body = await req.json() as { model: string; messages: { content: unknown }[] };
       modelsSent.push(body.model);
       if (JSON.stringify(body.messages).includes("Summarize the conversation below")) {
         summariesStarted++;
         if (holdSummary) await new Promise<void>(resolve => { releaseSummary = resolve; });
       }
+      if (holdResponse) await new Promise<void>(resolve => { releaseSummary = resolve; });
       const chunk = (delta: unknown, finish_reason: string | null) => `data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", model: body.model, choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
       return new Response(chunk({ role: "assistant", content: "saved summary" }, null) + chunk({}, "stop") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
     },
@@ -93,3 +99,37 @@ it("a second compaction cannot overwrite a session while its first summary is pe
   expect(saved).toContain("Keep this original run");
   expect(saved.split("\n").filter(line => line.includes('"type":"compact"'))).toHaveLength(1);
 }, 30_000);
+
+it("Stop cancels a pending summary and leaves the original session untouched", async () => {
+  const { p, provider, freshApp, post } = setup();
+  const app = freshApp();
+  expect((await post(app, "/v1/agent", { sessionId: "cancel", model: `${provider}/first`, message: "Keep this run" })).status).toBe(200);
+  const file = path.join(p.root, "agent/sessions/cancel.jsonl");
+  const before = fs.readFileSync(file, "utf8");
+  holdSummary = true;
+  const pending = post(app, "/v1/agent/sessions/cancel/compact", {});
+  for (let i = 0; i < 100 && !summariesStarted; i++) await Bun.sleep(10);
+  expect(summariesStarted).toBe(1);
+  expect((await post(app, "/v1/agent/stop", { sessionId: "cancel" })).status).toBe(200);
+  expect((await pending).status).toBe(500);
+  expect(fs.readFileSync(file, "utf8")).toBe(before);
+  releaseSummary?.();
+  await Bun.sleep(20);
+  expect(fs.readFileSync(file, "utf8")).toBe(before);
+}, 5_000);
+
+it("Stop aborts a pending agent response and tells the local inference server to stop", async () => {
+  const { provider, freshApp, post } = setup();
+  const app = freshApp();
+  holdResponse = true;
+  const pending = post(app, "/v1/agent", { sessionId: "inference", model: `${provider}/first`, message: "hello" });
+  for (let i = 0; i < 100 && !modelsSent.length; i++) await Bun.sleep(10);
+  expect(modelsSent).toHaveLength(1);
+  expect((await post(app, "/v1/agent/stop", { sessionId: "inference" })).status).toBe(200);
+  const response = await pending;
+  expect(response.status).toBe(200);
+  expect((await response.json() as { stopped?: boolean }).stopped).toBe(true);
+  for (let i = 0; i < 100 && !abortRequests; i++) await Bun.sleep(10);
+  expect(abortRequests).toBe(1);
+  releaseSummary?.();
+}, 5_000);

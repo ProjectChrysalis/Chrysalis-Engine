@@ -420,6 +420,7 @@ const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
 };
 
 const ComposerAction: FC = () => {
+  const stopping = useAgentStore((s) => s.stopping);
   return (
     // one row at every width: the model name truncates before anything wraps
     <div className="aui-composer-action-wrapper relative flex items-center justify-between gap-1">
@@ -484,7 +485,8 @@ const ComposerAction: FC = () => {
               variant="default"
               size="icon"
               className="aui-composer-cancel size-7 rounded-full"
-              aria-label="Stop generating"
+              disabled={stopping}
+              aria-label={stopping ? "Stopping" : "Stop generating"}
             >
               <Square className="aui-composer-cancel-icon size-3.5 fill-current" />
             </Button>

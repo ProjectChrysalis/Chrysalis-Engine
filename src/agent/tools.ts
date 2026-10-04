@@ -17,6 +17,7 @@ import * as git from "../git.js";
 import { createAppSkeleton, readApp } from "../apps/manager.js";
 import { hasPackages, installApp, uninstallApp } from "../apps/packages.js";
 import { builderVersion } from "../builder/assets.js";
+import { abortable } from "../cancellation.js";
 import { readBuildStatus, readClientErrors, readClientLogs, sourceRev, type BuildStatusFile } from "../builder/server.js";
 
 export interface AgentToolOptions {
@@ -87,10 +88,10 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
       question: Type.String({ description: "The question to show the user" }),
       options: Type.Optional(Type.Array(Type.String(), { description: "Optional quick-pick choices" })),
     }),
-    async execute(_id, params) {
+    async execute(_id, params, signal) {
       const { question, options } = params as { question: string; options?: string[] };
       if (!opts.ask) return textResult("The user is not available right now — proceed with your best judgment and say what you assumed.");
-      const answer = await opts.ask({ question, ...(options?.length ? { options } : {}) });
+      const answer = await abortable(opts.ask({ question, ...(options?.length ? { options } : {}) }), signal);
       return textResult(answer || "(no answer)");
     },
   };
@@ -321,7 +322,7 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
       id: Type.String({ description: "App id" }),
       remove: Type.Optional(Type.Array(Type.String(), { description: "Package names to uninstall" })),
     }),
-    async execute(_id, params) {
+    async execute(_id, params, signal) {
       const { id } = params as { id: string };
       const remove = (params as { remove?: string[] }).remove ?? [];
       if (!readApp(p.apps, id)) throw new Error(`App not found: ${id}`);
@@ -332,7 +333,7 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
         const bad = remove.filter((name) => !/^(?:@[a-z0-9][a-z0-9-._~]*\/)?[a-z0-9][a-z0-9-._~]*$/i.test(name) || name.length > 214);
         if (bad.length) throw new Error(`Invalid package name${bad.length > 1 ? "s" : ""}: ${bad.join(", ")}`);
       }
-      const res = remove.length ? await uninstallApp(dir, remove) : await installApp(dir);
+      const res = remove.length ? await uninstallApp(dir, remove, signal) : await installApp(dir, signal);
       // node_modules is outside the change watcher: without this the open
       // page keeps showing the unresolved-import error after the dep lands
       if (res.ok) opts.notify?.("build_needed", { app: id, paths: ["package.json"] });
@@ -379,7 +380,7 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
       id: Type.String({ description: "App id" }),
       wait_ms: Type.Optional(Type.Number({ description: "How long to wait for the build (default 60000, max 180000)" })),
     }),
-    async execute(_id, params) {
+    async execute(_id, params, signal) {
       const { id } = params as { id: string };
       const waitMsRaw = (params as { wait_ms?: number }).wait_ms;
       if (!readApp(p.apps, id)) throw new Error(`App not found: ${id}`);
@@ -388,7 +389,7 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
       const rev = sourceRev(dir);
       // a status from an older browser builder bundle is not authoritative:
       // it may lack errors the current builder reports
-      const builder = await builderVersion();
+      const builder = await abortable(builderVersion(), signal);
       const fresh = (): BuildStatusFile | null => {
         const s = readBuildStatus(dir);
         return s && s.rev === rev && s.builder === builder ? s : null;
@@ -405,7 +406,7 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
       const waitMs = Math.min(Math.max(500, Math.floor(waitMsRaw ?? 60_000)), 180_000);
       const deadline = Date.now() + waitMs;
       while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 500));
+        await abortable(new Promise((r) => setTimeout(r, 500)), signal);
         const s = fresh();
         if (s) {
           const r = report(s);
@@ -432,20 +433,20 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
       id: Type.String({ description: "App id" }),
       wait_ms: Type.Optional(Type.Number({ description: "How long to wait for the build (default 60000, max 180000)" })),
     }),
-    async execute(_id, params) {
+    async execute(_id, params, signal) {
       const { id } = params as { id: string };
       const waitMsRaw = (params as { wait_ms?: number }).wait_ms;
       if (!readApp(p.apps, id)) throw new Error(`App not found: ${id}`);
       const dir = path.join(p.apps, id);
       if (!fs.existsSync(path.join(dir, "index.html"))) throw new Error(`apps/${id} has no index.html — nothing to build.`);
       const rev = sourceRev(dir);
-      const builder = await builderVersion();
+      const builder = await abortable(builderVersion(), signal);
       const before = readBuildStatus(dir);
       opts.notify?.("build_requested", { app: id, force: true });
       const waitMs = Math.min(Math.max(500, Math.floor(waitMsRaw ?? 60_000)), 180_000);
       const deadline = Date.now() + waitMs;
       while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 500));
+        await abortable(new Promise((r) => setTimeout(r, 500)), signal);
         const s = readBuildStatus(dir);
         // the forced build must land AFTER the request: the status that was
         // already there when we asked is not the answer
@@ -514,18 +515,18 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
     name: "bash",
     label: "Run shell command",
     description:
-      "Run a shell command in the sandbox in the user's browser (busybox ash, coreutils, git, python3, node, jq, rg, curl; the workspace at /workspace), never on this machine. Files the command changes are saved to the user's files when it finishes; commit them with git in the shell. Use it for scripts, data work, edits across many files and checking your work, not for reading or editing one file (read_file/edit_file). Output is capped (~64KB per stream, head and tail kept).",
+      "Run a shell command in the sandbox in the user's browser (busybox ash, coreutils, git, python3, node, jq, rg, curl; the workspace at /workspace), never on this machine. Files the command changes are saved to the user's files when it finishes; commit them with git in the shell. Use it for scripts, data work, edits across many files and checking your work, not for reading or editing one file (read_file/edit_file). Output is capped (~64KB per stream, head and tail kept). Process substitution <(...) and >(...) and background processes are unavailable. Use temporary files for diff, and timeout_ms for limits rather than the timeout command.",
     parameters: Type.Object({
       command: Type.String({ description: "The shell command line. Runs with cwd = the user's workspace" }),
       timeout_ms: Type.Optional(
         Type.Number({ description: "Optional timeout in ms (default 120000; requests above the instance cap are clamped to it)" }),
       ),
     }),
-    async execute(_id, params) {
+    async execute(_id, params, signal) {
       if (!opts.sandbox) throw new Error("No shell is configured on this instance.");
       const { command } = params as { command: string };
       const { timeout_ms } = params as { timeout_ms?: number };
-      const res = await opts.sandbox.run(username, p.root, { command, ...(timeout_ms ? { timeoutMs: timeout_ms } : {}) });
+      const res = await opts.sandbox.run(username, p.root, { command, signal, ...(timeout_ms ? { timeoutMs: timeout_ms } : {}) });
       if ("error" in res) throw new Error(`Sandbox unavailable: ${res.error}`);
       const parts: string[] = [];
       parts.push(res.timedOut ? `TIMED OUT after ${timeout_ms ?? "(default)"}ms — no output captured. Re-run with a narrower command or longer timeout (up to the instance cap).` : `exit code: ${res.exitCode}`);
@@ -536,7 +537,7 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
       if (out) text += `\nstdout:\n${out}`;
       if (err) text += `\nstderr:\n${err}`;
       if (!out && !err && !res.timedOut) text += "\n(no output)";
-      return textResult(text, { command, exitCode: res.exitCode, timedOut: res.timedOut, provider: res.provider });
+      return { ...textResult(text, { command, exitCode: res.exitCode, timedOut: res.timedOut, provider: res.provider }), isError: res.timedOut || res.exitCode !== 0 };
     },
   };
 
@@ -550,11 +551,11 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
         executionMode: "sequential" as const,
         async execute(toolCallId: string, params: unknown, ...rest: unknown[]) {
           const command = typeof (params as { command?: unknown })?.command === "string" ? (params as { command: string }).command : "";
-          const answer = await opts.ask!({
+          const answer = await abortable(opts.ask!({
             question: "Run this shell command?",
             options: ["Run it", "Skip"],
             ...(command ? { detail: command.slice(0, 2000) } : {}),
-          });
+          }), rest[0] as AbortSignal | undefined);
           if (answer === "Run it") return bash.execute(toolCallId, params, ...(rest as [] | [AbortSignal] | [AbortSignal, never]));
           return textResult("The user declined to run this command. Do not retry it — ask what to do differently or continue without it.", { declined: true });
         },

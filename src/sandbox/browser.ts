@@ -13,6 +13,7 @@
 import type { EventBus } from "../server/ws.js";
 import type { SandboxConfig, SandboxRunInput, SandboxRunResult, SandboxRunner, SandboxStatus } from "./index.js";
 import { capOutput } from "./index.js";
+import { abortable } from "../cancellation.js";
 
 /** How long a host heartbeat stays valid. */
 const HOST_TTL = 45_000;
@@ -114,6 +115,7 @@ export class BrowserSandbox implements SandboxRunner {
   }
 
   async run(username: string, _userRoot: string, input: SandboxRunInput): Promise<SandboxRunResult | { error: string }> {
+    input.signal?.throwIfAborted();
     if (this.cfg.provider === "off") return { error: "the shell is off on this instance (agent.shell in config.yaml)" };
     let h = this.host(username);
     if (!h) return { error: "No sandbox is connected. Open Chrysalis in a browser tab; commands run there, never on the host." };
@@ -122,7 +124,7 @@ export class BrowserSandbox implements SandboxRunner {
       // heartbeat replaces the record, so re-read until ready or out of time.
       const deadline = Date.now() + this.readyWaitMs;
       while (!h.ready && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 200));
+        await abortable(new Promise((r) => setTimeout(r, 200)), input.signal);
         h = this.host(username);
         if (!h) break;
       }
@@ -140,12 +142,25 @@ export class BrowserSandbox implements SandboxRunner {
     const timeout = Math.min(Math.max(1000, Math.floor(input.timeoutMs ?? this.cfg.timeoutMs)), this.cfg.timeoutMs);
     const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
     return new Promise((resolve) => {
+      const key = `${username}:${id}`;
+      const finish = (result: SandboxRunResult | { error: string }) => {
+        if (!this.pending.delete(key)) return;
+        clearTimeout(timer);
+        input.signal?.removeEventListener("abort", cancel);
+        resolve(result);
+      };
+      const cancel = () => {
+        this.bus.emit(username, "sandbox_cancel", { id, host: h.hostId });
+        finish({ error: "Command stopped" });
+      };
       const timer = setTimeout(() => {
-        this.pending.delete(`${username}:${id}`);
-        resolve({ error: `The sandbox did not answer within ${timeout}ms (the browser tab may have been closed or the command stopped responding).` });
+        this.bus.emit(username, "sandbox_cancel", { id, host: h.hostId });
+        finish({ error: `The sandbox did not answer within ${timeout}ms (the browser tab may have been closed or the command stopped responding).` });
       }, timeout + RUN_GRACE);
       timer.unref?.();
-      this.pending.set(`${username}:${id}`, { resolve, timer });
+      this.pending.set(key, { resolve: finish, timer });
+      input.signal?.addEventListener("abort", cancel, { once: true });
+      if (input.signal?.aborted) { cancel(); return; }
       this.bus.emit(username, "sandbox_run", { id, host: h.hostId, command: input.command, timeoutMs: timeout });
     });
   }
@@ -156,8 +171,6 @@ export class BrowserSandbox implements SandboxRunner {
     const key = `${username}:${id}`;
     const p = this.pending.get(key);
     if (!p) return false;
-    this.pending.delete(key);
-    clearTimeout(p.timer);
     const so = capOutput(String(result.stdout ?? ""));
     const se = capOutput(String(result.stderr ?? ""));
     p.resolve({

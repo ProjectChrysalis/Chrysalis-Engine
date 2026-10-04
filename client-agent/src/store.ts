@@ -38,6 +38,7 @@ export interface AgentState {
   sessionId: string | null
   msgs: Msg[]
   running: boolean
+  stopping: boolean
   banner: Banner | null
   ask: PendingAsk | null
   models: EngineModel[]
@@ -109,6 +110,7 @@ const storedMode = (): AgentState["mode"] => {
  *  chat, taking the composer draft keyed to that thread with it. */
 const rememberSession = (id: string | null): void => prefs.set("agent-ui-session", id ?? "")
 
+let runSequence = 0
 let liveId: string | null = null
 
 export const useAgent = create<AgentState>()((set, get) => {
@@ -117,6 +119,7 @@ export const useAgent = create<AgentState>()((set, get) => {
     sessionId: null,
     msgs: [],
     running: false,
+    stopping: false,
     banner: null,
     ask: null,
     models: [],
@@ -164,8 +167,10 @@ export const useAgent = create<AgentState>()((set, get) => {
     open: async (id) => {
       if (get().running) await get().stop()
       streamDeltaBatcher.reset()
+      runSequence += 1
+      liveId = null
       rememberSession(id)
-      set({ sessionId: id, msgs: [], banner: null, ask: null, sidebarOpen: false })
+      set({ running: false, stopping: false, sessionId: id, msgs: [], banner: null, ask: null, sidebarOpen: false })
       try {
         const r = await sessionsApi.get(id)
         if (get().sessionId === id) set({ msgs: msgsFromRuns(r.runs ?? []) })
@@ -201,14 +206,16 @@ export const useAgent = create<AgentState>()((set, get) => {
     },
 
     newChat: () => {
+      runSequence += 1
       if (get().running) void get().stop()
       streamDeltaBatcher.reset()
       rememberSession(null)
-      set({ sessionId: null, msgs: [], banner: null, ask: null, sidebarOpen: false })
+      set({ running: false, stopping: false, sessionId: null, msgs: [], banner: null, ask: null, sidebarOpen: false })
     },
 
     send: async (text, images, urls) => {
       const s = get()
+      if (s.stopping) return
       if (s.running && s.sessionId) {
         const live = uid("live")
         liveId = live
@@ -230,31 +237,42 @@ export const useAgent = create<AgentState>()((set, get) => {
         images: urls?.length ? urls : undefined,
       }
       const id = uid("live")
+      const sequence = ++runSequence
       liveId = id
+      const sid = s.sessionId ?? uid("session")
+      rememberSession(sid)
       set({
         msgs: [...s.msgs, userMsg, { id, role: "assistant", parts: [], streaming: true }],
         running: true,
+        stopping: false,
+        sessionId: sid,
         banner: null,
         usage: null,
       })
       try {
         const res: AgentResponse = await sendAgent({
           message: text,
-          sessionId: s.sessionId ?? undefined,
+          sessionId: sid,
           model: s.model ?? undefined,
           reasoning: s.reasoning || undefined,
           mode: s.mode,
           images: images?.length ? images : undefined,
         })
+        if (runSequence !== sequence || get().sessionId !== sid) return
         streamDeltaBatcher.reset()
         rememberSession(res.sessionId)
         const finalParts = partsFromResponse(res)
         set((st) => ({
           msgs: st.msgs.map((m) => (m.id === id ? { ...m, parts: finalParts, streaming: false } : m)),
           running: false,
+          stopping: false,
           sessionId: res.sessionId,
           usage: res.usage ?? null,
-          banner: res.error
+          banner: res.stopped
+            ? { kind: "info", text: "Stopped" }
+            : res.stopReason === "length"
+              ? { kind: "info", text: "Response reached the output limit." }
+              : res.error
             ? { kind: "error", text: res.error }
             : res.autoCompacted
               ? { kind: "info", text: "Context auto-compacted" }
@@ -264,6 +282,7 @@ export const useAgent = create<AgentState>()((set, get) => {
         void get().refreshSessions()
         void get().reloadCurrent()
       } catch (e) {
+        if (runSequence !== sequence || get().sessionId !== sid) return
         streamDeltaBatcher.flush()
         const msg = e instanceof Error ? e.message : String(e)
         set((st) => ({
@@ -272,6 +291,7 @@ export const useAgent = create<AgentState>()((set, get) => {
             return [...partial, { kind: "text", text: `\n\n**Failed:** ${msg}` } satisfies PartData]
           }),
           running: false,
+          stopping: false,
           banner: { kind: "error", text: msg },
         }))
         liveId = null
@@ -279,12 +299,21 @@ export const useAgent = create<AgentState>()((set, get) => {
     },
 
     stop: async () => {
-      const sid = get().sessionId
-      if (!sid) return
+      const { sessionId: sid, running, stopping } = get()
+      if (!sid || !running || stopping) return
+      const target = liveId
+      streamDeltaBatcher.flush()
+      set({ stopping: true, ask: null, banner: { kind: "info", text: "Stopping…" } })
       try {
-        await stopAgent(sid)
-      } catch {
-        // the run POST resolves with stopped:true either way
+        while (get().running && get().sessionId === sid && liveId === target) {
+          try { await stopAgent(sid); return }
+          catch (e) {
+            if (!(e instanceof Error) || !e.message.includes("no active run for this session")) throw e
+            await new Promise((resolve) => setTimeout(resolve, 100))
+          }
+        }
+      } catch (e) {
+        if (get().sessionId === sid && liveId === target) set({ stopping: false, banner: { kind: "error", text: e instanceof Error ? e.message : String(e) } })
       }
     },
 
@@ -428,6 +457,7 @@ export function connectWs(): void {
     }
     const st = useAgent.getState()
     const payload = msg.payload
+    if (!st.running || st.stopping) return
     if (!payload) return
     if (payload.sessionId !== st.sessionId) {
       // First message of a new thread: the engine assigns the session id only

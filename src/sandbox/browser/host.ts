@@ -14,6 +14,7 @@
  */
 
 declare const __SANDBOX_VERSION__: string;
+import { abortable } from "../../cancellation.js";
 
 const VERSION = typeof __SANDBOX_VERSION__ === "string" ? __SANDBOX_VERSION__ : "dev";
 const HOST_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -85,6 +86,7 @@ class SandboxFrame {
   private onWindowMessage: (e: MessageEvent) => void;
   private waiting = new Map<number, (r: RunResult | { fatal: string }) => void>();
   private seq = 0;
+  private rejectReady!: (error: Error) => void;
   /** Resolves with the runtime version once it can run commands. */
   ready: Promise<string | null>;
   dead = false;
@@ -98,6 +100,7 @@ class SandboxFrame {
     this.ready = new Promise((res, rej) => {
       ok = res;
       fail = rej;
+      this.rejectReady = rej;
     });
     this.ready.catch(() => {});
     this.iframe = document.createElement("iframe");
@@ -133,19 +136,30 @@ class SandboxFrame {
     document.body.appendChild(this.iframe);
   }
 
-  exec(message: Record<string, unknown>, timeoutMs: number): Promise<RunResult | { fatal: string } | { timedOut: true }> {
+  exec(message: Record<string, unknown>, timeoutMs: number, signal?: AbortSignal): Promise<RunResult | { fatal: string } | { timedOut: true }> {
     const id = ++this.seq;
     return new Promise((resolve) => {
+      const cancel = () => {
+        this.waiting.delete(id);
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", cancel);
+        this.dispose();
+        resolve({ fatal: "Command stopped" });
+      };
       const timer = setTimeout(() => {
         this.waiting.delete(id);
+        signal?.removeEventListener("abort", cancel);
         // a synchronous guest can only be stopped by ending its worker
         this.dispose();
         resolve({ timedOut: true });
       }, timeoutMs);
       this.waiting.set(id, (r) => {
         clearTimeout(timer);
+        signal?.removeEventListener("abort", cancel);
         resolve(r);
       });
+      signal?.addEventListener("abort", cancel, { once: true });
+      if (signal?.aborted) { cancel(); return; }
       this.port?.postMessage({ ...message, type: "exec", id });
     });
   }
@@ -153,6 +167,9 @@ class SandboxFrame {
   dispose(): void {
     if (this.dead) return;
     this.dead = true;
+    this.rejectReady(new Error("Sandbox stopped"));
+    for (const settle of this.waiting.values()) settle({ fatal: "Sandbox stopped" });
+    this.waiting.clear();
     removeEventListener("message", this.onWindowMessage);
     this.port?.close();
     this.iframe.remove();
@@ -167,6 +184,8 @@ let runtime: string | null = null;
 /** Why the runtime did not start, for the engine to pass on. */
 let bootError: string | null = null;
 let queue: Promise<void> = Promise.resolve();
+const commands = new Map<string, AbortController>();
+let executingId: string | null = null;
 /** Paths whose sync-back was refused: the next command resends the engine's
  *  copy (or its absence) so the runtime stops holding a change that did not
  *  land. */
@@ -261,7 +280,7 @@ function bytesToB64(bytes: Uint8Array): string {
 }
 
 /** Write a command's changes; returns one line per path that did not land. */
-async function syncBack(f: SandboxFrame, writes: [string, Uint8Array][], deletes: string[]): Promise<string[]> {
+async function syncBack(f: SandboxFrame, writes: [string, Uint8Array][], deletes: string[], signal?: AbortSignal): Promise<string[]> {
   const results: PathResult[] = [];
   const failed = (paths: string[], error: string) => {
     for (const path of paths) results.push({ path, ok: false, error });
@@ -269,25 +288,29 @@ async function syncBack(f: SandboxFrame, writes: [string, Uint8Array][], deletes
   let batch: { path: string; b64: string }[] = [];
   let batchBytes = 0;
   const flush = async () => {
+    signal?.throwIfAborted();
     if (!batch.length) return;
     const sending = batch;
     batch = [];
     batchBytes = 0;
     try {
-      const r = (await api("/v1/sandbox/fs", { method: "PUT", body: JSON.stringify({ op: "write", files: sending }) })) as { results?: PathResult[] };
+      const r = (await api("/v1/sandbox/fs", { method: "PUT", signal, body: JSON.stringify({ op: "write", files: sending }) })) as { results?: PathResult[] };
       results.push(...(r.results ?? []));
     } catch (e) {
+      signal?.throwIfAborted();
       failed(sending.map((s) => s.path), (e as Error).message);
     }
   };
   for (const [path, bytes] of writes) {
+    signal?.throwIfAborted();
     if (bytes.length > INLINE_WRITE) {
       try {
-        const r = await fetch(`/v1/sandbox/fs/file?path=${encodeURIComponent(path)}`, { method: "PUT", credentials: "same-origin", body: bytes as BodyInit });
+        const r = await fetch(`/v1/sandbox/fs/file?path=${encodeURIComponent(path)}`, { method: "PUT", credentials: "same-origin", signal, body: bytes as BodyInit });
         const body = (await r.json().catch(() => ({}))) as { results?: PathResult[]; error?: string };
         if (!r.ok) failed([path], body.error ?? `HTTP ${r.status}`);
         else results.push(...(body.results ?? []));
       } catch (e) {
+        signal?.throwIfAborted();
         failed([path], (e as Error).message);
       }
       continue;
@@ -298,11 +321,13 @@ async function syncBack(f: SandboxFrame, writes: [string, Uint8Array][], deletes
   }
   await flush();
   for (let i = 0; i < deletes.length; i += BATCH_FILES) {
+    signal?.throwIfAborted();
     const slice = deletes.slice(i, i + BATCH_FILES);
     try {
-      const r = (await api("/v1/sandbox/fs", { method: "PUT", body: JSON.stringify({ op: "delete", paths: slice }) })) as { results?: PathResult[] };
+      const r = (await api("/v1/sandbox/fs", { method: "PUT", signal, body: JSON.stringify({ op: "delete", paths: slice }) })) as { results?: PathResult[] };
       results.push(...(r.results ?? []));
     } catch (e) {
+      signal?.throwIfAborted();
       failed(slice, (e as Error).message);
     }
   }
@@ -324,12 +349,12 @@ function result(id: unknown, r: Record<string, unknown>): void {
   });
 }
 
-async function execute(id: unknown, command: string, timeoutMs: number): Promise<void> {
+async function execute(id: string, command: string, timeoutMs: number, signal: AbortSignal): Promise<void> {
   let f: SandboxFrame;
   let tree: { files: Map<string, Meta>; truncated: boolean };
   let cfg: SandboxConfig;
   try {
-    [f, tree, cfg] = await Promise.all([liveFrame(), listTree(), sandboxConfig()]);
+    [f, tree, cfg] = await abortable(Promise.all([liveFrame(), listTree(), sandboxConfig()]), signal);
   } catch (e) {
     frame?.dispose();
     frame = null;
@@ -346,7 +371,8 @@ async function execute(id: unknown, command: string, timeoutMs: number): Promise
       hidden: cfg.hidden,
     },
   };
-  const out = await f.exec(message, timeoutMs);
+  signal.throwIfAborted();
+  const out = await f.exec(message, timeoutMs, signal);
   if ("timedOut" in out) {
     frame = null;
     result(id, {
@@ -363,7 +389,8 @@ async function execute(id: unknown, command: string, timeoutMs: number): Promise
     result(id, { exitCode: null, stdout: "", stderr: `sandbox: ${out.fatal}`, timedOut: false, truncated: false });
     return;
   }
-  const notes = await syncBack(f, out.writes ?? [], out.deletes ?? []);
+  signal.throwIfAborted();
+  const notes = await syncBack(f, out.writes ?? [], out.deletes ?? [], signal);
   let stderr = out.stderr;
   if (notes.length) stderr += `${stderr && !stderr.endsWith("\n") ? "\n" : ""}sandbox: these changes were not saved to your files:\n${notes.map((n) => `  ${n}`).join("\n")}\n`;
   if (tree.truncated) stderr += "sandbox: the workspace has more files than the sandbox lists; some are not visible here.\n";
@@ -371,12 +398,24 @@ async function execute(id: unknown, command: string, timeoutMs: number): Promise
 }
 
 const listener: BusListener = (type, payload) => {
-  if (type !== "sandbox_run") return;
   if (payload.host !== HOST_ID) return;
   const id = payload.id;
-  if (typeof id !== "string" || typeof payload.command !== "string") return;
+  if (typeof id !== "string") return;
+  if (type === "sandbox_cancel") {
+    commands.get(id)?.abort();
+    if (executingId === id) { frame?.dispose(); frame = null; }
+    return;
+  }
+  if (type !== "sandbox_run" || typeof payload.command !== "string") return;
+  const controller = new AbortController();
+  commands.set(id, controller);
   const timeoutMs = typeof payload.timeoutMs === "number" ? payload.timeoutMs : 120_000;
-  queue = queue.then(() => execute(id, payload.command as string, timeoutMs)).catch(() => undefined);
+  queue = queue.then(async () => {
+    if (controller.signal.aborted) return;
+    executingId = id;
+    try { await execute(id, payload.command as string, timeoutMs, controller.signal); }
+    finally { executingId = null; }
+  }).catch(() => undefined).finally(() => commands.delete(id));
 };
 
 busListeners.add(listener);

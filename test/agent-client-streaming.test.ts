@@ -111,6 +111,23 @@ describe("agent steps: live stream and saved run lay out the same", () => {
     expect(shape(saved)).toEqual(shape(live));
   });
 
+  it("joins text separated by empty reasoning without changing real boundaries", () => {
+    const parts: PartData[] = [
+      { kind: "text", text: "Since" },
+      { kind: "think", text: " \n", done: true },
+      { kind: "text", text: " you asked" },
+      { kind: "think", text: "consider the request", done: true },
+      { kind: "text", text: "Here" },
+      { kind: "text", text: " they are." },
+    ];
+    expect(visibleParts({ id: "m", role: "assistant", parts })).toEqual([
+      { kind: "text", text: "Since you asked" },
+      parts[3]!,
+      { kind: "text", text: "Here they are." },
+    ]);
+    expect(parts[0]).toEqual({ kind: "text", text: "Since" });
+  });
+
   it("a blank thinking fragment is not a step", () => {
     const msg = { id: "m", role: "assistant" as const, parts: applyStreamEvent([], { type: "thinking", delta: " \n" }) };
     expect(visibleParts(msg)).toEqual([]);

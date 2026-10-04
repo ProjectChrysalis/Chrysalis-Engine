@@ -67,8 +67,16 @@ export const hasReasoning = (s: string | undefined): s is string => !!s && s.tri
 /** The parts a message shows. A blank thinking fragment is dropped here, for
  *  the live stream and the loaded history alike, so both lay out the same
  *  steps and the part indices the thread renders map back onto this list. */
-export const visibleParts = (m: Msg): PartData[] =>
-  m.parts.filter((p) => p.kind !== "think" || hasReasoning(p.text))
+export const visibleParts = (m: Msg): PartData[] => {
+  const out: PartData[] = []
+  for (const p of m.parts) {
+    if (p.kind === "think" && !hasReasoning(p.text)) continue
+    const last = out.at(-1)
+    if (last?.kind === "text" && p.kind === "text") out[out.length - 1] = { kind: "text", text: last.text + p.text }
+    else out.push(p)
+  }
+  return out
+}
 
 /** Each model turn in the order it streamed: its reasoning, the text it wrote,
  *  then the tool calls it made. A thinking phase after a tool call stays after

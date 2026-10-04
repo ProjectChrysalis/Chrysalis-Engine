@@ -15,6 +15,7 @@
  *   }
  * }
  */
+import { abortable } from "../cancellation.js";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -382,6 +383,7 @@ export class McpRegistry {
     namespacedName: string,
     args: Record<string, unknown>,
     allow?: readonly string[],
+    signal?: AbortSignal,
   ): Promise<{ ok: boolean; text: string }> {
     // resolve the server by matching KNOWN ids (longest first) — a regex
     // split can't disambiguate: server ids may contain dashes while tool
@@ -399,13 +401,13 @@ export class McpRegistry {
     }
     if (!serverId) return { ok: false, text: `unknown MCP tool: ${namespacedName}` };
     if (allow && !allow.includes(serverId)) return { ok: false, text: `tool not available: ${namespacedName}` };
-    const conn = await this.ensure(serverId);
+    const conn = await abortable(this.ensure(serverId), signal);
     if (!conn) return { ok: false, text: `MCP server "${serverId}" unavailable` };
     if (!conn.tools.some((t) => t.name === rawName)) {
       return { ok: false, text: `tool "${rawName}" not found on server "${serverId}"` };
     }
     try {
-      const res = await conn.client.callTool({ name: rawName, arguments: args });
+      const res = await conn.client.callTool({ name: rawName, arguments: args }, undefined, { signal });
       const content = (res.content as { type: string; text?: string }[] | undefined) ?? [];
       const text = content.map((c) => c.text ?? `(${c.type})`).join("\n");
       return { ok: !res.isError, text };

@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { abortable } from "../cancellation.js";
 import { INSTALL_KIND } from "../install.js";
 
 export interface InstallResult {
@@ -60,14 +61,18 @@ export function hasPackages(appDir: string): boolean {
  *  from source it is the bun that runs the engine, and a compiled engine
  *  acts as the full Bun CLI when BUN_BE_BUN is set. Nobody has to install
  *  Bun separately, and no shell ever sees the package names. */
-function runBun(appDir: string, args: string[]): Promise<InstallResult> {
+function runBun(appDir: string, args: string[], signal?: AbortSignal): Promise<InstallResult> {
   return new Promise((resolve) => {
+    signal?.throwIfAborted();
     const started = Date.now();
     const child = spawn(process.execPath, args, {
       cwd: appDir,
       env: { ...scrubEnv(), BUN_BE_BUN: "1" },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const cancel = () => child.kill("SIGKILL");
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (signal?.aborted) cancel();
     let out = "";
     const sink = (chunk: Buffer) => {
       out += chunk.toString("utf8");
@@ -78,27 +83,29 @@ function runBun(appDir: string, args: string[]): Promise<InstallResult> {
     const timer = setTimeout(() => child.kill("SIGKILL"), 10 * 60_000);
     child.on("error", (e) => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", cancel);
       resolve({ ok: false, log: String(e), ms: Date.now() - started });
     });
     child.on("close", (code) => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", cancel);
       resolve({ ok: code === 0, log: out.trim() || (code === 0 ? "" : `bun ${args[0]} failed`), ms: Date.now() - started });
     });
   });
 }
 
-export function installApp(appDir: string): Promise<InstallResult> {
+export function installApp(appDir: string, signal?: AbortSignal): Promise<InstallResult> {
   if (!hasPackages(appDir)) return Promise.resolve({ ok: false, log: "no package.json in this app", ms: 0 });
   // `bun install` does NOT remove packages taken out of package.json —
   // uninstallApp does that.
-  return exclusive(appDir, () => runBun(appDir, ["install", "--ignore-scripts", ...LINK_BACKEND]));
+  return abortable(exclusive(appDir, () => runBun(appDir, ["install", "--ignore-scripts", ...LINK_BACKEND], signal)), signal);
 }
 
 /** Take packages out of an app: `bun remove` updates package.json, the
  *  lockfile and node_modules together. Names arrive as argv entries (no
  *  shell), but callers must still reject flag-shaped names. */
-export function uninstallApp(appDir: string, packages: string[]): Promise<InstallResult> {
+export function uninstallApp(appDir: string, packages: string[], signal?: AbortSignal): Promise<InstallResult> {
   if (!hasPackages(appDir)) return Promise.resolve({ ok: false, log: "no package.json in this app", ms: 0 });
   if (!packages.length) return Promise.resolve({ ok: false, log: "no package names given", ms: 0 });
-  return exclusive(appDir, () => runBun(appDir, ["remove", ...LINK_BACKEND, ...packages]));
+  return abortable(exclusive(appDir, () => runBun(appDir, ["remove", ...LINK_BACKEND, ...packages], signal)), signal);
 }

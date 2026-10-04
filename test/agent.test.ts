@@ -429,6 +429,43 @@ describe("agent loop + sessions (faux provider)", () => {
     expect(listSessions(p)[0]!.runs).toBe(2);
   }, 30_000);
 
+  it("stops a running shell tool without losing earlier text or making another model call", async () => {
+    const users = new UserService(dataDir);
+    users.create("admin", "admin", { password: "admin-pass-1" });
+    users.create("alice", "user", { password: "test-pass-1" });
+    const svc = makeSvc("alice");
+    const handle = fauxProvider({ models: [{ id: "faux-agent" }] });
+    handle.setResponses([
+      fauxAssistantMessage([
+        { type: "text", text: "Checking the files." },
+        { type: "toolCall", id: "shell1", name: "bash", arguments: { command: "sleep 60" } },
+      ], { stopReason: "toolUse" }),
+      fauxAssistantMessage("Should never run."),
+    ]);
+    svc.models.setProvider(handle.provider);
+    let started!: () => void;
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    const sandbox = testSandbox();
+    sandbox.run = async (_username, _root, input) => {
+      expect(input.signal).toBeDefined();
+      started();
+      return new Promise((resolve) => {
+        input.signal!.addEventListener("abort", () => resolve({ error: "Command stopped" }), { once: true });
+      });
+    };
+    const agent = await UserAgent.create("alice", svc, userPaths(dataDir, "alice"), users, defaultInstanceConfig(), { sandbox });
+    const pending = agent.run("check files");
+    await entered;
+    agent.stop();
+    const result = await pending;
+    expect(result.stopped).toBe(true);
+    expect(result.finalText).toContain("Checking the files.");
+    expect(result.finalText).not.toContain("Should never run");
+    expect(result.toolTrace[0]).toMatchObject({ name: "bash", ok: false });
+    const saved = fs.readFileSync(sessionFile(userPaths(dataDir, "alice"), agent.sessionId), "utf8");
+    expect(saved).toContain("Checking the files.");
+  }, 5_000);
+
   it("several ask_user calls in one batch surface one question at a time", async () => {
     const users = new UserService(dataDir);
     users.create("admin", "admin", { password: "admin-pass-1" });

@@ -50,6 +50,7 @@ export interface AgentRunResult {
   contextWindow?: number;
   /** Set when the run was aborted mid-flight (partial output is persisted). */
   stopped?: boolean;
+  stopReason?: string;
   /** Set when the model stream ended in error (bad key, provider down…). */
   error?: string;
   /** The provider refused the request as too long for the model's window
@@ -243,6 +244,7 @@ export function archiveSession(p: UserPaths, sessionId: string, archived: boolea
 }
 
 export class UserAgent {
+  private stopRequested = false;
   /** The instruction files as they were when this agent's system prompt was
    *  built (see instructionDocsStamp). The caller drops the agent when it
    *  stops matching, so an edited note reaches the very next turn. */
@@ -372,6 +374,7 @@ export class UserAgent {
 
   /** Abort the active run; partial output settles with stopReason "aborted". */
   stop(): void {
+    this.stopRequested = true;
     log.info(`[agent:${this.sessionId}] stop requested`);
     this.agent.abort();
   }
@@ -386,6 +389,7 @@ export class UserAgent {
     opts: {
       onDelta?: (delta: string) => void;
       onEvent?: (ev: AgentStreamEvent) => void;
+      signal?: AbortSignal;
       images?: Array<{ data: string; mimeType: string }>;
       /** Where the same images live in the asset store, for the record. */
       imageUrls?: string[];
@@ -395,6 +399,10 @@ export class UserAgent {
       contextFiles?: Array<{ path: string; text: string; truncated: boolean }>;
     } = {},
   ): Promise<AgentRunResult> {
+    this.stopRequested = false;
+    const cancel = () => this.stop();
+    opts.signal?.addEventListener("abort", cancel, { once: true });
+    if (opts.signal?.aborted) cancel();
     this.markStarted(userMessage);
     // "@path" in the message means the person is pointing at a file. Reading
     // it here saves the model a round trip to find out what they meant, and
@@ -476,11 +484,11 @@ export class UserAgent {
     });
     try {
       const images = (opts.images ?? []).map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
-      await this.agent.prompt(promptText, images.length ? images : undefined);
+      if (!this.stopRequested) await this.agent.prompt(promptText, images.length ? images : undefined);
       // The provider refused the context as too long: our estimate missed.
       // Drop the refusal and retry once with a deep trim instead of stopping.
       const last = this.agent.state.messages.at(-1) as AssistantMessage | undefined;
-      if (last?.role === "assistant" && last.stopReason === "error" && isOverflow(last)) {
+      if (!this.stopRequested && last?.role === "assistant" && last.stopReason === "error" && isOverflow(last)) {
         log.warn(`[agent:${this.sessionId}] context overflow, retrying with a deep trim: ${last.errorMessage}`);
         this.agent.state.messages = this.agent.state.messages.slice(0, -1);
         // the refusal usually names the real window: trust it over a catalog
@@ -499,11 +507,14 @@ export class UserAgent {
       }
     } finally {
       unsub();
+      opts.signal?.removeEventListener("abort", cancel);
     }
     const transcript = this.agent.state.messages;
     const fresh = transcript.slice(before);
     const finalAssistant = [...fresh].reverse().find((m) => m.role === "assistant");
-    const text = agentText(finalAssistant);
+    const text = agentText(finalAssistant) || (this.stopRequested
+      ? agentText([...fresh].reverse().find((m) => m.role === "assistant" && agentText(m)))
+      : "");
     // tool results by call id + args from the assistant toolCall blocks
     const resultsByCall = new Map<string, { ok: boolean; summary: string; output?: string }>();
     for (const m of fresh) {
@@ -553,12 +564,12 @@ export class UserAgent {
     const thinkingMs = thinkingStart ? (thinkingEnd || Date.now()) - thinkingStart : undefined;
     const stop = (finalAssistant as { stopReason?: string } | undefined)?.stopReason;
     const errorMessage = (finalAssistant as { errorMessage?: string } | undefined)?.errorMessage;
-    const error = stop === "error" ? humanizeProviderError(errorMessage) : undefined;
+    const error = !this.stopRequested && stop === "error" ? humanizeProviderError(errorMessage) : undefined;
     const contextOverflow = stop === "error" && isOverflow(finalAssistant as AssistantMessage);
     // A reasoning model can stop after thinking with no text and no tool
     // call; without this the turn would end in silence. Display only: the
     // session keeps the empty reply so the note never enters model context.
-    const emptyNote = !text && stop !== "aborted" && !error
+    const emptyNote = !text && !this.stopRequested && stop !== "aborted" && !error
       ? "The model returned an empty response. Send it again, or check the model connection in Settings."
       : undefined;
     if (error) log.warn(`[agent:${this.sessionId}] model call failed: ${error}`);
@@ -576,7 +587,8 @@ export class UserAgent {
       ...(thinkingMs !== undefined ? { thinkingMs } : {}),
       ...(usage ? { usage } : {}),
       ...(resolvedModel?.contextWindow ? { contextWindow: resolvedModel.contextWindow } : {}),
-      ...(stop === "aborted" ? { stopped: true } : {}),
+      ...(this.stopRequested || stop === "aborted" ? { stopped: true } : {}),
+      ...(stop ? { stopReason: stop } : {}),
       ...(error ? { error } : {}),
       ...(contextOverflow ? { contextOverflow: true } : {}),
     };
@@ -908,8 +920,8 @@ export async function buildMcpTools(registry: McpRegistry): Promise<AgentTool[]>
       label: `${info.server}: ${info.rawName}`,
       description: info.description?.slice(0, 1024) || `MCP tool ${info.rawName} from server ${info.server}.`,
       parameters: schema as unknown as AgentTool["parameters"],
-      async execute(_id, params) {
-        const res = await registry.callTool(info.name, (params ?? {}) as Record<string, unknown>);
+      async execute(_id, params, signal) {
+        const res = await registry.callTool(info.name, (params ?? {}) as Record<string, unknown>, undefined, signal);
         return {
           content: [{ type: "text", text: res.ok ? res.text : `ERROR: ${res.text}` }],
           details: { mcp: true, server: info.server, tool: info.rawName },
@@ -1095,7 +1107,7 @@ ${installedAppsSection(paths)}Before editing an app, read its own AGENTS.md and 
     out +=
       "\n\n# Shell (bash tool)\n" +
       "Your bash tool runs in a sandbox in the user's browser, never on their machine. The workspace is /workspace (each command starts there) and stays mounted between calls; files a command changes are saved to the user's files when it finishes. /tmp also lasts between calls.\n" +
-      "- Shell: busybox ash with the bash basics (functions, $(...), [[ ]], here-docs, set -euo pipefail, bash script.sh, ./script.sh by its #! line). No bash arrays, no brace expansion like {a,b}.\n" +
+      "- Shell: busybox ash with the bash basics (functions, $(...), [[ ]], here-docs, set -euo pipefail, bash script.sh, ./script.sh by its #! line). No bash arrays, no brace expansion like {a,b}, no process substitution <(...) or >(...), and no background jobs. Compare temporary files instead. Set the bash tool timeout_ms for time limits; do not invoke timeout or nohup. Each call starts a fresh shell; a tool timeout discards unsaved changes and /tmp.\n" +
       "- Commands: coreutils and findutils with the GNU options you know (ls -R, grep -rn --include/--exclude-dir, find -maxdepth/-exec, xargs -I, sort -k, sed -i, awk, head -c, diff -u, patch, od, xxd, sha256sum, bc, tree), plus rg, fd, jq (real jq 1.7), curl, wget, tar, gzip, zip, unzip, file.\n" +
       "- python3: CPython 3.14 with the standard library (json, csv, re, pathlib, datetime, urllib, subprocess, zipfile; no sqlite3). No pip or third-party packages.\n" +
       "- node: Node-style JavaScript (fs, path, child_process, crypto, zlib, fetch, CommonJS and ES modules, async code and timers). No npm packages. An async function that throws without a .catch() ends silently, so catch errors yourself.\n" +

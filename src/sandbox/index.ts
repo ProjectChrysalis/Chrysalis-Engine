@@ -22,6 +22,7 @@ export function defaultSandboxConfig(): SandboxConfig {
 export interface SandboxRunInput {
   command: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export interface SandboxRunResult {

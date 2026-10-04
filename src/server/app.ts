@@ -1,6 +1,7 @@
 /**
  * Hono app + routes (SPEC §6). Thin handlers over services.
  */
+import { abortable } from "../cancellation.js";
 import { Hono, type Context, type Next } from "hono";
 import { compress } from "hono/compress";
 import fs from "node:fs";
@@ -564,6 +565,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   const agentInstances = new Map<string, UserAgent>();
   /** username:sessionId -> currently running agent (steering target). */
   const activeRuns = new Map<string, UserAgent>();
+  const runControllers = new Map<string, AbortController>();
   const evictAgents = (username: string) => {
     for (const key of agentInstances.keys()) if (key.startsWith(`${username}:`)) agentInstances.delete(key);
   };
@@ -573,6 +575,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     model?: string,
     reasoning?: ReasoningLevel,
     mode: "normal" | "accept" | "plan" = "normal",
+    signal?: AbortSignal,
   ): Promise<UserAgent> => {
     const key = sessionId ? `${u.username}:${sessionId}:${model ?? ""}:${reasoning ?? ""}:${mode}` : undefined;
     let a = key ? agentInstances.get(key) : undefined;
@@ -615,6 +618,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
             }, 10 * 60_000).unref();
           }),
       });
+      signal?.throwIfAborted();
       resolvedSessionId = a.sessionId;
       a.docsStamp = docsNow;
       if (key) agentInstances.set(key, a);
@@ -2264,16 +2268,24 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         log.warn(`[agent] attached image not stored: ${(e as Error).message}`);
       }
     }
+    const requestedSessionId = body.sessionId ?? nodeCrypto.randomUUID();
+    const runKey = `${u.username}:${requestedSessionId}`;
+    if (activeRuns.has(runKey) || runControllers.has(runKey)) return c.json({ error: "A run is already active for this session" }, 409);
+    const controller = new AbortController();
+    runControllers.set(runKey, controller);
     let agent: UserAgent;
     try {
-      agent = await getAgent(
+      agent = await abortable(getAgent(
         u,
-        body.sessionId,
+        requestedSessionId,
         typeof body.model === "string" ? body.model.slice(0, 200) : undefined,
         isReasoningLevel(body.reasoning) ? body.reasoning : undefined,
         body.mode === "plan" ? "plan" : body.mode === "accept" ? "accept" : "normal",
-      );
+        controller.signal,
+      ), controller.signal);
     } catch (e) {
+      runControllers.delete(runKey);
+      if (controller.signal.aborted) return c.json({ sessionId: requestedSessionId, finalText: "", transcript: [], turns: [], toolTrace: [], stopped: true });
       if (/no models configured/i.test((e as Error).message)) {
         return c.json({ error: (e as Error).message }, 503);
       }
@@ -2283,13 +2295,13 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     // the model is looking at the file instead of going to fetch it first.
     const contextFiles = readMentionedFiles(paths, body.message);
     bus.emit(u.username, "agent_session", { sessionId: agent.sessionId });
-    const runKey = `${u.username}:${agent.sessionId}`;
     activeRuns.set(runKey, agent);
     try {
       const result = await agent.run(body.message, {
         onDelta: (d) => bus.emit(u.username, "agent_delta", { sessionId: agent.sessionId, delta: d }),
         onEvent: (ev) => bus.emit(u.username, "agent_event", { sessionId: agent.sessionId, ev }),
         images,
+        signal: controller.signal,
         ...(imageUrls.length ? { imageUrls } : {}),
         ...(contextFiles.length ? { contextFiles } : {}),
       });
@@ -2309,7 +2321,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       const nextContext = result.usage ? result.usage.input + result.usage.cacheRead + result.usage.output : 0;
       // an overflow the in-run retry could not absorb: without compacting,
       // every next message in this session would be refused the same way
-      if ((limit > 0 && nextContext >= limit && !result.error) || result.contextOverflow) {
+      if (!result.stopped && ((limit > 0 && nextContext >= limit && !result.error) || result.contextOverflow)) {
         try {
           await compactSession(u, agent.sessionId, { auto: true, model: agent.model.ref });
           autoCompacted = true;
@@ -2323,6 +2335,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       return c.json({ error: (e as Error).message }, 500);
     } finally {
       activeRuns.delete(runKey);
+      runControllers.delete(runKey);
     }
   });
 
@@ -2350,7 +2363,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       return c.json({ error: "valid sessionId required" }, 400);
     }
     const agent = activeRuns.get(`${u.username}:${body.sessionId}`);
-    if (!agent) return c.json({ error: "no active run for this session" }, 409);
+    const controller = runControllers.get(`${u.username}:${body.sessionId}`);
+    if (!agent && !controller) return c.json({ error: "no active run for this session" }, 409);
     // unblock any pending ask_user from this run so the abort can settle
     for (const [askId, pending] of pendingQuestions) {
       if (pending.sessionId === body.sessionId && pending.username === u.username) {
@@ -2358,7 +2372,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         pending.resolve("(stopped)");
       }
     }
-    agent.stop();
+    controller?.abort();
+    agent?.stop();
     return c.json({ ok: true });
   });
 
@@ -2496,7 +2511,11 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     }
     if (model && model.includes("/") && agent.model.ref !== model) throw new HttpError(503, "the session model is unavailable; choose a model for compaction");
     const runKey = `${u.username}:${agent.sessionId}`;
-    if (activeRuns.has(runKey)) throw new HttpError(409, "stop the current run before compacting this session");
+    const previousRun = activeRuns.get(runKey);
+    if (previousRun && (!opts.auto || !runControllers.has(runKey))) throw new HttpError(409, "stop the current run before compacting this session");
+    const previousController = runControllers.get(runKey);
+    const controller = previousController ?? new AbortController();
+    runControllers.set(runKey, controller);
     activeRuns.set(runKey, agent);
     try {
       // a one-shot call, NOT a run of the session agent: the session is what
@@ -2507,10 +2526,11 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         model: { contextWindow, maxTokens },
         records,
         generate: async (prompt, max) => {
-          const res = await svc.generate(
-            { messages: [{ role: "user", content: prompt }], model: ref, sessionId: `${id}-compact`, presetParams: { max_tokens: max }, source: "agent-compact" },
-            (d) => bus.emit(u.username, "agent_delta", { sessionId: agent.sessionId, delta: d }),
-          );
+          controller.signal.throwIfAborted();
+          const res = await abortable(svc.generate(
+            { messages: [{ role: "user", content: prompt }], model: ref, sessionId: `${id}-compact`, presetParams: { max_tokens: max }, source: "agent-compact", signal: controller.signal },
+            (d) => { if (!controller.signal.aborted) bus.emit(u.username, "agent_delta", { sessionId: agent.sessionId, delta: d }); },
+          ), controller.signal);
           if (res.error) throw new HttpError(500, res.error);
           return res.text;
         },
@@ -2528,13 +2548,16 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         summary,
         ...(opts.auto ? { auto: true } : {}),
       };
+      controller.signal.throwIfAborted();
       fs.writeFileSync(file, pre + JSON.stringify(rec) + "\n", "utf8");
       return { summary, runsBefore: runs.length };
     } catch (e) {
       if (e instanceof HttpError) throw e;
       throw new HttpError(500, (e as Error).message);
     } finally {
-      activeRuns.delete(runKey);
+      if (previousRun) activeRuns.set(runKey, previousRun);
+      else activeRuns.delete(runKey);
+      if (!previousController) runControllers.delete(runKey);
       evictAgents(u.username); // the session file changed under any cached agent
     }
   };

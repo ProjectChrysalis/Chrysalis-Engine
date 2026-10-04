@@ -110,6 +110,23 @@ describe("agent bash tool", () => {
     expect(details.provider).toBe("browser");
   });
 
+  it("marks nonzero exits and timeouts as tool failures while retaining diagnostics", async () => {
+    bootstrapUserDir(tmp, "alice");
+    const p = userPaths(tmp, "alice");
+    for (const timedOut of [false, true]) {
+      const sandbox: SandboxRunner = {
+        ...stubRunner(),
+        run: async () => ({ exitCode: timedOut ? null : 2, stdout: "partial", stderr: "unsupported operation", timedOut, truncated: false, provider: "browser" }),
+      };
+      const bash = buildUserTools("alice", p, { dataDir: tmp, sandbox }).find((tool) => tool.name === "bash")!;
+      const result = await bash.execute("id", { command: "example", timeout_ms: 100 });
+      expect(result.isError).toBe(true);
+      const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+      expect(text).toContain("unsupported operation");
+      expect(text).toContain("partial");
+    }
+  });
+
   it("refuses cleanly when no shell is configured", async () => {
     bootstrapUserDir(tmp, "alice");
     const p = userPaths(tmp, "alice");
@@ -235,6 +252,32 @@ describe("browser runner readiness", () => {
     expect(runner.resolve("alice", payload.id as string, { exitCode: 0, stdout: "wasi\n" })).toBe(true);
     const res = await pending;
     expect("stdout" in res && res.stdout).toBe("wasi\n");
+  });
+
+  it("cancels a pending command and refuses its late result", async () => {
+    const { bus, emitted } = busStub();
+    const runner = new BrowserSandbox(cfg, bus, 50);
+    runner.hello("alice", "host123456", true);
+    const controller = new AbortController();
+    const pending = runner.run("alice", "/tmp", { command: "sleep 60", signal: controller.signal });
+    const payload = emitted[0]![2];
+    expect(runner.status().running).toBe(1);
+    controller.abort();
+    expect(await pending).toEqual({ error: "Command stopped" });
+    expect(emitted[1]).toEqual(["alice", "sandbox_cancel", { id: payload.id, host: "host123456" }]);
+    expect(runner.status().running).toBe(0);
+    expect(runner.resolve("alice", payload.id, { exitCode: 0, stdout: "late" })).toBe(false);
+  });
+
+  it("cancels while the browser is still mounting", async () => {
+    const { bus, emitted } = busStub();
+    const runner = new BrowserSandbox(cfg, bus, 10_000);
+    runner.hello("alice", "host123456", false);
+    const controller = new AbortController();
+    const pending = runner.run("alice", "/tmp", { command: "ls", signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+    expect(emitted).toEqual([]);
   });
 
   it("status tells the truth about a host that never mounted", () => {
