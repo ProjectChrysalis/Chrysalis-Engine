@@ -202,3 +202,56 @@
 .aui-thread-viewport-footer {
   padding-bottom: max(1rem, env(safe-area-inset-bottom));
 }
+
+.agent-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  max-height: min(24rem, 45dvh);
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.agent-ask-heading, .agent-queue-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.agent-ask-heading p, .agent-queue-item p {
+  min-width: 0;
+  flex: 1;
+}
+.agent-ask-heading button, .agent-queue-item button {
+  flex-shrink: 0;
+  padding: 0.25rem;
+  min-height: 2.25rem;
+  min-width: 2.25rem;
+}
+.agent-ask-content {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.agent-message-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  max-height: min(12rem, 25dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+}
+.agent-queue-item {
+  font-size: 0.875rem;
+}
+.agent-queue-item p {
+  white-space: pre-wrap;
+}
+
+.agent-ask-heading { max-height: max(2.25rem, 8dvh); flex-shrink: 0; }
+.agent-ask-heading p { min-height: 0; overflow: auto; }
+
+.aui-thread-viewport-footer { max-height: calc(100dvh - 5rem); }
+.aui-thread-viewport-footer > .agent-ask, .aui-thread-viewport-footer > .agent-message-queue { flex-shrink: 1; min-height: 0; }

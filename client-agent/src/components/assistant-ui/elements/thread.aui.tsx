@@ -1,3 +1,5 @@
+import { MessageQueue } from "@/MessageQueue"
+import { tr } from "@/i18n"
 "use client";
 
 import { ComposerSettings } from "@/Header";
@@ -96,7 +98,7 @@ const ThreadHistorySkeleton: FC = () => (
     role="status"
     className="animate-in fade-in fill-mode-both flex flex-col gap-y-6 [animation-delay:150ms] [animation-duration:200ms]"
   >
-    <span className="sr-only">Loading conversation</span>
+    <span className="sr-only">{tr("Loading conversation")}</span>
     <Skeleton className="ml-auto h-9 w-2/5 rounded-xl motion-reduce:animate-none" />
     <div className="flex flex-col gap-y-2">
       <Skeleton className="h-4 w-11/12 motion-reduce:animate-none" />
@@ -204,13 +206,14 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
 
         <ThreadPrimitive.ViewportFooter
           className={cn(
-            "aui-thread-viewport-footer bg-background relative mx-auto flex w-full max-w-(--thread-max-width) shrink-0 flex-col gap-4 overflow-visible pt-2 pb-4 md:pb-6",
+            "aui-thread-viewport-footer bg-background relative mx-auto flex w-full max-w-(--thread-max-width) shrink-0 flex-col gap-2 overflow-visible pt-2 pb-4 md:pb-6",
             !isEmpty && "sticky bottom-0 mt-auto rounded-t-(--composer-radius)",
           )}
         >
           <ThreadScrollToBottom />
           <ThreadFollowupSuggestions />
           <AskBar />
+          <MessageQueue />
           <Composer autoFocus={autoFocus} />
           <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
             <ThreadSuggestions />
@@ -236,7 +239,7 @@ const ThreadScrollToBottom: FC = () => {
   return (
     <ThreadPrimitive.ScrollToBottom asChild>
       <TooltipIconButton
-        tooltip="Scroll to bottom"
+        tooltip={tr("Scroll to bottom")}
         variant="outline"
         className="aui-thread-scroll-to-bottom dark:border-border dark:bg-background dark:hover:bg-accent absolute -top-12 z-10 self-center rounded-full p-4 disabled:invisible"
       >
@@ -249,9 +252,7 @@ const ThreadScrollToBottom: FC = () => {
 const ThreadWelcome: FC = () => {
   return (
     <div className="aui-thread-welcome-root mb-6 flex flex-col items-center px-4 text-center">
-      <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-2xl font-medium tracking-tight duration-200">
-        How can I help you today?
-      </h1>
+      <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-2xl font-medium tracking-tight duration-200">{tr("How can I help you today?")}</h1>
       <ThreadWelcomeRecents />
     </div>
   );
@@ -271,7 +272,7 @@ const ThreadWelcomeRecents: FC = () => {
 
   return (
     <div className="aui-thread-welcome-recents fade-in slide-in-from-bottom-2 animate-in fill-mode-both mt-6 flex w-full flex-col items-center gap-2 duration-200">
-      <span className="text-muted-foreground text-xs font-medium">Recent chats</span>
+      <span className="text-muted-foreground text-xs font-medium">{tr("Recent chats")}</span>
       <ThreadListPrimitive.Root className="flex flex-wrap items-center justify-center gap-1.5">
         {recent.map((id, index) => (
           <ThreadListPrimitive.ItemByIndex
@@ -295,7 +296,7 @@ const ThreadWelcomeRecentItem: FC = () => {
         >
           <Chat aria-hidden className="size-3.5 shrink-0 opacity-60" />
           <span className="min-w-0 truncate">
-            <ThreadListItemPrimitive.Title fallback="New Chat" />
+            <ThreadListItemPrimitive.Title fallback={tr("New chat")} />
           </span>
         </Button>
       </ThreadListItemPrimitive.Trigger>
@@ -368,6 +369,14 @@ const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
   const aui = useAui();
   const enterSends = useEnterSends();
   const sessionId = useAgentStore((s) => s.sessionId);
+  const queueMessage = async () => {
+    const composer = aui.composer.getState();
+    if (useAgentStore.getState().stopping || !composer.text.trim()) return;
+    if (composer.attachments.length) { useAgentStore.getState().setBanner({ kind: "error", text: tr("Send attachments after the run finishes") }); return; }
+    const sending = useAgentStore.getState().send(composer.text);
+    if (aui.composer.getState().text === composer.text) aui.composer.setText("");
+    await sending;
+  };
   const booting = useRef(true);
   useEffect(() => {
     const key = draftKey(sessionId);
@@ -401,13 +410,19 @@ const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
           >
             <ComposerAttachments />
             <ComposerPrimitive.Input
-              placeholder="Send a message..."
+              placeholder={tr("Message")}
               className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 outline-none"
               rows={1}
               autoFocus={autoFocus}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && enterSends && !event.shiftKey && !event.nativeEvent.isComposing && useAgentStore.getState().running) {
+                  event.preventDefault();
+                  void queueMessage();
+                }
+              }}
               submitOnEnter={enterSends}
               enterKeyHint={enterSends ? "send" : "enter"}
-              aria-label="Message input"
+              aria-label={tr("Message")}
             />
             <SlashCommands />
             <FileMentions />
@@ -421,6 +436,7 @@ const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
 
 const ComposerAction: FC = () => {
   const stopping = useAgentStore((s) => s.stopping);
+  const aui = useAui();
   return (
     // one row at every width: the model name truncates before anything wraps
     <div className="aui-composer-action-wrapper relative flex items-center justify-between gap-1">
@@ -435,13 +451,13 @@ const ComposerAction: FC = () => {
           <AuiIf condition={(s) => s.composer.dictation == null}>
             <ComposerPrimitive.Dictate asChild>
               <TooltipIconButton
-                tooltip="Voice input"
+                tooltip={tr("Voice input")}
                 side="bottom"
                 type="button"
                 variant="ghost"
                 size="icon"
                 className="aui-composer-dictate text-muted-foreground hover:text-foreground size-7 rounded-full"
-                aria-label="Start voice input"
+                aria-label={tr("Start voice input")}
               >
                 <Microphone className="aui-composer-dictate-icon size-4" />
               </TooltipIconButton>
@@ -450,13 +466,13 @@ const ComposerAction: FC = () => {
           <AuiIf condition={(s) => s.composer.dictation != null}>
             <ComposerPrimitive.StopDictation asChild>
               <TooltipIconButton
-                tooltip="Stop dictation"
+                tooltip={tr("Stop voice input")}
                 side="bottom"
                 type="button"
                 variant="ghost"
                 size="icon"
                 className="aui-composer-stop-dictation text-destructive size-7 rounded-full"
-                aria-label="Stop voice input"
+                aria-label={tr("Stop voice input")}
               >
                 <Square className="aui-composer-stop-dictation-icon size-3.5 animate-pulse fill-current" />
               </TooltipIconButton>
@@ -466,19 +482,26 @@ const ComposerAction: FC = () => {
         <AuiIf condition={(s) => !s.thread.isRunning}>
           <ComposerPrimitive.Send asChild>
             <TooltipIconButton
-              tooltip="Send message"
+              tooltip={tr("Send")}
               side="bottom"
               type="button"
               variant="default"
               size="icon"
               className="aui-composer-send size-7 rounded-full"
-              aria-label="Send message"
+              aria-label={tr("Send")}
             >
               <ArrowUp className="aui-composer-send-icon size-4" />
             </TooltipIconButton>
           </ComposerPrimitive.Send>
         </AuiIf>
         <AuiIf condition={(s) => s.thread.isRunning}>
+          <TooltipIconButton tooltip={tr("Queue message")} aria-label={tr("Queue message")} type="button" disabled={stopping} className="size-7 rounded-full" onClick={async () => {
+            const composer = aui.composer.getState();
+            if (useAgentStore.getState().stopping || !composer.text.trim()) return;
+    if (composer.attachments.length) { useAgentStore.getState().setBanner({ kind: "error", text: tr("Send attachments after the run finishes") }); return; }
+            await useAgentStore.getState().send(composer.text);
+            if (aui.composer.getState().text === composer.text) aui.composer.setText("");
+          }}><ArrowUp className="size-4" /></TooltipIconButton>
           <ComposerPrimitive.Cancel asChild>
             <Button
               type="button"
@@ -486,7 +509,7 @@ const ComposerAction: FC = () => {
               size="icon"
               className="aui-composer-cancel size-7 rounded-full"
               disabled={stopping}
-              aria-label={stopping ? "Stopping" : "Stop generating"}
+              aria-label={stopping ? tr("Stopping") : tr("Stop generating")}
             >
               <Square className="aui-composer-cancel-icon size-3.5 fill-current" />
             </Button>
@@ -570,7 +593,7 @@ const AssistantMessage: FC = () => {
                   <span
                     data-slot="aui_assistant-message-indicator"
                     className="animate-pulse font-sans"
-                    aria-label="Assistant is working"
+                    aria-label={tr("Assistant is working")}
                   >
                     {"●"}
                   </span>
@@ -619,7 +642,7 @@ const CopyAction: FC = () => {
   };
 
   return (
-    <TooltipIconButton tooltip="Copy" onClick={onCopy}>
+    <TooltipIconButton tooltip={tr("Copy")} onClick={onCopy}>
       {isCopied ? (
         <Check className="animate-in zoom-in-50 fade-in duration-200 ease-out" />
       ) : (
@@ -638,14 +661,14 @@ const AssistantActionBar: FC = () => {
     >
       <CopyAction />
       <ActionBarPrimitive.Reload asChild>
-        <TooltipIconButton tooltip="Refresh">
+        <TooltipIconButton tooltip={tr("Refresh")}>
           <ArrowsClockwise />
         </TooltipIconButton>
       </ActionBarPrimitive.Reload>
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild>
           <TooltipIconButton
-            tooltip="More"
+            tooltip={tr("More")}
             className="data-[state=open]:bg-accent"
           >
             <DotsThree />
@@ -659,9 +682,7 @@ const AssistantActionBar: FC = () => {
         >
           <ActionBarPrimitive.ExportMarkdown asChild>
             <ActionBarMorePrimitive.Item className="aui-action-bar-more-item hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none">
-              <DownloadSimple className="size-4" />
-              Export as Markdown
-            </ActionBarMorePrimitive.Item>
+              <DownloadSimple className="size-4" />{tr("Export as Markdown")}</ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>
         </ActionBarMorePrimitive.Content>
       </ActionBarMorePrimitive.Root>
@@ -717,7 +738,7 @@ const UserActionBar: FC = () => {
       className="aui-user-action-bar-root flex flex-col items-end"
     >
       <ActionBarPrimitive.Edit asChild>
-        <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
+        <TooltipIconButton tooltip={tr("Edit")} className="aui-user-action-edit">
           <PencilSimple />
         </TooltipIconButton>
       </ActionBarPrimitive.Edit>
@@ -745,14 +766,10 @@ const EditComposer: FC = () => {
               variant="ghost"
               size="sm"
               className="h-8 rounded-full px-3.5"
-            >
-              Cancel
-            </Button>
+            >{tr("Cancel")}</Button>
           </ComposerPrimitive.Cancel>
           <ComposerPrimitive.Send asChild>
-            <Button size="sm" className="h-8 rounded-full px-3.5">
-              Update
-            </Button>
+            <Button size="sm" className="h-8 rounded-full px-3.5">{tr("Update")}</Button>
           </ComposerPrimitive.Send>
         </div>
       </ComposerPrimitive.Root>
@@ -774,15 +791,15 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
       {...rest}
     >
       <BranchPickerPrimitive.Previous asChild>
-        <TooltipIconButton tooltip="Previous">
+        <TooltipIconButton tooltip={tr("Previous")}>
           <CaretLeft />
         </TooltipIconButton>
       </BranchPickerPrimitive.Previous>
       <span className="aui-branch-picker-state font-medium">
-        <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
+        <BranchPickerPrimitive.Number />{"/"}<BranchPickerPrimitive.Count />
       </span>
       <BranchPickerPrimitive.Next asChild>
-        <TooltipIconButton tooltip="Next">
+        <TooltipIconButton tooltip={tr("Next")}>
           <CaretRight />
         </TooltipIconButton>
       </BranchPickerPrimitive.Next>

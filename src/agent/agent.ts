@@ -25,6 +25,8 @@ import { readSandboxSettings } from "../sandbox/network.js";
 const ADMIN_TOOLS_PROMPT = `You are also the ADMIN agent for this instance: create users with admin_create_user, list them with admin_list_users. New user tokens are shown exactly once.`;
 
 export interface AgentRunTurn {
+  user?: string;
+  userId?: string;
   /** Reasoning text of this internal model turn (display-only). */
   thinking?: string;
   thinkingMs?: number;
@@ -60,6 +62,7 @@ export interface AgentRunResult {
 
 /** Live agent progress (WS): reasoning deltas + sequential tool execution. */
 export type AgentStreamEvent =
+  | { type: "queue_sent"; id: string; text: string }
   | { type: "thinking"; delta: string }
   | { type: "thinking_end"; ms: number }
   | { type: "tool_start"; id: string; name: string; args: Record<string, unknown> }
@@ -90,7 +93,7 @@ interface SessionRunRecord {
   images?: string[];
   tools: { name: string; ok: boolean; summary?: string; diff?: string; args?: Record<string, unknown> }[];
   /** Per-internal-turn structure (newer records). */
-  turns?: { thinking?: string; thinkingMs?: number; text?: string; tools: { name: string; ok: boolean; summary?: string; output?: string; diff?: string; args?: Record<string, unknown> }[] }[];
+  turns?: { user?: string; userId?: string; thinking?: string; thinkingMs?: number; text?: string; tools: { name: string; ok: boolean; summary?: string; output?: string; diff?: string; args?: Record<string, unknown> }[] }[];
   thinking?: string;
   thinkingMs?: number;
   usage?: { input: number; output: number; cacheRead: number };
@@ -244,6 +247,8 @@ export function archiveSession(p: UserPaths, sessionId: string, archived: boolea
 }
 
 export class UserAgent {
+  private queued = new Map<string, AgentMessage>();
+  private submitted = new Map<string, string>();
   private stopRequested = false;
   /** The instruction files as they were when this agent's system prompt was
    *  built (see instructionDocsStamp). The caller drops the agent when it
@@ -380,8 +385,28 @@ export class UserAgent {
   }
 
   /** Queue a user message to be injected mid-run (after the current tool batch). */
-  steer(text: string): void {
-    this.agent.steer({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() } as unknown as Parameters<typeof this.agent.steer>[0]);
+  steer(text: string, id: string = crypto.randomUUID()): string {
+    if (this.submitted.has(id)) {
+      if (this.submitted.get(id) !== text) throw new Error("queue id already used for a different message");
+      return id;
+    }
+    if (this.queued.size >= 50) throw new Error("message queue is full");
+    this.submitted.set(id, text);
+    const message = { role: "user", content: [{ type: "text", text }], timestamp: Date.now(), queueId: id } as unknown as AgentMessage;
+    this.queued.set(id, message);
+    this.agent.steer(message);
+    return id;
+  }
+
+  queuedMessages(): { id: string; text: string }[] {
+    return [...this.queued].map(([id, message]) => ({ id, text: typeof message.content === "string" ? message.content : message.content.map((p) => p.type === "text" ? p.text : "").join("") }));
+  }
+
+  cancelQueued(id: string): boolean {
+    if (!this.queued.delete(id)) return false;
+    this.agent.clearSteeringQueue();
+    for (const message of this.queued.values()) this.agent.steer(message);
+    return true;
   }
 
   async run(
@@ -403,6 +428,7 @@ export class UserAgent {
     const cancel = () => this.stop();
     opts.signal?.addEventListener("abort", cancel, { once: true });
     if (opts.signal?.aborted) cancel();
+    this.submitted.clear();
     this.markStarted(userMessage);
     // "@path" in the message means the person is pointing at a file. Reading
     // it here saves the model a round trip to find out what they meant, and
@@ -425,6 +451,14 @@ export class UserAgent {
       if (thinkingStart && !thinkingEnd) thinkingEnd = Date.now();
     };
     const unsub = this.agent.subscribe((ev) => {
+      if (ev.type === "message_start" && ev.message.role === "user") {
+        const id = (ev.message as unknown as { queueId?: string }).queueId;
+        if (id && this.queued.delete(id)) {
+          const content = ev.message.content;
+          const text = typeof content === "string" ? content : content.filter((p) => p.type === "text").map((p) => p.type === "text" ? p.text : "").join("");
+          opts.onEvent?.({ type: "queue_sent", id, text });
+        }
+      }
       const ame = ev.type === "message_update" ? ev.assistantMessageEvent : undefined;
       if (ame && ame.type === "thinking_start") {
         if (!thinkingStart) thinkingStart = Date.now()
@@ -508,6 +542,8 @@ export class UserAgent {
     } finally {
       unsub();
       opts.signal?.removeEventListener("abort", cancel);
+      this.queued.clear();
+      this.agent.clearSteeringQueue();
     }
     const transcript = this.agent.state.messages;
     const fresh = transcript.slice(before);
@@ -524,6 +560,10 @@ export class UserAgent {
     // one AgentRunTurn per internal assistant message
     const turns: AgentRunTurn[] = [];
     for (const m of fresh) {
+      if (m.role === "user" && (m as unknown as { queueId?: string }).queueId) {
+        const content = m.content;
+        turns.push({ userId: (m as unknown as { queueId: string }).queueId, user: typeof content === "string" ? content : content.filter((p) => p.type === "text").map((p) => p.type === "text" ? p.text : "").join(""), tools: [] });
+      }
       if (m.role !== "assistant") continue;
       const blocks = (m as { content?: unknown[] }).content ?? [];
       const thinking = blocks
@@ -637,6 +677,7 @@ export class UserAgent {
         ...(turns.length
           ? {
               turns: turns.map((t) => ({
+                ...(t.user !== undefined ? { user: t.user, userId: t.userId } : {}),
                 ...(t.thinking ? { thinking: t.thinking } : {}),
                 ...(t.thinkingMs !== undefined ? { thinkingMs: t.thinkingMs } : {}),
                 ...(t.text ? { text: t.text } : {}),
@@ -711,6 +752,10 @@ function loadSessionDialogue(sFile: string, model: { api: string; provider: stri
       // text/thinking phases exactly as the run happened
       if (r.turns && r.turns.length > 0) {
         for (const [ti, turn] of r.turns.entries()) {
+          if (turn.user !== undefined) {
+            out.push({ role: "user", content: turn.user, timestamp: r.at } as AgentMessage);
+            continue;
+          }
           const withArgs = (turn.tools ?? []).filter((t) => t && t.name && t.args && Object.keys(t.args).length > 0);
           if (withArgs.length > 0) {
             const callIds = withArgs.map((_t, i) => `hist_${r.at}_${ti}_${i}`);

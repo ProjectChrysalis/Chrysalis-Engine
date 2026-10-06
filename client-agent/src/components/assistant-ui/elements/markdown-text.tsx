@@ -1,3 +1,4 @@
+import { tr } from "@/i18n"
 "use client";
 
 import "@assistant-ui/react-markdown/styles/dot.css";
@@ -71,7 +72,7 @@ const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
       <span className="aui-code-header-language text-muted-foreground font-medium lowercase">
         {language}
       </span>
-      <TooltipIconButton tooltip="Copy" onClick={onCopy}>
+      <TooltipIconButton tooltip={tr("Copy")} onClick={onCopy}>
         {!isCopied && (
           <Copy className="animate-in zoom-in-75 fade-in duration-150" />
         )}

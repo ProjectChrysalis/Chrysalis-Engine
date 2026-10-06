@@ -1,9 +1,13 @@
+import { tr } from "./i18n"
 // Client state: sessions, the open thread, the live run, and the WS feed.
 // The stream updates a live assistant message in place; when POST /v1/agent
 // resolves it is replaced by the authoritative turn record.
 import { create } from "zustand"
 import {
   answerAgent,
+  agentState,
+  cancelQueuedAgent,
+  dismissAgent,
   getSettings,
   listMcp,
   listModels,
@@ -33,7 +37,12 @@ export interface Banner {
   text: string
 }
 
+export interface QueuedMessage { id: string; sessionId: string; text: string; pending: boolean; accepted?: boolean }
+
 export interface AgentState {
+  queue: QueuedMessage[]
+  cancelQueued: (id: string) => Promise<string | null>
+  dismissAsk: () => Promise<void>
   sessions: EngineSession[]
   sessionId: string | null
   msgs: Msg[]
@@ -115,6 +124,7 @@ let liveId: string | null = null
 
 export const useAgent = create<AgentState>()((set, get) => {
   return {
+    queue: (() => { try { return (JSON.parse(prefs.get("agent-ui-queue") ?? "[]") as QueuedMessage[]).map((item) => ({ ...item, pending: false })) } catch { return [] } })(),
     sessions: [],
     sessionId: null,
     msgs: [],
@@ -173,7 +183,12 @@ export const useAgent = create<AgentState>()((set, get) => {
       set({ running: false, stopping: false, sessionId: id, msgs: [], banner: null, ask: null, sidebarOpen: false })
       try {
         const r = await sessionsApi.get(id)
-        if (get().sessionId === id) set({ msgs: msgsFromRuns(r.runs ?? []) })
+        if (get().sessionId === id) {
+          const delivered = new Set((r.runs ?? []).flatMap((run) => run.turns?.map((turn) => turn.userId).filter(Boolean) ?? []));
+          set((state) => ({ msgs: msgsFromRuns(r.runs ?? [], tr), queue: state.queue.filter((item) => !delivered.has(item.id)) }));
+          const live = await agentState(id);
+          if (get().sessionId === id) set((state) => ({ running: live.running, ask: live.ask ?? null, queue: [...state.queue.filter((item) => item.sessionId !== id || !live.queue.some((queued) => queued.id === item.id)).map((item) => item.sessionId === id ? { ...item, accepted: false } : item), ...live.queue.map((item) => ({ ...item, sessionId: id, pending: false, accepted: true }))] }));
+        }
       } catch (e) {
         set({ banner: { kind: "error", text: e instanceof Error ? e.message : String(e) } })
       }
@@ -185,7 +200,10 @@ export const useAgent = create<AgentState>()((set, get) => {
       if (!sid) return
       try {
         const r = await sessionsApi.get(sid)
-        if (get().sessionId === sid) set({ msgs: msgsFromRuns(r.runs ?? []) })
+        if (get().sessionId === sid) {
+          const delivered = new Set((r.runs ?? []).flatMap((run) => run.turns?.map((turn) => turn.userId).filter(Boolean) ?? []));
+          set((state) => ({ msgs: msgsFromRuns(r.runs ?? [], tr), queue: state.queue.filter((item) => !delivered.has(item.id)) }));
+        }
       } catch {
         // keep the local view; the stream already showed the run
       }
@@ -217,15 +235,20 @@ export const useAgent = create<AgentState>()((set, get) => {
       const s = get()
       if (s.stopping) return
       if (s.running && s.sessionId) {
-        const live = uid("live")
-        liveId = live
-        set({
-          msgs: [...s.msgs, { id: uid("m"), role: "user", parts: [{ kind: "text", text }] }, { id: live, role: "assistant", parts: [], streaming: true }],
-        })
+        if (images?.length) {
+          set({ banner: { kind: "error", text: tr("Send attachments after the run finishes") } })
+          throw new Error(tr("Send attachments after the run finishes"))
+        }
+        const id = uid("queued")
+        set({ queue: [...s.queue, { id, sessionId: s.sessionId, text, pending: true }] })
         try {
-          await steerAgent(s.sessionId, text)
+          const reply = await steerAgent(s.sessionId, text, id)
+          if (reply.queued === false) set((state) => ({ queue: state.queue.filter((item) => item.id !== id) }))
+          set((state) => ({ queue: state.queue.map((item) => item.id === id ? { ...item, accepted: true } : item) }))
         } catch (e) {
           set({ banner: { kind: "error", text: e instanceof Error ? e.message : String(e) } })
+        } finally {
+          set((state) => ({ queue: state.queue.map((item) => item.id === id ? { ...item, pending: false } : item) }))
         }
         return
       }
@@ -236,6 +259,7 @@ export const useAgent = create<AgentState>()((set, get) => {
         parts: [{ kind: "text", text }],
         images: urls?.length ? urls : undefined,
       }
+      set((state) => ({ queue: state.queue.map((item) => item.sessionId === s.sessionId ? { ...item, accepted: false } : item) }))
       const id = uid("live")
       const sequence = ++runSequence
       liveId = id
@@ -263,19 +287,19 @@ export const useAgent = create<AgentState>()((set, get) => {
         rememberSession(res.sessionId)
         const finalParts = partsFromResponse(res)
         set((st) => ({
-          msgs: st.msgs.map((m) => (m.id === id ? { ...m, parts: finalParts, streaming: false } : m)),
+          msgs: st.msgs.map((m) => ({ ...m, ...(m.id === id && !res.turns.some((turn) => turn.user !== undefined) ? { parts: finalParts } : {}), streaming: false })),
           running: false,
           stopping: false,
           sessionId: res.sessionId,
           usage: res.usage ?? null,
           banner: res.stopped
-            ? { kind: "info", text: "Stopped" }
+            ? { kind: "info", text: tr("Stopped") }
             : res.stopReason === "length"
-              ? { kind: "info", text: "Response reached the output limit." }
+              ? { kind: "info", text: tr("Response reached the output limit.") }
               : res.error
             ? { kind: "error", text: res.error }
             : res.autoCompacted
-              ? { kind: "info", text: "Context auto-compacted" }
+              ? { kind: "info", text: tr("Context auto-compacted") }
               : st.banner,
         }))
         liveId = null
@@ -288,7 +312,7 @@ export const useAgent = create<AgentState>()((set, get) => {
         set((st) => ({
           msgs: patchLive(st.msgs, id, () => {
             const partial = st.msgs.find((m) => m.id === id)?.parts ?? []
-            return [...partial, { kind: "text", text: `\n\n**Failed:** ${msg}` } satisfies PartData]
+            return [...partial, { kind: "text", text: `\n\n**${tr("Failed")}:** ${msg}` } satisfies PartData]
           }),
           running: false,
           stopping: false,
@@ -303,7 +327,7 @@ export const useAgent = create<AgentState>()((set, get) => {
       if (!sid || !running || stopping) return
       const target = liveId
       streamDeltaBatcher.flush()
-      set({ stopping: true, ask: null, banner: { kind: "info", text: "Stopping…" } })
+      set({ stopping: true, ask: null, banner: { kind: "info", text: tr("Stopping…") } })
       try {
         while (get().running && get().sessionId === sid && liveId === target) {
           try { await stopAgent(sid); return }
@@ -317,12 +341,37 @@ export const useAgent = create<AgentState>()((set, get) => {
       }
     },
 
+    cancelQueued: async (id) => {
+      const item = get().queue.find((item) => item.id === id)
+      if (!item || item.pending) return null
+      if (item.accepted && get().running && get().sessionId === item.sessionId) {
+        try { await cancelQueuedAgent(item.sessionId, id) }
+        catch (e) {
+          set({ banner: { kind: "error", text: e instanceof Error ? e.message : String(e) } })
+          return null
+        }
+      }
+      set((state) => ({ queue: state.queue.filter((item) => item.id !== id) }))
+      return item.text
+    },
+
+    dismissAsk: async () => {
+      const ask = get().ask
+      if (!ask) return
+      try {
+        await dismissAgent(ask.sessionId, ask.id)
+        if (get().ask?.id === ask.id) set({ ask: null })
+      } catch (e) {
+        set({ banner: { kind: "error", text: e instanceof Error ? e.message : String(e) } })
+      }
+    },
+
     answer: async (text) => {
       const a = get().ask
       if (!a) return
-      set({ ask: null })
       try {
         await answerAgent(a.sessionId, a.id, text)
+        if (get().ask?.id === a.id) set({ ask: null })
       } catch (e) {
         set({ banner: { kind: "error", text: e instanceof Error ? e.message : String(e) } })
       }
@@ -367,7 +416,7 @@ export const useAgent = create<AgentState>()((set, get) => {
         const r = await sessionsApi.compact(sid)
         await get().refreshSessions()
         await get().open(r.sessionId)
-        set({ banner: { kind: "info", text: `Compacted ${r.runsBefore} runs` } })
+        set({ banner: { kind: "info", text: tr("Compacted {count} runs", { count: r.runsBefore }) } })
       } catch (e) {
         set({ banner: { kind: "error", text: e instanceof Error ? e.message : String(e) } })
       }
@@ -457,7 +506,14 @@ export function connectWs(): void {
     }
     const st = useAgent.getState()
     const payload = msg.payload
-    if (!st.running || st.stopping) return
+    if (msg.type === "agent_settled" && payload?.sessionId === st.sessionId) {
+      streamDeltaBatcher.flush();
+      useAgent.setState({ running: false, stopping: false, ask: null });
+      void useAgent.getState().reloadCurrent();
+      void useAgent.getState().refreshSessions();
+      return;
+    }
+    if (!st.running || (st.stopping && payload?.ev?.type !== "queue_sent")) return
     if (!payload) return
     if (payload.sessionId !== st.sessionId) {
       // First message of a new thread: the engine assigns the session id only
@@ -482,7 +538,7 @@ export function connectWs(): void {
       } else {
         streamDeltaBatcher.flush()
       }
-      if (e.type === "thinking_end" || e.type === "tool_start" || e.type === "tool_end" || e.type === "ask_user" || e.type === "ask_user_done") {
+      if (e.type === "thinking_end" || e.type === "tool_start" || e.type === "tool_end" || e.type === "ask_user" || e.type === "ask_user_done" || e.type === "queue_added" || e.type === "queue_sent" || e.type === "queue_cancelled") {
         foldStream(e)
       }
     }
@@ -512,6 +568,23 @@ function foldStreamBatch(events: StreamEvent[]): void {
 
 function foldStream(ev: StreamEvent): void {
   const store = useAgent.getState()
+  if (ev.type === "queue_added") {
+    if (ev.id && ev.text && store.sessionId) {
+      const exists = store.queue.some((item) => item.id === ev.id)
+      useAgent.setState({ queue: exists ? store.queue.map((item) => item.id === ev.id ? { ...item, accepted: true } : item) : [...store.queue, { id: ev.id, text: ev.text, sessionId: store.sessionId, pending: false, accepted: true }] })
+    }
+    return
+  }
+  if (ev.type === "queue_sent") {
+    useAgent.setState({ queue: store.queue.filter((item) => item.id !== ev.id) })
+    if (ev.text) {
+      const next = uid("live")
+      liveId = next
+      useAgent.setState({ msgs: [...store.msgs.map((m) => ({ ...m, streaming: false })), { id: ev.id ?? uid("m"), role: "user", parts: [{ kind: "text", text: ev.text }] }, { id: next, role: "assistant", parts: [], streaming: true }] })
+    }
+    return
+  }
+  if (ev.type === "queue_cancelled") return
   if (ev.type === "ask_user") {
     if (store.sessionId)
       useAgent.setState({
@@ -526,8 +599,10 @@ function foldStream(ev: StreamEvent): void {
     return
   }
   if (ev.type === "ask_user_done") {
-    useAgent.setState({ ask: null })
+    if (store.ask?.id === ev.id) useAgent.setState({ ask: null })
     return
   }
   foldStreamBatch([ev])
 }
+
+useAgent.subscribe((state, previous) => { if (state.queue !== previous.queue) prefs.set("agent-ui-queue", JSON.stringify(state.queue)) })

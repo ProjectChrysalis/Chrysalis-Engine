@@ -1,3 +1,4 @@
+import { tr } from "@/i18n"
 "use client";
 
 import {
@@ -185,7 +186,7 @@ const getContextSegments = (
     { label: "Input", tokens: usage.inputTokens ?? 0 },
     { label: "Cached input", tokens: usage.cachedInputTokens ?? 0 },
     { label: "Output", tokens: usage.outputTokens ?? 0 },
-    { label: "Reasoning", tokens: usage.reasoningTokens ?? 0 },
+    { label: tr("Reasoning"), tokens: usage.reasoningTokens ?? 0 },
   ].filter((segment) => segment.tokens > 0);
 };
 
@@ -212,9 +213,9 @@ function ContextDisplayContent({
     >
       <div className="text-xs">
         <div className="flex items-baseline justify-between gap-6 whitespace-nowrap">
-          <span className="font-medium">Context usage</span>
+          <span className="font-medium">{tr("Context usage")}</span>
           <span className="text-muted-foreground tabular-nums">
-            {formatTokenCount(Math.min(totalTokens, modelContextWindow))} of{" "}
+            {formatTokenCount(Math.min(totalTokens, modelContextWindow))}{" / "}{" "}
             {formatTokenCount(modelContextWindow)}
           </span>
         </div>
@@ -294,7 +295,7 @@ function RingVisual() {
 
 function RingPercentLabel() {
   const { percent } = useContextDisplay();
-  return <span className="font-mono tabular-nums">{Math.round(percent)}%</span>;
+  return <span className="font-mono tabular-nums">{Math.round(percent)}{"%"}</span>;
 }
 const ContextDisplayRing: FC<PresetProps> = ({
   modelContextWindow,
@@ -313,7 +314,7 @@ const ContextDisplayRing: FC<PresetProps> = ({
         "text-muted-foreground hover:text-foreground gap-1.5 px-1.5 py-1 text-xs",
         className,
       )}
-      aria-label="Context usage"
+      aria-label={tr("Context usage")}
     >
       <RingVisual />
       <RingPercentLabel />
@@ -337,8 +338,7 @@ function BarVisual() {
         />
       </div>
       <span className="text-muted-foreground text-[10px] tabular-nums">
-        {formatTokenCount(totalTokens)} ({Math.round(percent)}%)
-      </span>
+        {formatTokenCount(totalTokens)}{"("}{Math.round(percent)}{"%)"}</span>
     </div>
   );
 }
@@ -357,7 +357,7 @@ const ContextDisplayBar: FC<PresetProps> = ({
   >
     <ContextDisplayTrigger
       className={cn("px-2 py-1", className)}
-      aria-label="Context usage"
+      aria-label={tr("Context usage")}
     >
       <BarVisual />
     </ContextDisplayTrigger>
@@ -370,7 +370,7 @@ function TextVisual() {
 
   return (
     <>
-      {formatTokenCount(totalTokens)} / {formatTokenCount(modelContextWindow)}
+      {formatTokenCount(totalTokens)}{"/"}{formatTokenCount(modelContextWindow)}
     </>
   );
 }
@@ -388,7 +388,7 @@ const ContextDisplayText: FC<PresetProps> = ({
     resetKey={resetKey}
   >
     <ContextDisplayTrigger
-      aria-label="Context usage"
+      aria-label={tr("Context usage")}
       className={cn(
         "text-muted-foreground hover:bg-accent hover:text-accent-foreground px-2 py-1 font-mono text-xs tabular-nums",
         className,

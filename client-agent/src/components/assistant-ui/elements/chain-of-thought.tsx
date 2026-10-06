@@ -1,3 +1,4 @@
+import { tr } from "@/i18n"
 "use client";
 
 import { useEffect, useRef, useState, type FC, type PropsWithChildren } from "react";
@@ -60,8 +61,8 @@ export const ChainOfThought: FC<
   const thinkingMs = useThinkingMs(indices);
 
   const summary = [
-    running ? "Working" : thinkingMs !== null ? `Thought for ${formatSeconds(thinkingMs)}` : toolCount ? "" : "Thought",
-    toolCount ? `${toolCount} tool ${toolCount === 1 ? "call" : "calls"}` : "",
+    running ? tr("Working") : thinkingMs !== null ? tr("Thought for {time}", { time: formatSeconds(thinkingMs) }) : toolCount ? "" : tr("Thought"),
+    toolCount ? tr("Tool calls: {count}", { count: toolCount }) : "",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -155,7 +156,7 @@ export const ReasoningStep: FC<{ running: boolean }> = ({ running }) => {
         ref={scrollRef}
         tabIndex={0}
         role="region"
-        aria-label="Reasoning"
+        aria-label={tr("Reasoning")}
         aria-busy={running}
         className="text-muted-foreground max-h-72 min-w-0 flex-1 overflow-y-auto overscroll-contain text-sm leading-relaxed"
       >

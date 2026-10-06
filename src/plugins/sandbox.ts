@@ -36,6 +36,8 @@ export interface SandboxRequest {
   fsRoot?: string | null;
   zipAllowed?: boolean;
   zipBase64?: string;
+  zipEntries?: Record<string, unknown>;
+  fsTransaction?: string;
   /** Safe reads may be repeated once when the WASM runtime aborts during teardown. */
   retryOnPoison?: boolean;
   /** Execution and memory limits for this call, above the 10 s and 64 MB
@@ -54,6 +56,7 @@ export interface SandboxResponse {
   netRequests?: { key: string; req: unknown }[];
   embedRequests?: { key: string; req: { texts?: unknown; model?: unknown } }[];
   logs?: string[];
+  fsWrites?: string[];
   /** The worker's shared wasm heap after this call (see HEAP_RETIRE_BYTES). */
   heapBytes?: number;
 }

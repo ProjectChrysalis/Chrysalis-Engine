@@ -28,7 +28,9 @@
 import { parentPort } from "node:worker_threads";
 import fs from "node:fs";
 import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 import { unzipSync } from "fflate";
+import { inflateSync } from "node:zlib";
 
 const utf8 = new TextDecoder("utf-8");
 import variant from "@jitl/quickjs-ng-wasmfile-release-sync";
@@ -122,8 +124,9 @@ if (typeof fn === "function") { out = fn(env.ctx, env.host); }`);
 }
 
 port.on("message", async (msg) => {
-  const { id, source, hook, ctx, storeSnapshot = {}, llmResults = {}, netResults = {}, netAllowed = false, maxStoreBytes = 1024 * 1024, storeAllowed = true, llmAllowed = true, fsAllowed = false, fsRoot = null, zipAllowed = false, zipBase64 = null, siblingToolDefs = null, embedResults = {}, executionTimeoutMs = 10_000, memoryLimitBytes = 64 * 1024 * 1024 } = msg;
+  const { id, source, hook, ctx, storeSnapshot = {}, llmResults = {}, netResults = {}, netAllowed = false, maxStoreBytes = 1024 * 1024, storeAllowed = true, llmAllowed = true, fsAllowed = false, fsRoot = null, fsTransaction = null, zipAllowed = false, zipBase64 = null, zipEntries: providedEntries = null, siblingToolDefs = null, embedResults = {}, executionTimeoutMs = 10_000, memoryLimitBytes = 64 * 1024 * 1024 } = msg;
   const logs = [];
+  const fsWrites = new Set();
   const llmRequests = [];
   const netRequests = [];
   const embedRequests = [];
@@ -206,9 +209,52 @@ try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: f
       if (!zipAllowed) return { entries: denied, list: denied };
       return {
         list: () => Object.keys(zipEntries()).length,
-        entries: () => zipEntries(),
+        entries: () => {
+          const entries = zipEntries();
+          if (!providedEntries) return entries;
+          const out = {};
+          for (const [name, entry] of Object.entries(entries)) out[name] = /\.png$/i.test(name) && entry?.__b64__ ? { __image__: true, size: entry.size } : entry;
+          return out;
+        },
+        image: (name) => {
+          const entry = zipEntries()[String(name)];
+          if (!entry?.__b64__ || typeof entry.base64 !== "string" || !/\.png$/i.test(String(name))) throw new Error("image entry not found");
+          const bytes = Buffer.from(entry.base64, "base64");
+          if (!bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error("invalid PNG");
+          const metadata = {};
+          let at = 8, total = 0;
+          while (at + 12 <= bytes.length) {
+            const length = bytes.readUInt32BE(at), end = at + length + 12;
+            if (end > bytes.length) throw new Error("invalid PNG chunk length");
+            const type = bytes.toString("ascii", at + 4, at + 8);
+            if (["tEXt", "iTXt", "zTXt"].includes(type)) {
+              const data = bytes.subarray(at + 8, end - 4), nul = data.indexOf(0);
+              if (nul > 0) {
+                const key = data.toString("latin1", 0, nul);
+                let payload = data.subarray(nul + 1);
+                if (type === "iTXt") {
+                  const compressed = payload[0];
+                  if (payload[1] !== 0) throw new Error("unsupported PNG text compression");
+                  const languageEnd = payload.indexOf(0, 2), translatedEnd = payload.indexOf(0, languageEnd + 1);
+                  if (languageEnd < 0 || translatedEnd < 0) throw new Error("invalid PNG text fields");
+                  payload = payload.subarray(translatedEnd + 1);
+                  if (compressed) payload = inflateSync(payload, { maxOutputLength: 32 * 1024 * 1024 });
+                } else if (type === "zTXt") {
+                  if (payload[0] !== 0) throw new Error("unsupported PNG text compression");
+                  payload = inflateSync(payload.subarray(1), { maxOutputLength: 32 * 1024 * 1024 });
+                }
+                total += payload.length;
+                if (total > 32 * 1024 * 1024) throw new Error("PNG metadata exceeds 32 MB");
+                metadata[key] = payload.toString(type === "iTXt" ? "utf8" : "latin1");
+              }
+            }
+            at = end;
+          }
+          return { url: host.fs.media("data:image/png;base64," + entry.base64), metadata };
+        },
       };
       function zipEntries() {
+        if (providedEntries) return providedEntries;
         if (!zipBase64 || typeof zipBase64 !== "string") throw new Error("no zip payload provided");
         if (zipBase64.length > 200 * 1024 * 1024 / 0.75) throw new Error("zip payload too large (200MB cap)");
         const bytes = Buffer.from(zipBase64, "base64");
@@ -320,16 +366,67 @@ try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: f
         const msg = String(e?.message ?? e).split(fsRoot).join("[app-data]");
         throw new Error(`${msg} (${rel})`);
       };
+      const recorded = new Map();
+      const beforeWrite = (full) => {
+        if (!fsTransaction || recorded.has(full)) return;
+        const rel = path.relative(fsRoot, full).split(path.sep).join("/");
+        const backup = fs.existsSync(full) ? String(recorded.size) : null;
+        if (backup) fs.copyFileSync(full, path.join(fsTransaction, backup), fs.constants.COPYFILE_FICLONE);
+        recorded.set(full, { rel, backup });
+        const journal = path.join(fsTransaction, "journal.json");
+        fs.writeFileSync(journal + ".tmp", JSON.stringify([...recorded.values()]));
+        fs.renameSync(journal + ".tmp", journal);
+      };
       return {
+        lookup: (collection, key, value) => {
+          if (!/^[a-zA-Z0-9_-]{1,64}$/.test(String(collection))) throw new Error("invalid lookup collection");
+          const name = createHash("sha256").update(String(key).toLowerCase()).digest("hex");
+          const rel = "__lookup/" + collection + "/" + name + ".json";
+          if (value === undefined) { try { return JSON.parse(fs.readFileSync(within(rel), "utf8")); } catch { return null; } }
+          const full = withinNewFile(rel);
+          const text = JSON.stringify(value);
+          if (Buffer.byteLength(text) > 4096) throw new Error("lookup value too large");
+          fs.mkdirSync(path.dirname(full), { recursive: true });
+          beforeWrite(full);
+          fs.writeFileSync(full, text);
+          return value;
+        },
+        media: (uri) => {
+          const match = /^data:image\/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=]+)$/.exec(String(uri));
+          if (!match || match[2].length > 90 * 1024 * 1024) throw new Error("invalid image or image exceeds 64 MB");
+          let bytes = Buffer.from(match[2], "base64");
+          if (bytes.length > 64 * 1024 * 1024) throw new Error("image exceeds 64 MB");
+          if (match[1] === "png" && bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) {
+            const chunks = [bytes.subarray(0, 8)];
+            let at = 8;
+            while (at < bytes.length) {
+              if (at + 12 > bytes.length) throw new Error("invalid PNG chunk");
+              const length = bytes.readUInt32BE(at), end = at + length + 12;
+              if (end > bytes.length) throw new Error("invalid PNG chunk length");
+              const type = bytes.toString("ascii", at + 4, at + 8);
+              if (!["tEXt", "iTXt", "zTXt"].includes(type)) chunks.push(bytes.subarray(at, end));
+              at = end;
+            }
+            bytes = Buffer.concat(chunks);
+          }
+          const name = createHash("sha256").update(bytes).digest("hex") + "." + match[1];
+          const full = withinNewFile("__media/" + name);
+          fs.mkdirSync(path.dirname(full), { recursive: true });
+          if (!fs.existsSync(full)) fs.writeFileSync(full, bytes, { flag: "wx" });
+          return "/v1/apps/" + encodeURIComponent(path.basename(path.dirname(fsRoot))) + "/__media/" + name;
+        },
         read: (rel) => { try { return fs.readFileSync(within(rel), "utf8"); } catch (e) { scrub(e, rel); } },
         readBase64: (rel) => { try { return fs.readFileSync(within(rel)).toString("base64"); } catch (e) { scrub(e, rel); } },
         write: (rel, content) => {
           if (typeof content !== "string") throw new Error("fs.write(rel, string)");
           const full = withinNewFile(rel);
-          if (Buffer.byteLength(content) > 4 * 1024 * 1024) throw new Error("fs.write content too large (4MB)");
+          if (Buffer.byteLength(content) > 64 * 1024 * 1024) throw new Error("fs.write content too large (64MB)");
           try {
             fs.mkdirSync(path.dirname(full), { recursive: true });
-            fs.writeFileSync(full, content, "utf8");
+            beforeWrite(full);
+            const temporary = full + "." + randomUUID() + ".tmp";
+            try { fs.writeFileSync(temporary, content, { encoding: "utf8", flag: "wx" }); fs.renameSync(temporary, full); fsWrites.add(path.relative(fsRoot, full).split(path.sep).join("/")); }
+            finally { fs.rmSync(temporary, { force: true }); }
           } catch (e) { scrub(e, rel); }
         },
         list: (rel = ".") => { try { return fs.readdirSync(within(rel)).sort(); } catch (e) { scrub(e, rel); } },
@@ -395,7 +492,7 @@ try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: f
       reply({ id, ok: false, error, logs, storeWrites: store, llmRequests, netRequests, embedRequests });
       return;
     }
-    reply({ id, ok: true, out: envelope.value ?? null, storeWrites: store, llmRequests, netRequests, embedRequests, logs });
+    reply({ id, ok: true, out: envelope.value ?? null, storeWrites: store, llmRequests, netRequests, embedRequests, logs, fsWrites: [...fsWrites] });
   } catch (e) {
     // wasm abort / load failure — host will terminate+respawn this worker
     try {

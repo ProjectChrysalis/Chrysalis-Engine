@@ -1,3 +1,4 @@
+import { tr } from "@/i18n"
 import { useState } from "react"
 import { ArrowsIn } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
@@ -13,12 +14,12 @@ export function ContextActions() {
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger render={<Button variant="ghost" size="icon" className="text-muted-foreground size-8 rounded-full" aria-label="Context actions" />}>
+      <PopoverTrigger render={<Button variant="ghost" size="icon" className="text-muted-foreground size-8 rounded-full" aria-label={tr("Context")} />}>
         <ArrowsIn className="size-4" />
       </PopoverTrigger>
       <PopoverContent side="top" align="end">
-        <PopoverTitle>Context</PopoverTitle>
-        <p className="text-muted-foreground text-xs">Summarize older messages to free space.</p>
+        <PopoverTitle>{tr("Context")}</PopoverTitle>
+        <p className="text-muted-foreground text-xs">{tr("Summarize older messages to free space.")}</p>
         <Button variant="outline" size="sm" disabled={!sessionId || running || pending} onClick={async () => {
           setPending(true)
           try {
@@ -27,7 +28,7 @@ export function ContextActions() {
           } finally {
             setPending(false)
           }
-        }}>{pending ? "Compacting…" : "Compact conversation"}</Button>
+        }}>{pending ? tr("Compacting…") : tr("Compact conversation")}</Button>
       </PopoverContent>
     </Popover>
   )

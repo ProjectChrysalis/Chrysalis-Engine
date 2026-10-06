@@ -63,11 +63,22 @@ export function compactionInput(records: Rec[]): { earlier?: string; runs: strin
     if (r.type !== "run") continue;
     const lines: string[] = [];
     if (typeof r.user === "string" && r.user.trim()) lines.push(`User: ${r.user}`);
-    const turns = Array.isArray(r.turns) ? (r.turns as { tools?: ToolRec[] }[]) : [];
-    const tools = turns.length ? turns.flatMap((t) => t.tools ?? []) : Array.isArray(r.tools) ? (r.tools as ToolRec[]) : [];
-    const used = toolLine(tools);
-    if (used) lines.push(used);
-    if (typeof r.assistant === "string" && r.assistant.trim()) lines.push(`Assistant: ${r.assistant}`);
+    const turns = Array.isArray(r.turns) ? (r.turns as { user?: string; text?: string; tools?: ToolRec[] }[]) : [];
+    if (turns.some((turn) => typeof turn.user === "string")) {
+      for (const turn of turns) {
+        if (turn.user !== undefined) lines.push(`User: ${turn.user}`);
+        else {
+          const used = toolLine(turn.tools ?? []);
+          if (used) lines.push(used);
+          if (turn.text?.trim()) lines.push(`Assistant: ${turn.text}`);
+        }
+      }
+    } else {
+      const tools = turns.length ? turns.flatMap((t) => t.tools ?? []) : Array.isArray(r.tools) ? (r.tools as ToolRec[]) : [];
+      const used = toolLine(tools);
+      if (used) lines.push(used);
+      if (typeof r.assistant === "string" && r.assistant.trim()) lines.push(`Assistant: ${r.assistant}`);
+    }
     if (lines.length) runs.push(lines.join("\n"));
   }
   return { ...(earlier ? { earlier } : {}), runs };

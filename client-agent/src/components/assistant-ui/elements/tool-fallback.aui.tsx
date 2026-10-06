@@ -1,3 +1,4 @@
+import { tr } from "@/i18n"
 "use client";
 
 import { memo, useState } from "react";
@@ -243,7 +244,7 @@ function ToolFallbackArgs({
       className={cn("aui-tool-fallback-args", className)}
       {...props}
     >
-      <pre tabIndex={0} role="region" aria-label="Tool arguments" className="aui-tool-fallback-args-value bg-muted/50 text-foreground/90 max-h-48 overflow-auto overscroll-contain rounded-md p-2.5 text-xs whitespace-pre-wrap break-words">
+      <pre tabIndex={0} role="region" aria-label={tr("Tool arguments")} className="aui-tool-fallback-args-value bg-muted/50 text-foreground/90 max-h-48 overflow-auto overscroll-contain rounded-md p-2.5 text-xs whitespace-pre-wrap break-words">
         {argsText}
       </pre>
     </div>
@@ -265,10 +266,8 @@ function ToolFallbackResult({
       className={cn("aui-tool-fallback-result", className)}
       {...props}
     >
-      <p className="aui-tool-fallback-result-header text-muted-foreground text-xs font-medium">
-        Output
-      </p>
-      <pre tabIndex={0} role="region" aria-label="Tool output" className="aui-tool-fallback-result-content bg-muted/50 text-foreground/90 mt-1 max-h-[min(24rem,50dvh)] overflow-auto overscroll-contain rounded-md p-2.5 text-xs whitespace-pre-wrap break-words">
+      <p className="aui-tool-fallback-result-header text-muted-foreground text-xs font-medium">{tr("Output")}</p>
+      <pre tabIndex={0} role="region" aria-label={tr("Output")} className="aui-tool-fallback-result-content bg-muted/50 text-foreground/90 mt-1 max-h-[min(24rem,50dvh)] overflow-auto overscroll-contain rounded-md p-2.5 text-xs whitespace-pre-wrap break-words">
         {typeof result === "string" ? result : JSON.stringify(result, null, 2)}
       </pre>
     </div>
@@ -466,18 +465,14 @@ function ToolFallbackApproval({
             className={pressable}
             onClick={() => respondWithOption(confirming)}
             disabled={submitted}
-          >
-            Confirm
-          </Button>
+          >{tr("Confirm")}</Button>
           <Button
             size="sm"
             variant="outline"
             className={pressable}
             onClick={() => setConfirmingId(null)}
             disabled={submitted}
-          >
-            Back
-          </Button>
+          >{tr("Back")}</Button>
         </div>
       </div>
     );
@@ -517,9 +512,7 @@ function ToolFallbackApproval({
             className={pressable}
             onClick={() => respond(false)}
             disabled={submitted}
-          >
-            Deny
-          </Button>
+          >{tr("Deny")}</Button>
         )}
       </div>
     );
@@ -539,18 +532,14 @@ function ToolFallbackApproval({
         className={pressable}
         onClick={() => respond(true)}
         disabled={submitted}
-      >
-        Allow
-      </Button>
+      >{tr("Allow")}</Button>
       <Button
         size="sm"
         variant="outline"
         className={pressable}
         onClick={() => respond(false)}
         disabled={submitted}
-      >
-        Deny
-      </Button>
+      >{tr("Deny")}</Button>
     </div>
   );
 }

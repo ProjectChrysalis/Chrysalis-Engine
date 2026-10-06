@@ -20,6 +20,8 @@ export interface EngineTool {
 }
 
 export interface EngineTurn {
+  userId?: string
+  user?: string
   thinking?: string
   thinkingMs?: number
   text?: string
@@ -141,8 +143,14 @@ export function sendAgent(input: SendInput): Promise<AgentResponse> {
   return api("POST", "/v1/agent", input)
 }
 
-export function steerAgent(sessionId: string, message: string): Promise<void> {
-  return api("POST", "/v1/agent/steer", { sessionId, message })
+export function steerAgent(sessionId: string, message: string, id?: string): Promise<{ id: string; queued?: boolean }> {
+  return api("POST", "/v1/agent/steer", { sessionId, message, id })
+}
+export function cancelQueuedAgent(sessionId: string, id: string): Promise<void> {
+  return api("POST", "/v1/agent/steer", { sessionId, id, cancel: true })
+}
+export function dismissAgent(sessionId: string, id: string): Promise<void> {
+  return api("POST", "/v1/agent/answer", { sessionId, id, dismiss: true })
 }
 
 export function stopAgent(sessionId: string): Promise<{ ok: boolean }> {
@@ -183,3 +191,5 @@ export async function agentCommands(): Promise<UserCommand[]> {
   const r = await api<{ commands?: UserCommand[] }>("GET", "/v1/agent/commands")
   return r.commands ?? []
 }
+
+export const agentState = (sessionId: string): Promise<{ running: boolean; queue: { id: string; text: string }[]; ask?: { id: string; sessionId: string; question: string; options?: string[]; detail?: string } | null }> => api("GET", `/v1/agent/state?sessionId=${encodeURIComponent(sessionId)}`)

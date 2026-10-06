@@ -765,3 +765,29 @@ describe("plugin timers", () => {
     }
   }, 30_000);
 });
+
+it("stores deduplicated scoped media, strips PNG text, and reads a bounded archive batch", async () => {
+  const { PluginSandbox } = await import("../src/plugins/sandbox.js");
+  const root = path.join(dir, "apps", "demo", "data");
+  fs.mkdirSync(root, { recursive: true });
+  const header = Buffer.from([137,80,78,71,13,10,26,10]);
+  const chunk = (type: string, content: string) => { const data = Buffer.from(content); const out = Buffer.alloc(data.length + 12); out.writeUInt32BE(data.length); out.write(type, 4); data.copy(out, 8); return out; };
+  const png = Buffer.concat([header, chunk("tEXt", 'chara\0big-metadata'), chunk("IEND", "")]);
+  const box = new PluginSandbox();
+  try {
+    const result = await box.eval({ source: `export function handleRoute(ctx, host) {
+      const a = host.fs.media(ctx.image); const b = host.fs.media(ctx.image);
+      host.fs.lookup("names", "Hero", "id-one");
+      return { a, b, saved: host.fs.lookup("names", "hero"), entries: host.zip.entries() };
+    }`, hook: "__route", ctx: { image: "data:image/png;base64," + png.toString("base64") }, storeSnapshot: {}, fsAllowed: true, fsRoot: root, zipAllowed: true, zipEntries: { "characters/a.json": '{"name":"A"}' } });
+    expect(result.ok).toBe(true);
+    const out = result.out as { a: string; b: string; saved: string; entries: Record<string, string> };
+    expect(out.a).toBe(out.b);
+    expect(out.a).toMatch(/^\/v1\/apps\/demo\/__media\/[a-f0-9]{64}\.png$/);
+    expect(out.saved).toBe("id-one");
+    expect(out.entries["characters/a.json"]).toBe('{"name":"A"}');
+    const files = fs.readdirSync(path.join(root, "__media"));
+    expect(files.length).toBe(1);
+    expect(fs.readFileSync(path.join(root, "__media", files[0]!)).includes(Buffer.from("chara"))).toBe(false);
+  } finally { await box.dispose(); }
+}, 20_000);

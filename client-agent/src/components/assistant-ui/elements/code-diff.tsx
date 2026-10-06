@@ -1,3 +1,4 @@
+import { tr } from "@/i18n"
 "use client";
 
 import { useState, type ComponentProps } from "react";
@@ -150,9 +151,7 @@ export function CodeDiff({
           <span className="text-foreground/90">{name}</span>
         </span>
         {diff.created && (
-          <span className="shrink-0 rounded border border-border/60 px-1 text-[10px] text-muted-foreground">
-            new
-          </span>
+          <span className="shrink-0 rounded border border-border/60 px-1 text-[10px] text-muted-foreground">{tr("New")}</span>
         )}
         <span className={cn(mono, "ml-auto flex shrink-0 items-center gap-1.5 tabular-nums")}>
           {diff.additions > 0 && (
@@ -169,7 +168,7 @@ export function CodeDiff({
           )}
         </span>
       </div>
-      <div className={cn(codeScroll, "max-h-80 overflow-y-auto overscroll-contain")} tabIndex={0} role="region" aria-label="File changes">
+      <div className={cn(codeScroll, "max-h-80 overflow-y-auto overscroll-contain")} tabIndex={0} role="region" aria-label={tr("File changes")}>
         <div className={cn(codeSurface, "border-t border-border/60 py-1")}>
           {diff.hunks.map((hunk, h) => {
             if (budget <= 0) return null;
@@ -178,7 +177,7 @@ export function CodeDiff({
             return (
               <div key={hunk.at}>
                 {h > 0 && (
-                  <div className="px-3 py-0.5 text-foreground/30 select-none">⋯</div>
+                  <div className="px-3 py-0.5 text-foreground/30 select-none">{"⋯"}</div>
                 )}
                 {shown.map((line, i) => (
                   <DiffRow key={`${hunk.at}-${i}`} line={line} numbers={numbers} />
@@ -194,13 +193,11 @@ export function CodeDiff({
           onClick={() => setExpanded((e) => !e)}
           className="w-full border-t border-border/60 px-3 py-1.5 text-left text-[11px] text-muted-foreground hover:text-foreground"
         >
-          {folded ? `Show all ${total} lines` : "Show less"}
+          {folded ? `Show all ${total} lines` : tr("Show less")}
         </button>
       )}
       {diff.truncated && (
-        <div className="border-t border-border/60 px-3 py-1.5 text-[11px] text-muted-foreground">
-          Diff truncated — the write was larger than the card shows.
-        </div>
+        <div className="border-t border-border/60 px-3 py-1.5 text-[11px] text-muted-foreground">{tr("Only part of the file changes is shown.")}</div>
       )}
     </div>
   );

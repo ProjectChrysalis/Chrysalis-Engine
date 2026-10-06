@@ -117,14 +117,14 @@ export function partsFromResponse(res: AgentResponse): PartData[] {
   return partsLegacy({ thinking: res.thinking, thinkingMs: res.thinkingMs, tools: res.toolTrace, text: res.finalText || res.error })
 }
 
-export function msgsFromRuns(runs: EngineRun[]): Msg[] {
+export function msgsFromRuns(runs: EngineRun[], translate: (key: "Context compacted") => string = (key) => key): Msg[] {
   const msgs: Msg[] = []
   for (const run of runs) {
     if (run.type === "compact") {
       msgs.push({
         id: uid("m"),
         role: "assistant",
-        parts: [{ kind: "text", text: run.summary ? `_Compacted: ${run.summary}_` : "_Context compacted_" }],
+        parts: [{ kind: "text", text: run.summary ? `_${translate("Context compacted")}: ${run.summary}_` : `_${translate("Context compacted")}_` }],
       })
       continue
     }
@@ -138,10 +138,25 @@ export function msgsFromRuns(runs: EngineRun[]): Msg[] {
         ...(run.images?.length ? { images: run.images } : {}),
       })
     const turns = run.turns ?? []
-    const parts = turns.length
-      ? partsFromTurns(turns)
-      : partsLegacy({ thinking: run.thinking, thinkingMs: run.thinkingMs, tools: run.tools, text: run.assistant })
-    if (parts.length) msgs.push({ id: `a${run.at}`, runAt: run.at, role: "assistant", parts })
+    if (turns.some((turn) => turn.user !== undefined)) {
+      let group: EngineTurn[] = []
+      let index = 0
+      const flush = () => {
+        const parts = partsFromTurns(group)
+        if (parts.length) msgs.push({ id: `a${run.at}_${index++}`, runAt: run.at, role: "assistant", parts })
+        group = []
+      }
+      for (const turn of turns) {
+        if (turn.user !== undefined) {
+          flush()
+          msgs.push({ id: `q${run.at}_${index++}`, runAt: run.at, role: "user", parts: [{ kind: "text", text: turn.user }] })
+        } else group.push(turn)
+      }
+      flush()
+    } else {
+      const parts = turns.length ? partsFromTurns(turns) : partsLegacy({ thinking: run.thinking, thinkingMs: run.thinkingMs, tools: run.tools, text: run.assistant })
+      if (parts.length) msgs.push({ id: `a${run.at}`, runAt: run.at, role: "assistant", parts })
+    }
   }
   return msgs
 }

@@ -478,8 +478,11 @@ export interface PluginRouteRequest {
   body: unknown;
   /** Base64 zip payload for importers (permission "zip"; 200MB cap enforced in the worker). */
   zipBase64?: string;
+  zipEntries?: Record<string, unknown>;
+  fsTransaction?: string;
 }
 export interface PluginRouteResponse {
+  fsWrites?: string[];
   status: number;
   json?: unknown;
   text?: string;
@@ -784,13 +787,14 @@ export async function runPluginRoute(
 ): Promise<PluginRouteResponse | null> {
   if (!hasCapAny(plugin, "routes", deps)) return null;
   const MAX_ROUTE_PASSES = 3;
+  const written = new Set<string>();
   const caps = passCaps(plugin, deps);
   let results = noResults();
   // pass-A carry-all: the sandbox module is re-evaluated fresh EVERY pass, so
   // plugin module state cannot survive — routes return {__llmPending, stash}
   // and the stash rides into the next pass's ctx verbatim
   let stash: Record<string, unknown> | undefined;
-  const zipOk = hasCapAny(plugin, "zip", deps) && !!req.zipBase64;
+  const zipOk = hasCapAny(plugin, "zip", deps) && (!!req.zipBase64 || !!req.zipEntries);
   // Restoring a backup is the one route that is legitimately big and slow: the
   // whole archive is handed to the guest as an entry map. On the shared
   // sandbox's 64 MB heap and 10 s clock, a real library's backup ran out of
@@ -816,14 +820,15 @@ export async function runPluginRoute(
         hook: "__route",
         // zipBase64 already rides the message for the host-side zip service —
         // keep the multi-MB string OUT of the guest's ctx (64MB heap)
-        ctx: { ...req, zipBase64: undefined, ...(stash ? { stash } : {}) } as unknown as Record<string, unknown>,
+        ctx: { ...req, zipBase64: undefined, zipEntries: undefined, fsTransaction: undefined, ...(stash ? { stash } : {}) } as unknown as Record<string, unknown>,
         storeSnapshot: snapshotOf(plugin, deps),
         storeAllowed: hasCapAny(plugin, "store", deps),
         llmAllowed: caps.llm,
         fsAllowed: hasCapAny(plugin, "fs", deps) && !!plugin.fsRoot,
         fsRoot: plugin.fsRoot ?? null,
+        fsTransaction: req.fsTransaction,
         zipAllowed: zipOk,
-        ...(zipOk ? { zipBase64: req.zipBase64! } : {}),
+        ...(zipOk ? { zipBase64: req.zipBase64, zipEntries: req.zipEntries } : {}),
         llmResults: results.llm,
         netAllowed: caps.net,
         netResults: results.net,
@@ -832,6 +837,7 @@ export async function runPluginRoute(
         retryOnPoison: req.method === "GET" || req.method === "HEAD",
       });
       printLogs(plugin, r);
+      for (const file of r.fsWrites ?? []) written.add(file);
       applyStoreWrites(plugin, r, deps);
       if (!r.ok) {
         log.warn(`[plugin:${plugin.id}] route ${req.method} ${req.path} failed: ${r.error}`);
@@ -851,6 +857,7 @@ export async function runPluginRoute(
         }
         return {
           status: typeof out.status === "number" ? out.status : 200,
+          fsWrites: [...written],
           ...(out.json !== undefined ? { json: out.json } : {}),
           ...(out.text !== undefined ? { text: String(out.text) } : {}),
           ...(typeof out.contentType === "string" ? { contentType: out.contentType } : {}),

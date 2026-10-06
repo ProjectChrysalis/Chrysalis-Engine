@@ -1,6 +1,7 @@
 /**
  * Hono app + routes (SPEC §6). Thin handlers over services.
  */
+import { AppImports, IMPORT_CHUNK_BYTES } from "../apps/imports.js";
 import { abortable } from "../cancellation.js";
 import { Hono, type Context, type Next } from "hono";
 import { compress } from "hono/compress";
@@ -608,13 +609,16 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
               resolve("(question could not be delivered)");
               return;
             }
-            pendingQuestions.set(id, { resolve, sessionId: askSessionId, username: u.username });
+            pendingQuestions.set(id, { resolve, sessionId: askSessionId, username: u.username, question: q.question, options: q.options, detail: q.detail });
             bus.emit(u.username, "agent_event", {
               sessionId: askSessionId,
               ev: { type: "ask_user", id, question: q.question, ...(q.options?.length ? { options: q.options } : {}), ...(q.detail ? { detail: q.detail } : {}) },
             });
             setTimeout(() => {
-              if (pendingQuestions.delete(id)) resolve("(no answer — timed out)");
+              if (pendingQuestions.delete(id)) {
+                resolve("(no answer, timed out)");
+                bus.emit(u.username, "agent_event", { sessionId: askSessionId, ev: { type: "ask_user_done", id } });
+              }
             }, 10 * 60_000).unref();
           }),
       });
@@ -627,7 +631,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   };
 
   // pending ask_user questions: id → resolver (answered via /v1/agent/answer)
-  const pendingQuestions = new Map<string, { resolve: (answer: string) => void; sessionId: string; username: string }>();
+  const pendingQuestions = new Map<string, { resolve: (answer: string) => void; sessionId: string; username: string; question: string; options?: string[]; detail?: string }>();
 
   // ---------- health (no auth) ----------
   app.get("/v1/health", (c) => c.json({ ok: true, version: ENGINE_VERSION, ...(deps.instance ? { instance: deps.instance } : {}) }));
@@ -2336,23 +2340,43 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     } finally {
       activeRuns.delete(runKey);
       runControllers.delete(runKey);
+      bus.emit(u.username, "agent_settled", { sessionId: agent?.sessionId ?? body.sessionId });
     }
+  });
+
+  app.get("/v1/agent/state", (c) => {
+    const sid = c.req.query("sessionId") ?? "";
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(sid)) return c.json({ error: "invalid session id" }, 400);
+    const key = `${c.get("user").username}:${sid}`;
+    const pending = [...pendingQuestions].find(([, item]) => item.username === c.get("user").username && item.sessionId === sid);
+    const ask = pending ? { id: pending[0], sessionId: sid, question: pending[1].question, options: pending[1].options, detail: pending[1].detail } : null;
+    return c.json({ ask, running: activeRuns.has(key) || runControllers.has(key), queue: activeRuns.get(key)?.queuedMessages() ?? [] });
   });
 
   // Queue a user message into a RUNNING agent (steering): injected after the
   // current tool batch, before the next model call.
   app.post("/v1/agent/steer", async (c) => {
     const u = c.get("user");
-    const body = await c.req.json<{ sessionId?: string; message?: string }>().catch(() => null) ?? {};
+    const body = await c.req.json<{ sessionId?: string; message?: string; id?: string; cancel?: boolean }>().catch(() => null) ?? {};
     if (!body.sessionId || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(body.sessionId)) {
       return c.json({ error: "valid sessionId required" }, 400);
     }
-    if (!body.message?.trim()) return c.json({ error: "message required" }, 400);
+    if (!body.cancel && (typeof body.message !== "string" || !body.message.trim())) return c.json({ error: "message required" }, 400);
+    if (body.id && !/^[A-Za-z0-9_-]{1,80}$/.test(body.id)) return c.json({ error: "invalid queue id" }, 400);
     const agent = activeRuns.get(`${u.username}:${body.sessionId}`);
     if (!agent) return c.json({ error: "no active run for this session" }, 409);
-    agent.steer(body.message.slice(0, 8000));
-    bus.emit(u.username, "agent_event", { sessionId: body.sessionId, ev: { type: "steer", text: body.message } });
-    return c.json({ ok: true });
+    if (body.cancel) {
+      if (!body.id || !agent.cancelQueued(body.id)) return c.json({ error: "message already delivered" }, 409);
+      bus.emit(u.username, "agent_event", { sessionId: body.sessionId, ev: { type: "queue_cancelled", id: body.id } });
+      return c.json({ ok: true });
+    }
+    if (body.message!.length > 8000) return c.json({ error: "queued message exceeds 8000 characters" }, 413);
+    try {
+      const id = agent.steer(body.message!, body.id);
+      const queued = agent.queuedMessages().some((message) => message.id === id);
+      if (queued) bus.emit(u.username, "agent_event", { sessionId: body.sessionId, ev: { type: "queue_added", id, text: body.message } });
+      return c.json({ ok: true, id, queued });
+    } catch (error) { return c.json({ error: (error as Error).message }, 409); }
   });
 
   // abort the active run for a session (partial output is kept)
@@ -2380,11 +2404,12 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   // answer a pending ask_user question (resolves the blocked tool call)
   app.post("/v1/agent/answer", async (c) => {
     const u = c.get("user");
-    const body = await c.req.json<{ sessionId?: string; id?: string; answer?: string }>().catch(() => null) ?? ({} as { sessionId?: string; id?: string; answer?: string });
+    const body = await c.req.json<{ sessionId?: string; id?: string; answer?: string; dismiss?: boolean }>().catch(() => null) ?? ({} as { sessionId?: string; id?: string; answer?: string; dismiss?: boolean });
     const pending = body.id ? pendingQuestions.get(body.id) : undefined;
-    if (!pending || pending.username !== u.username) return c.json({ error: "no pending question" }, 404);
+    if (!pending || pending.username !== u.username || (body.sessionId && body.sessionId !== pending.sessionId)) return c.json({ error: "no pending question" }, 404);
+    if (body.dismiss !== true && (typeof body.answer !== "string" || !body.answer.trim())) return c.json({ error: "answer required" }, 400);
     pendingQuestions.delete(body.id!);
-    const answer = (body.answer ?? "").slice(0, 8000);
+    const answer = body.dismiss === true ? "(user dismissed this question; no approval was given)" : (body.answer ?? "").slice(0, 8000);
     pending.resolve(answer);
     bus.emit(u.username, "agent_event", { sessionId: pending.sessionId, ev: { type: "ask_user_done", id: body.id } });
     return c.json({ ok: true });
@@ -4506,7 +4531,9 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
     rel: string,
     query: Record<string, string>,
     body: unknown,
-  ): Promise<{ status: number; payload: unknown; contentType?: string } | null> => {
+    zipEntries?: Record<string, unknown>,
+    fsTransaction?: string,
+  ): Promise<{ status: number; payload: unknown; contentType?: string; fsWrites?: string[] } | null> => {
     const p = userPaths(dataDir, u.username);
     if (appId === "active" || !readApp(p.apps, appId)) return { status: 404, payload: { error: "app not found" } };
     await retryPendingUpgrade(u, p, appId);
@@ -4514,21 +4541,22 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
     // pending changes that predate this route (agent writes, shell edits) —
     // committed under their own label after the route so a sweep never
     // attributes out-of-band edits to whatever request happened to fire
-    const dirtyBefore = await git.changedPaths(p.root).catch(() => [] as string[]);
+    const tracksWrites = !zipEntries && method !== "GET" && method !== "HEAD";
+    const dirtyBefore = !tracksWrites ? [] : await git.changedPaths(p.root).catch(() => [] as string[]);
     for (const plugin of enabledAppPlugins(p.apps, appId, p.settings)) {
       const payload = body && typeof body === "object" ? (body as { zipBase64?: string }).zipBase64 : undefined;
-      const res = await runPluginRoute(plugin, { method, path: rel, query, body, ...(typeof payload === "string" ? { zipBase64: payload } : {}) }, deps);
+      const res = await runPluginRoute(plugin, { method, path: rel, query, body, ...(typeof payload === "string" ? { zipBase64: payload } : {}), ...(zipEntries ? { zipEntries, fsTransaction } : {}) }, deps);
       if (res) {
         // app data writes auto-commit (undo parity); failed routes (500) never
         // commit — a crashing plugin must not sweep unrelated changes in.
-        if ((res.status ?? 200) < 400) {
+        if (tracksWrites && (res.status ?? 200) < 400) {
           if (dirtyBefore.length > 0) {
             const preview = dirtyBefore.slice(0, 3).join(", ") + (dirtyBefore.length > 3 ? ` +${dirtyBefore.length - 3} more` : "");
             await git.commitPaths(p.root, u.username, `out-of-band: ${preview}`, dirtyBefore).catch(() => undefined);
           }
           await git.commitAll(p.root, u.username, `app(${appId}): ${method} ${rel}`).catch(() => undefined);
         }
-        if (res.json !== undefined) return { status: res.status ?? 200, payload: res.json };
+        if (res.json !== undefined) return { status: res.status ?? 200, payload: res.json, fsWrites: (res.fsWrites ?? []).map((file) => `apps/${appId}/data/${file}`) };
         return { status: res.status ?? 200, payload: res.text ?? "", ...(res.contentType ? { contentType: res.contentType } : {}) };
       }
     }
@@ -4558,6 +4586,78 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
     return reasons.length ? `no route: ${reasons.join("; ")}` : "no route";
   };
 
+  app.get("/v1/apps/:appId/__media/:name", (c) => {
+    const p = c.get("paths"), appId = c.req.param("appId"), name = c.req.param("name");
+    if (!/^[A-Za-z0-9_-]+$/.test(appId) || !/^[a-f0-9]{64}\.(png|jpeg|webp|gif)$/.test(name) || !readApp(p.apps, appId)) return c.notFound();
+    const root = path.join(p.apps, appId, "data");
+    const file = path.join(root, "__media", name);
+    try {
+      if (!fs.realpathSync(file).startsWith(fs.realpathSync(root) + path.sep)) return c.notFound();
+      return new Response(Bun.file(file), { headers: { "content-type": "image/" + name.split(".").pop(), "cache-control": "private, max-age=31536000, immutable", "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'" } });
+    } catch { return c.notFound(); }
+  });
+
+  const importLocks = new Set<string>();
+  const importsFor = (c: Context<AppEnv>): AppImports => {
+    const p = c.get("paths");
+    const id = c.req.param("appId") ?? "";
+    if (!/^[A-Za-z0-9_-]+$/.test(id) || !readApp(p.apps, id)) throw new Error("app not found");
+    return new AppImports(path.join(path.dirname(p.auth), "app-imports", id), path.join(p.apps, id, "data"));
+  };
+  app.all("/v1/apps/:appId/__imports/*", async (c) => {
+    const parts = c.req.path.split("/__imports/")[1]?.split("/") ?? [];
+    const id = parts[0] ?? "";
+    const op = parts[1] ?? "";
+    const lock = `${c.get("user").username}/${c.req.param("appId")}`;
+    try {
+      const imports = importsFor(c);
+      if (id === "new" && c.req.method === "POST") {
+        const body = await c.req.json<{ name: string; size: number; collections?: string[] }>();
+        if (typeof body.name !== "string" || !Array.isArray(body.collections ?? [])) throw new Error("invalid import request");
+        return c.json(imports.create(body.name, body.size, body.collections ?? []));
+      }
+      if (c.req.method === "GET" && !op) return c.json(imports.state(id));
+      if (importLocks.has(lock)) return c.json({ error: "import is busy" }, 409);
+      importLocks.add(lock);
+      try {
+        if (c.req.method === "DELETE" && !op) { imports.remove(id); return c.json({ ok: true }); }
+        if (c.req.method === "PUT" && !op) {
+          const body = await readCappedBody(c, IMPORT_CHUNK_BYTES);
+          if (!body.ok) return c.json({ error: body.error }, 413);
+          return c.json(imports.append(id, Number(c.req.query("offset")), body.bytes));
+        }
+        if (c.req.method === "POST" && op === "finish") {
+          const state = imports.state(id);
+          if (state.status !== "ready" || state.cursor !== state.files) throw new Error("import is not complete");
+          const body = await c.req.json<{ route: string }>();
+          if (!/^\/import\/[a-zA-Z0-9_/-]+$/.test(body.route)) throw new Error("invalid finish route");
+          const result = await dispatchAppRoute(c.get("user"), c.req.param("appId"), "POST", body.route, {}, { importId: id }, {});
+          if (!result || result.status >= 400) throw new Error(typeof result?.payload === "object" ? (result.payload as { error?: string }).error ?? "import cleanup failed" : "import cleanup failed");
+          await git.commitWrittenPaths(c.get("paths").root, c.get("user").username, `app(${c.req.param("appId")}): import ${state.name}`, imports.writtenPaths(id));
+          return c.json({ ok: true });
+        }
+        if (c.req.method === "POST" && op === "batch") {
+          const body = await c.req.json<{ cursor: number; route: string }>();
+          if (!Number.isSafeInteger(body.cursor) || body.cursor < 0 || !/^\/import\/[a-zA-Z0-9_/-]+$/.test(body.route)) throw new Error("invalid batch request");
+          const state = imports.state(id);
+          if (state.lastBatch?.from === body.cursor) { const { from: _from, ...result } = state.lastBatch; return c.json({ ...result, counts: state.counts }); }
+          const batch = await imports.batch(id, body.cursor);
+          const root = path.join(c.get("paths").apps, c.req.param("appId"), "data");
+          const transaction = imports.begin(id, root);
+          try {
+            const result = await dispatchAppRoute(c.get("user"), c.req.param("appId"), "POST", body.route, {}, { importId: id, collections: state.collectionCounts }, batch.entries, transaction);
+            if (!result || result.status >= 400) throw new Error(typeof result?.payload === "object" ? (result.payload as { error?: string }).error ?? "import route failed" : "import route failed");
+            imports.recordWrites(id, result.fsWrites ?? []);
+            imports.advance(id, body.cursor, batch.next, result.payload);
+            imports.commit(id);
+            return c.json({ cursor: batch.next, total: batch.total, done: batch.next >= batch.total, summary: result.payload, counts: imports.state(id).counts });
+          } catch (error) { imports.recover(id, root); throw error; }
+        }
+        return c.json({ error: "unknown import operation" }, 404);
+      } finally { importLocks.delete(lock); }
+    } catch (err) { return c.json({ error: err instanceof Error ? err.message : "import failed" }, 400); }
+  });
+
   app.all("/v1/apps/:appId/*", async (c) => {
     const u = c.get("user");
     const appId = c.req.param("appId");
@@ -4566,7 +4666,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
     for (const [k, v] of Object.entries(c.req.query())) query[k] = String(v);
     let body: unknown = undefined;
     if (c.req.method !== "GET" && c.req.method !== "HEAD") {
-      const cap = rel.startsWith("/import/") ? 220 * 1024 * 1024 : 1024 * 1024;
+      const cap = rel.startsWith("/import/") ? 220 * 1024 * 1024 : 32 * 1024 * 1024;
       const capped = await readCappedBody(c, cap);
       // early response without consuming the body poisons the socket for
       // keep-alive reuse — tell the client (and node) to close it

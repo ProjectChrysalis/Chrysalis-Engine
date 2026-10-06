@@ -1,3 +1,4 @@
+import { tr } from "@/i18n"
 import { AgentModelPicker } from "./AgentModelPicker"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -14,9 +15,9 @@ export function ComposerSettings(): ReactNode {
       <AgentModelPicker />
       <Select
         items={[
-          { label: "Full", value: "full" },
-          { label: "Accept", value: "accept" },
-          { label: "Plan", value: "plan" },
+          { label: tr("Full"), value: "full" },
+          { label: tr("Accept"), value: "accept" },
+          { label: tr("Plan"), value: "plan" },
         ]}
         value={mode === "normal" ? "full" : mode}
         onValueChange={(v) => {
@@ -24,19 +25,13 @@ export function ComposerSettings(): ReactNode {
           if (next === "accept" || next === "plan" || next === "normal") setMode(next)
         }}
       >
-        <SelectTrigger className="h-8 shrink-0 gap-1 rounded-full border-0 bg-transparent px-1.5 text-xs" aria-label="Mode">
+        <SelectTrigger className="h-8 shrink-0 gap-1 rounded-full border-0 bg-transparent px-1.5 text-xs" aria-label={tr("Mode")}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="full" className="text-xs">
-            Full
-          </SelectItem>
-          <SelectItem value="accept" className="text-xs">
-            Accept
-          </SelectItem>
-          <SelectItem value="plan" className="text-xs">
-            Plan
-          </SelectItem>
+          <SelectItem value="full" className="text-xs">{tr("Full")}</SelectItem>
+          <SelectItem value="accept" className="text-xs">{tr("Accept")}</SelectItem>
+          <SelectItem value="plan" className="text-xs">{tr("Plan")}</SelectItem>
         </SelectContent>
       </Select>
     </div>
@@ -56,11 +51,11 @@ export function Header(): ReactNode {
   }
   return (
     <header className="flex h-12 shrink-0 items-center gap-2 px-3 md:px-4">
-      <Button id="agent-sidebar-toggle" variant="ghost" size="icon" className="size-9 shrink-0" aria-label="Toggle sidebar" onClick={toggleSidebar}>
+      <Button id="agent-sidebar-toggle" variant="ghost" size="icon" className="size-9 shrink-0" aria-label={tr("Toggle sidebar")} onClick={toggleSidebar}>
         <SidebarSimple size={18} />
       </Button>
-      <span className="min-w-0 truncate text-sm font-medium">{title?.trim() || "New chat"}</span>
-      {wsDown ? <span className="text-destructive ml-auto flex shrink-0 items-center gap-1.5 text-xs" role="status"><WifiSlash size={14} />Reconnecting</span> : null}
+      <span className="min-w-0 truncate text-sm font-medium">{title?.trim() || tr("New chat")}</span>
+      {wsDown ? <span className="text-destructive ml-auto flex shrink-0 items-center gap-1.5 text-xs" role="status"><WifiSlash size={14} />{tr("Reconnecting")}</span> : null}
     </header>
   )
 }

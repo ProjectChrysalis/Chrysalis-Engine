@@ -387,6 +387,37 @@ describe("agent loop + sessions (faux provider)", () => {
     return new UserModelService(username, p, defaultInstanceConfig());
   }
 
+  it("delivers queued messages in order, cancels pending items, and persists their user turns", async () => {
+    const users = new UserService(dataDir);
+    users.create("admin", "admin", { password: "admin-pass-1" });
+    const svc = makeSvc("admin");
+    const handle = fauxProvider({ models: [{ id: "faux-agent" }] });
+    handle.setResponses([
+      fauxAssistantMessage([{ type: "toolCall", id: "question", name: "ask_user", arguments: { question: "Ready?" } }], { stopReason: "toolUse" }),
+      fauxAssistantMessage("Applied the queued request"),
+    ]);
+    svc.models.setProvider(handle.provider);
+    let release: ((text: string) => void) | undefined;
+    const agent = await UserAgent.create("admin", svc, userPaths(dataDir, "admin"), users, defaultInstanceConfig(), { ask: () => new Promise((resolve) => { release = resolve; }) });
+    const events: { type: string; id?: string }[] = [];
+    const run = agent.run("Start", { onEvent: (ev) => events.push(ev) });
+    for (let n = 0; !release && n < 100; n++) await Bun.sleep(10);
+    expect(release).toBeDefined();
+    agent.steer("Do this next", "queue_one");
+    agent.steer("Do this next", "queue_one");
+    expect(() => agent.steer("Different request", "queue_one")).toThrow("queue id already used");
+    agent.steer("Cancel this", "queue_two");
+    expect(agent.queuedMessages().length).toBe(2);
+    expect(agent.cancelQueued("queue_two")).toBe(true);
+    release!("Continue");
+    const result = await run;
+    expect(result.turns.filter((turn) => turn.user !== undefined)).toEqual([{ userId: "queue_one", user: "Do this next", tools: [] }]);
+    expect(events.filter((event) => event.type === "queue_sent").map((event) => event.id)).toEqual(["queue_one"]);
+    const records = fs.readFileSync(sessionFile(userPaths(dataDir, "admin"), agent.sessionId), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    expect(records.find((record) => record.type === "run").turns.some((turn: { userId?: string }) => turn.userId === "queue_one")).toBe(true);
+    expect(agent.cancelQueued("queue_one")).toBe(false);
+  }, 20_000);
+
   it("toolUse → tool executes → final text; session file written; resume loads dialogue", async () => {
     const users = new UserService(dataDir);
     users.create("admin", "admin", { password: "admin-pass-1" });

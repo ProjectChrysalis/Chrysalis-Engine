@@ -234,6 +234,22 @@ export async function commitPaths(
   });
 }
 
+/** Known written files need no workspace-wide status scan. */
+export async function commitWrittenPaths(dir: string, username: string, message: string, paths: string[]): Promise<string | null> {
+  return withRepoLock(dir, async () => {
+    await ensureRepo(dir);
+    let added = 0;
+    for (const filepath of new Set(paths)) {
+      const full = path.resolve(dir, filepath);
+      if (!full.startsWith(path.resolve(dir) + path.sep) || gitBoundaryIgnored(filepath)) continue;
+      if (!fs.existsSync(full) || !fs.statSync(full).isFile()) continue;
+      await git.add({ fs, dir, filepath });
+      added++;
+    }
+    return added ? commitWithReflog(dir, username, message, false) : null;
+  });
+}
+
 export async function log(dir: string, limit = 50): Promise<CommitInfo[]> {
   const commits = await git.log({ fs, dir, depth: limit });
   return commits.map((c) => ({

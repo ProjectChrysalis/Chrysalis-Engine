@@ -1,3 +1,4 @@
+import { tr } from "@/i18n"
 "use client";
 
 import { Button } from "@/components/ui/button";
@@ -55,9 +56,7 @@ const ThreadListArchived: FC = () => {
       >
         <CaretRight
           className={cn("size-3.5 transition-transform", open && "rotate-90")}
-        />
-        Archived ({count})
-      </button>
+        />{tr("Archived")}{" ("}{count}{")"}</button>
       {open && (
         <ThreadListPrimitive.Items archived components={{ ThreadListItem }} />
       )}
@@ -83,8 +82,8 @@ export const ThreadListSearch = forwardRef<
         type="search"
         value={value}
         onChange={(event) => onValueChange(event.target.value)}
-        aria-label="Search threads"
-        placeholder="Search threads"
+        aria-label={tr("Search conversations")}
+        placeholder={tr("Search conversations")}
         className={cn("h-8 ps-8 text-sm", className)}
         {...props}
       />
@@ -131,9 +130,9 @@ const dateGroupLabel = (
   date: Date | undefined,
   startOfToday: number,
 ): string => {
-  if (!date || date.getTime() >= startOfToday) return "Today";
-  if (date.getTime() >= startOfToday - DAY_IN_MS) return "Yesterday";
-  return "Earlier";
+  if (!date || date.getTime() >= startOfToday) return tr("Today");
+  if (date.getTime() >= startOfToday - DAY_IN_MS) return tr("Yesterday");
+  return tr("Earlier");
 };
 
 type ThreadListGroup = { label: string; indices: number[] };
@@ -154,7 +153,7 @@ const ThreadListItemGroups: FC<{ searchQuery?: string }> = ({
       .filter(
         ({ id }) =>
           !query ||
-          (itemsById.get(id)?.title || "New Chat")
+          (itemsById.get(id)?.title || tr("New chat"))
             .toLowerCase()
             .includes(query),
       )
@@ -191,9 +190,7 @@ const ThreadListItemGroups: FC<{ searchQuery?: string }> = ({
       <div
         data-slot="aui_thread-list-empty"
         className="text-muted-foreground px-2.5 py-4 text-sm"
-      >
-        No threads found
-      </div>
+      >{tr("No threads found")}</div>
     );
   }
 
@@ -251,9 +248,7 @@ export const ThreadListNew = forwardRef<
             <span
               data-slot="aui_thread-list-new-label"
               className={cn("whitespace-nowrap", labelClassName)}
-            >
-              New Thread
-            </span>
+            >{tr("New chat")}</span>
           </>
         )}
       </Button>
@@ -270,7 +265,7 @@ const ThreadListSkeleton: FC = () => {
         <div
           key={i}
           role="status"
-          aria-label="Loading threads"
+          aria-label={tr("Loading conversation")}
           data-slot="aui_thread-list-skeleton-wrapper"
           className="flex h-8 items-center px-2.5"
         >
@@ -325,9 +320,9 @@ export const ThreadListItem: FC = () => {
             data-slot="aui_thread-list-item-title"
             className="min-w-0 flex-1 truncate"
           >
-            <ThreadListItemPrimitive.Title fallback="New Chat" />
+            <ThreadListItemPrimitive.Title fallback={tr("New chat")} />
           </span>
-          {isRunning && <span className="sr-only">Running</span>}
+          {isRunning && <span className="sr-only">{tr("Running")}</span>}
         </ThreadListItemPrimitive.Trigger>
       )}
       <ThreadListItemMore onRename={() => setIsRenaming(true)} />
@@ -381,7 +376,7 @@ const ThreadListItemRename: FC<{
       ref={inputRef}
       autoFocus
       data-slot="aui_thread-list-item-rename"
-      aria-label="Rename thread"
+      aria-label={tr("Rename")}
       value={value}
       className="h-7 min-w-0 flex-1 ps-2.5 pe-9 text-sm"
       onChange={(event) => setValue(event.target.value)}
@@ -410,7 +405,7 @@ const ThreadListItemMore: FC<{ onRename: () => void }> = ({ onRename }) => {
           className="data-[state=open]:bg-accent absolute end-1.5 top-1/2 size-6 -translate-y-1/2 p-0 opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 group-has-focus-visible:opacity-100 group-data-active:opacity-100 data-[state=open]:opacity-100"
         >
           <DotsThree className="size-3.5" />
-          <span className="sr-only">More options</span>
+          <span className="sr-only">{tr("More")}</span>
         </Button>
       </ThreadListItemMorePrimitive.Trigger>
       <ThreadListItemMorePrimitive.Content
@@ -425,18 +420,14 @@ const ThreadListItemMore: FC<{ onRename: () => void }> = ({ onRename }) => {
           className="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none"
           onSelect={onRename}
         >
-          <PencilSimple className="size-4" />
-          Rename
-        </ThreadListItemMorePrimitive.Item>
+          <PencilSimple className="size-4" />{tr("Rename")}</ThreadListItemMorePrimitive.Item>
         <AuiIf condition={(s) => s.threadListItem.status !== "archived"}>
           <ThreadListItemPrimitive.Archive asChild>
             <ThreadListItemMorePrimitive.Item
               data-slot="aui_thread-list-item-more-item"
               className="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none"
             >
-              <Archive className="size-4" />
-              Archive
-            </ThreadListItemMorePrimitive.Item>
+              <Archive className="size-4" />{tr("Archive")}</ThreadListItemMorePrimitive.Item>
           </ThreadListItemPrimitive.Archive>
         </AuiIf>
         <AuiIf condition={(s) => s.threadListItem.status === "archived"}>
@@ -445,9 +436,7 @@ const ThreadListItemMore: FC<{ onRename: () => void }> = ({ onRename }) => {
               data-slot="aui_thread-list-item-more-item"
               className="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none"
             >
-              <ArrowCounterClockwise className="size-4" />
-              Unarchive
-            </ThreadListItemMorePrimitive.Item>
+              <ArrowCounterClockwise className="size-4" />{tr("Unarchive")}</ThreadListItemMorePrimitive.Item>
           </ThreadListItemPrimitive.Unarchive>
         </AuiIf>
         <ThreadListItemPrimitive.Delete asChild>
@@ -455,9 +444,7 @@ const ThreadListItemMore: FC<{ onRename: () => void }> = ({ onRename }) => {
             data-slot="aui_thread-list-item-more-item"
             className="text-destructive hover:bg-destructive/10 hover:text-destructive focus:bg-destructive/10 focus:text-destructive flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none"
           >
-            <Trash className="size-4" />
-            Delete
-          </ThreadListItemMorePrimitive.Item>
+            <Trash className="size-4" />{tr("Delete")}</ThreadListItemMorePrimitive.Item>
         </ThreadListItemPrimitive.Delete>
       </ThreadListItemMorePrimitive.Content>
     </ThreadListItemMorePrimitive.Root>

@@ -1,3 +1,4 @@
+import { tr } from "@/i18n"
 import {
   AuiConfig,
   defineToolkit,
@@ -28,12 +29,12 @@ function EditNote({ path, note, tone }: { path: string; note: string; tone?: "er
 
 const EditTool: ToolCallMessagePartComponent<Record<string, unknown>, ToolResult> = (p): ReactNode => {
   const path = typeof p.args?.path === "string" ? p.args.path : "file"
-  if (p.status?.type === "running") return <EditNote path={path} note="writing…" />
-  if (p.result && !p.result.ok) return <EditNote path={path} note={p.result.summary ?? "failed"} tone="error" />
+  if (p.status?.type === "running") return <EditNote path={path} note={tr("Writing")} />
+  if (p.result && !p.result.ok) return <EditNote path={path} note={p.result.summary ?? tr("Failed")} tone="error" />
   if (!p.result?.diff) {
     // the tool reports a diff for every write that changed the file, so a
     // result without one means the file already held what was written
-    return <EditNote path={path} note={p.result ? "no changes" : ""} />
+    return <EditNote path={path} note={p.result ? tr("No changes") : ""} />
   }
   return (
     <div className="my-1.5">

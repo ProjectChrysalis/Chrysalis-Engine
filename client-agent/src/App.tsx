@@ -1,3 +1,4 @@
+import { useLocale, tr } from "@/i18n"
 import {
   AssistantRuntimeProvider,
   SimpleImageAttachmentAdapter,
@@ -76,6 +77,7 @@ function runAtFromId(id: string | null | undefined): number | null {
 }
 
 export default function App(): ReactNode {
+  useLocale()
   const msgs = useAgent((s) => s.msgs)
   const running = useAgent((s) => s.running)
   const banner = useAgent((s) => s.banner)
@@ -95,11 +97,11 @@ export default function App(): ReactNode {
 
   const messages = useMemo(() => msgs.map(toThreadMessage), [msgs])
   const threads = useMemo(
-    () => sessions.filter((s) => !s.archived).map((s) => ({ status: "regular" as const, id: s.sessionId, title: s.title?.trim() || "Untitled" })),
+    () => sessions.filter((s) => !s.archived).map((s) => ({ status: "regular" as const, id: s.sessionId, title: s.title?.trim() || tr("Untitled") })),
     [sessions],
   )
   const archivedThreads = useMemo(
-    () => sessions.filter((s) => s.archived).map((s) => ({ status: "archived" as const, id: s.sessionId, title: s.title?.trim() || "Untitled" })),
+    () => sessions.filter((s) => s.archived).map((s) => ({ status: "archived" as const, id: s.sessionId, title: s.title?.trim() || tr("Untitled") })),
     [sessions],
   )
   const runtime = useExternalStoreRuntime({
@@ -150,7 +152,7 @@ export default function App(): ReactNode {
   return (
     <AssistantRuntimeProvider runtime={runtime} config={toolConfig}>
       <div className="bg-background text-foreground flex h-dvh overflow-hidden">
-        <aside aria-label="Conversations" className={`bg-sidebar text-sidebar-foreground w-64 shrink-0 flex-col border-r ${sidebarPinned ? "hidden md:flex" : "hidden"}`}>
+        <aside aria-label={tr("Conversations")} className={`bg-sidebar text-sidebar-foreground w-64 shrink-0 flex-col border-r ${sidebarPinned ? "hidden md:flex" : "hidden"}`}>
           <div className="flex h-12 shrink-0 items-center px-4 text-sm font-semibold">Chrysalis</div>
           <div className="min-h-0 flex-1 overflow-y-auto p-2"><ThreadList /></div>
         </aside>
@@ -159,8 +161,8 @@ export default function App(): ReactNode {
             <Dialog.Backdrop className="fixed inset-0 z-40 bg-black/40" />
             <Dialog.Popup finalFocus={() => document.getElementById("agent-sidebar-toggle")} className="bg-sidebar text-sidebar-foreground fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col border-r outline-none">
               <div className="flex h-14 shrink-0 items-center justify-between px-4">
-                <Dialog.Title className="text-sm font-semibold">Conversations</Dialog.Title>
-                <Dialog.Close render={<Button variant="ghost" size="icon" aria-label="Close sidebar" />}><X size={18} /></Dialog.Close>
+                <Dialog.Title className="text-sm font-semibold">{tr("Conversations")}</Dialog.Title>
+                <Dialog.Close render={<Button variant="ghost" size="icon" aria-label={tr("Close sidebar")} />}><X size={18} /></Dialog.Close>
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto p-2"><ThreadList /></div>
             </Dialog.Popup>
@@ -177,9 +179,7 @@ export default function App(): ReactNode {
               }`}
             >
               <span>{banner.text}</span>
-              <button className="underline" onClick={() => setBanner(null)}>
-                Dismiss
-              </button>
+              <button className="underline" onClick={() => setBanner(null)}>{tr("Dismiss")}</button>
             </div>
           ) : null}
           <Thread components={{ ToolFallback: AgentToolFallback }} />

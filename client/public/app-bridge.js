@@ -47,7 +47,7 @@
     if (!parentWin) return;
     msg.__chrysalis = 1;
     msg.nonce = nonce;
-    parentWin.postMessage(msg, "*");
+    parentWin.postMessage(msg, "*", msg.bodyBuffer instanceof ArrayBuffer ? [msg.bodyBuffer] : []);
   }
   /** websocket URLs serialize ws(s):// while location says http(s)://: same
    *  engine = same host/port and the matching ws/wss scheme. */
@@ -65,7 +65,7 @@
         msg.__chrysalis = 1;
         msg.id = id;
         msg.nonce = nonce;
-        parentWin.postMessage(msg, "*");
+        parentWin.postMessage(msg, "*", msg.bodyBuffer instanceof ArrayBuffer ? [msg.bodyBuffer] : []);
       });
     });
   }
@@ -149,10 +149,10 @@
         method: req.method,
         url: url.pathname + url.search,
         headers: headers,
-        body: isBodyless || buf.byteLength === 0 ? null : bytesToB64(new Uint8Array(buf)),
+        bodyBuffer: isBodyless || buf.byteLength === 0 ? null : buf,
       });
     }).then(function (res) {
-      var body = res.body ? b64ToBytes(res.body) : null;
+      var body = res.bodyBuffer instanceof ArrayBuffer ? new Uint8Array(res.bodyBuffer) : res.body ? b64ToBytes(res.body) : null;
       var status = res.status || 200;
       var bodyless = status === 204 || status === 205 || status === 304;
       var out = bodyless || !body || body.byteLength === 0 ? null : body;

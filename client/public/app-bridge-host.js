@@ -119,7 +119,7 @@
   var FORWARD_HEADERS = new Set(["content-type", "accept", "accept-language", "range", "cache-control", "if-none-match"]);
 
   function send(source, msg) {
-    try { source.postMessage(msg, "*"); } catch { /* frame gone */ }
+    try { source.postMessage(msg, "*", msg.bodyBuffer instanceof ArrayBuffer ? [msg.bodyBuffer] : []); } catch { /* frame gone */ }
   }
 
   var pendingDownload = null;
@@ -200,7 +200,7 @@
     // the engine refuses app-management routes to anything carrying this
     // (a second lock behind allowedRequest); frames cannot set or drop it
     headers["x-chrysalis-app"] = record.appId;
-    var body = typeof d.body === "string" ? b64ToBytes(d.body) : undefined;
+    var body = d.bodyBuffer instanceof ArrayBuffer ? new Uint8Array(d.bodyBuffer) : typeof d.body === "string" ? b64ToBytes(d.body) : undefined;
     if (body && body.byteLength > MAX_BODY) {
       send(source, { __chrysalis: 1, type: "fetch-error", id: d.id, error: "request body too large" });
       return;
@@ -227,7 +227,7 @@
           status: res.status,
           statusText: res.statusText,
           headers: outHeaders,
-          body: buf.byteLength ? bytesToB64(new Uint8Array(buf)) : null,
+          ...(Object.prototype.hasOwnProperty.call(d, "bodyBuffer") ? { bodyBuffer: buf.byteLength ? buf : null } : { body: buf.byteLength ? bytesToB64(new Uint8Array(buf)) : null }),
         });
       });
     }).catch(function (e) {

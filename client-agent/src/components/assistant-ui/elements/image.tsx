@@ -1,3 +1,4 @@
+import { tr } from "@/i18n"
 "use client";
 
 import {
@@ -311,7 +312,7 @@ function ImageZoom({ src, alt = "Image preview", children }: ImageZoomProps) {
         role="button"
         tabIndex={0}
         className="aui-image-zoom-trigger cursor-zoom-in"
-        aria-label="Click to zoom image"
+        aria-label={tr("Click to zoom image")}
       >
         {children}
       </div>
@@ -325,7 +326,7 @@ function ImageZoom({ src, alt = "Image preview", children }: ImageZoomProps) {
             aria-modal="true"
             className="aui-image-zoom-overlay fade-in animate-in fixed inset-0 z-50 flex items-center justify-center bg-black/80 duration-200"
             onClick={handleClose}
-            aria-label="Zoomed image"
+            aria-label={tr("Zoomed image")}
           >
             <img
               data-slot="image-zoom-content"
@@ -340,7 +341,7 @@ function ImageZoom({ src, alt = "Image preview", children }: ImageZoomProps) {
             <button
               ref={closeRef}
               type="button"
-              aria-label="Close zoomed image"
+              aria-label={tr("Close zoomed image")}
               onClick={(e) => {
                 e.stopPropagation();
                 handleClose();
@@ -366,7 +367,7 @@ function ImageGenerating({ className }: { className?: string }) {
       )}
     >
       <CircleNotch className="text-muted-foreground size-8 animate-spin" />
-      <span className="sr-only">Generating image…</span>
+      <span className="sr-only">{tr("Generating image…")}</span>
     </div>
   );
 }
@@ -387,7 +388,7 @@ function ImageContentFilterError({
       )}
     >
       <ShieldWarning className="text-muted-foreground size-8" />
-      <p className="text-sm font-medium">Image could not be generated</p>
+      <p className="text-sm font-medium">{tr("Image could not be generated")}</p>
       {reason && <p className="text-muted-foreground text-xs">{reason}</p>}
     </div>
   );
@@ -423,7 +424,7 @@ function RegenerateButton({
       }}
       disabled={isRegenerating}
       data-slot="image-regenerate"
-      aria-label="Regenerate image"
+      aria-label={tr("Regenerate image")}
       className="hover:bg-muted inline-flex size-7 items-center justify-center rounded disabled:opacity-50"
     >
       <ArrowsClockwise
@@ -443,7 +444,7 @@ function ImageActions({ part, onRegenerate, className }: ImageActionsProps) {
         type="button"
         onClick={() => downloadImagePart(part)}
         data-slot="image-download"
-        aria-label="Download image"
+        aria-label={tr("Download image")}
         className="hover:bg-muted inline-flex size-7 items-center justify-center rounded"
       >
         <DownloadSimple className="size-4" />
@@ -454,7 +455,7 @@ function ImageActions({ part, onRegenerate, className }: ImageActionsProps) {
           copyImagePart(part).catch(() => {});
         }}
         data-slot="image-copy"
-        aria-label="Copy image"
+        aria-label={tr("Copy image")}
         className="hover:bg-muted inline-flex size-7 items-center justify-center rounded"
       >
         <Copy className="size-4" />

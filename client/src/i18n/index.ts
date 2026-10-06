@@ -31,6 +31,7 @@ function detect(): Locale {
   if (saved && saved in LOCALES) return saved as Locale
   const tags = typeof navigator === "undefined" ? [] : [navigator.language, ...(navigator.languages ?? [])]
   for (const tag of tags) {
+    if (typeof tag !== "string") continue
     const lower = tag.toLowerCase()
     if (lower in LOCALES) return lower as Locale
     const primary = lower.split("-")[0]!
@@ -83,3 +84,14 @@ export function tr(key: Key, vars?: Vars): string {
  *  extras. Used by the test suite and by nothing at runtime. */
 export const localeKeys = (l: Locale): string[] => Object.keys(DICTS[l] ?? {})
 export const englishKeys = (): string[] => Object.keys(en)
+
+if (typeof window !== "undefined") window.addEventListener("storage", (event) => {
+  if (event.key === "chrysalis-lang") {
+    const next = detect();
+    if (next !== locale) {
+      locale = next;
+      applyDomLocale();
+      for (const fn of listeners) fn();
+    }
+  }
+});

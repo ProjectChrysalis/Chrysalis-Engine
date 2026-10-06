@@ -1,5 +1,6 @@
 export interface StreamEvent {
-  type: "text" | "thinking" | "thinking_end" | "tool_start" | "tool_end" | "ask_user" | "ask_user_done" | "autocompact"
+  type: "text" | "thinking" | "thinking_end" | "tool_start" | "tool_end" | "ask_user" | "ask_user_done" | "autocompact" | "queue_added" | "queue_sent" | "queue_cancelled"
+  text?: string
   id?: string
   name?: string
   args?: Record<string, unknown>

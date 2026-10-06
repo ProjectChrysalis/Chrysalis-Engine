@@ -1,3 +1,4 @@
+import { tr } from "@/i18n"
 import { useEffect, useState } from "react"
 import { Broom, Plus, TextAa } from "@phosphor-icons/react"
 import { ComposerPrimitive, unstable_useComposerInput, unstable_useSlashCommandAdapter } from "@assistant-ui/react"
@@ -38,21 +39,21 @@ export function SlashCommands(): ReactNode {
       {
         id: "new",
         label: "/new",
-        description: "Start a new chat",
+        description: tr("Start a new chat"),
         execute: () => useAgent.getState().newChat(),
       },
       {
         id: "compact",
         label: "/compact",
-        description: "Summarize this chat and continue from the summary",
+        description: tr("Summarize this chat and continue from the summary"),
         execute: () => {
           const s = useAgent.getState()
           if (!s.sessionId) {
-            s.setBanner({ kind: "info", text: "Nothing to compact yet" })
+            s.setBanner({ kind: "info", text: tr("Nothing to compact yet") })
             return
           }
           if (s.running) {
-            s.setBanner({ kind: "info", text: "Stop the run, then compact" })
+            s.setBanner({ kind: "info", text: tr("Stop the run, then compact") })
             return
           }
           void s.compact()
@@ -61,7 +62,7 @@ export function SlashCommands(): ReactNode {
       ...mine.map((c) => ({
         id: `user:${c.name}`,
         label: `/${c.name}`,
-        description: c.description || "From commands/",
+        description: c.description || tr("From commands/"),
         execute: () => input.setText(c.body),
       })),
     ],
@@ -70,7 +71,7 @@ export function SlashCommands(): ReactNode {
     <ComposerPrimitive.Unstable_TriggerPopover
       char="/"
       adapter={slash.adapter}
-      aria-label="Commands"
+      aria-label={tr("Commands")}
       className="aui-trigger-popover bg-popover text-popover-foreground border-border absolute inset-x-2 bottom-full z-50 mb-2 overflow-hidden rounded-xl border p-1 shadow-lg"
     >
       <ComposerPrimitive.Unstable_TriggerPopover.Action {...slash.action} />
@@ -92,7 +93,7 @@ export function SlashCommands(): ReactNode {
               </ComposerPrimitive.Unstable_TriggerPopoverItem>
             ))
           ) : (
-            <div className="text-muted-foreground px-2.5 py-2 text-xs">No matching commands</div>
+            <div className="text-muted-foreground px-2.5 py-2 text-xs">{tr("No matching commands")}</div>
           )
         }
       </ComposerPrimitive.Unstable_TriggerPopoverItems>

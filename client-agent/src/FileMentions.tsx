@@ -1,3 +1,4 @@
+import { tr } from "@/i18n"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { File as FileIcon } from "@phosphor-icons/react"
 import { ComposerPrimitive } from "@assistant-ui/react"
@@ -83,7 +84,7 @@ export function FileMentions(): ReactNode {
       adapter={adapter}
       isLoading={loading}
       ref={popoverRef}
-      aria-label="Files"
+      aria-label={tr("Files")}
       className="aui-trigger-popover bg-popover text-popover-foreground border-border absolute inset-x-2 bottom-full z-50 mb-2 max-h-72 min-h-11 overflow-y-auto overscroll-contain rounded-xl border p-1 shadow-lg"
     >
       <ComposerPrimitive.Unstable_TriggerPopover.Directive formatter={filePathDirective} />
@@ -108,7 +109,7 @@ export function FileMentions(): ReactNode {
             ))
           ) : (
             <div className="text-muted-foreground px-2.5 py-2 text-xs">
-              {loading ? "Searching…" : "No matching files"}
+              {loading ? tr("Searching…") : tr("No matching files")}
             </div>
           )
         }

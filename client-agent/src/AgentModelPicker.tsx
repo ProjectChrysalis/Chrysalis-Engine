@@ -1,3 +1,4 @@
+import { tr } from "@/i18n"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useAui } from "@assistant-ui/react"
 import { CaretDown, Check, Star } from "@phosphor-icons/react"
@@ -48,28 +49,28 @@ export function AgentModelPicker() {
   }
   return (
     <Dialog open={open} onOpenChange={(next) => { setOpen(next); if (next) { setQuery(""); setConnection("") } }}>
-      <DialogTrigger render={<Button variant="ghost" size="sm" className="h-8 min-w-0 max-w-60 shrink gap-1 rounded-full px-2" />} aria-label="Choose model">
-        <span className="truncate">{model ? shortModelName(model.label) : "Choose model"}</span>
+      <DialogTrigger render={<Button variant="ghost" size="sm" className="h-8 min-w-0 max-w-60 shrink gap-1 rounded-full px-2" />} aria-label={tr("Models")}>
+        <span className="truncate">{model ? shortModelName(model.label) : tr("Models")}</span>
         <CaretDown className="size-3 shrink-0" />
       </DialogTrigger>
       <DialogContent ref={popup} className="flex h-[min(640px,calc(100dvh-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl" initialFocus={(interaction) => interaction === "touch" || window.matchMedia("(max-width: 767px), (pointer: coarse)").matches ? popup.current : input.current}>
         <div className="shrink-0 px-4 pt-4 pb-3 pr-12">
-          <DialogTitle>Choose model</DialogTitle>
-          <DialogDescription className="mt-1 text-xs">Search your connections or star a model to keep it handy.</DialogDescription>
+          <DialogTitle>{tr("Models")}</DialogTitle>
+          <DialogDescription className="mt-1 text-xs">{tr("Search your connections or star a model to keep it handy.")}</DialogDescription>
         </div>
         <div className="flex min-h-0 flex-1 flex-col">
           <Command shouldFilter={false} className="rounded-none">
-            <CommandInput ref={input} value={query} onValueChange={setQuery} placeholder="Search names, IDs, or connections…" aria-label="Search models" className="h-12" />
+            <CommandInput ref={input} value={query} onValueChange={setQuery} placeholder={tr("Search models")} aria-label={tr("Search models")} className="h-12" />
             <div className="flex shrink-0 items-center justify-between gap-3 border-b px-3 py-2">
-              <Select value={connection} onValueChange={(value) => setConnection(value ?? "")} items={[{ value: "", label: "All connections" }, ...connections.map(([value, label]) => ({ value, label }))]}>
-                <SelectTrigger className="h-8 w-auto max-w-[75%] text-xs" aria-label="Filter connection"><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="">All connections</SelectItem>{connections.map(([id, name]) => <SelectItem key={id} value={id}>{name}</SelectItem>)}</SelectContent>
+              <Select value={connection} onValueChange={(value) => setConnection(value ?? "")} items={[{ value: "", label: tr("All connections") }, ...connections.map(([value, label]) => ({ value, label }))]}>
+                <SelectTrigger className="h-8 w-auto max-w-[75%] text-xs" aria-label={tr("Filter connection")}><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="">{tr("All connections")}</SelectItem>{connections.map(([id, name]) => <SelectItem key={id} value={id}>{name}</SelectItem>)}</SelectContent>
               </Select>
               <span className="text-muted-foreground shrink-0 text-xs" role="status">{filtered.length} {filtered.length === 1 ? "model" : "models"}</span>
             </div>
-            <CommandList className="min-h-0 max-h-none flex-1 px-2 py-1" aria-label="Models">
-              {!filtered.length && <div className="text-muted-foreground p-8 text-center text-sm">No models match your search.</div>}
-              {groups.map((group) => <CommandGroup key={group.title} heading={group.title}>
+            <CommandList className="min-h-0 max-h-none flex-1 px-2 py-1" aria-label={tr("Models")}>
+              {!filtered.length && <div className="text-muted-foreground p-8 text-center text-sm">{tr("No models match your search.")}</div>}
+              {groups.map((group) => <CommandGroup key={tr(group.title as "Results" | "Current" | "Favorites" | "Recent" | "All models")} heading={tr(group.title as "Results" | "Current" | "Favorites" | "Recent" | "All models")}>
                 {group.models.map((item) => {
                   const id = modelKey(item)
                   const favorite = favorites.includes(id)
@@ -78,10 +79,10 @@ export function AgentModelPicker() {
                       <Check className={`size-4 ${selected === id ? "opacity-100" : "opacity-0"}`} />
                       <div className="min-w-0 flex-1">
                         <div className="break-words font-medium">{item.label}</div>
-                        <div className="text-muted-foreground mt-0.5 break-all text-xs">{item.connectionName ?? item.provider} · {item.modelId}</div>
+                        <div className="text-muted-foreground mt-0.5 break-all text-xs">{item.connectionName ?? item.provider}{"·"}{item.modelId}</div>
                       </div>
                     </CommandItem>
-                    <Button variant="ghost" size="icon" className="size-9 shrink-0" aria-label={`${favorite ? "Remove favorite" : "Favorite"}: ${item.label} (${item.connectionName ?? item.provider})`} aria-pressed={favorite} onClick={() => toggleFavorite(id)}><Star className="size-4" weight={favorite ? "fill" : "regular"} /></Button>
+                    <Button variant="ghost" size="icon" className="size-9 shrink-0" aria-label={`${favorite ? tr("Remove favorite") : tr("Favorite")}: ${item.label} (${item.connectionName ?? item.provider})`} aria-pressed={favorite} onClick={() => toggleFavorite(id)}><Star className="size-4" weight={favorite ? "fill" : "regular"} /></Button>
                   </div>
                 })}
               </CommandGroup>)}
@@ -89,13 +90,18 @@ export function AgentModelPicker() {
           </Command>
         </div>
         <div className="flex shrink-0 items-center justify-between gap-3 border-t px-4 py-3">
-          <div className="min-w-0"><div className="text-muted-foreground text-xs">Current model</div><div className="truncate text-xs font-medium" title={model?.label}>{model?.label ?? "None selected"}</div></div>
-          {model?.reasoning && model.reasoningLevels.length > 0 && <Select value={reasoning} onValueChange={(value) => { if (value !== null) setReasoning(value) }} items={model.reasoningLevels.map((value) => ({ value, label: value[0]?.toUpperCase() + value.slice(1) }))}>
-            <SelectTrigger className="h-8 w-auto shrink-0 text-xs" aria-label="Reasoning effort"><SelectValue /></SelectTrigger>
-            <SelectContent>{model.reasoningLevels.map((level) => <SelectItem key={level} value={level}>{level[0]?.toUpperCase() + level.slice(1)}</SelectItem>)}</SelectContent>
+          <div className="min-w-0"><div className="text-muted-foreground text-xs">{tr("Current model")}</div><div className="truncate text-xs font-medium" title={model?.label}>{model?.label ?? tr("None selected")}</div></div>
+          {model?.reasoning && model.reasoningLevels.length > 0 && <Select value={reasoning} onValueChange={(value) => { if (value !== null) setReasoning(value) }} items={model.reasoningLevels.map((value) => ({ value, label: reasoningLabel(value) }))}>
+            <SelectTrigger className="h-8 w-auto shrink-0 text-xs" aria-label={tr("Reasoning effort")}><SelectValue /></SelectTrigger>
+            <SelectContent>{model.reasoningLevels.map((level) => <SelectItem key={level} value={level}>{reasoningLabel(level)}</SelectItem>)}</SelectContent>
           </Select>}
         </div>
       </DialogContent>
     </Dialog>
   )
+}
+
+function reasoningLabel(level: string): string {
+  const key = ({ minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", off: "Off" } as const)[level as "minimal" | "low" | "medium" | "high" | "xhigh" | "off"];
+  return key ? tr(key) : level;
 }
