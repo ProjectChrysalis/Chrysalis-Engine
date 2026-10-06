@@ -188,6 +188,7 @@ const AttachmentUI: FC = () => {
               )}
             </TooltipTrigger>
           </AttachmentPreviewDialog>
+          {!isImage && <p className="max-w-28 truncate text-xs"><AttachmentPrimitive.Name /></p>}
           {isComposer && <AttachmentRemove />}
         </AttachmentPrimitive.Root>
         <TooltipContent side="top">

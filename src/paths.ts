@@ -93,7 +93,7 @@ export function gitBoundaryIgnored(relPath: string): boolean {
     /^connections\.json$/i.test(norm) ||
     /^speech\.json$/i.test(norm) ||
     // repos/: repositories the agent cloned to read, not the user's history
-    ["agent", "assets-store", "store", "repos"].includes(first.toLowerCase()) ||
+    ["agent", "attachments", "assets-store", "store", "repos"].includes(first.toLowerCase()) ||
     // app imports and updates unpack a repository here before it is reviewed
     (first.toLowerCase() === "apps" && segs[1] === ".staging") ||
     (first === "apps" && segs[2] === "data" && ["__media", "__lookup"].includes(segs[3] ?? "")) ||
@@ -114,7 +114,7 @@ export function ensureGitignoreEntries(root: string): boolean {
     cur = "";
   }
   const lines = cur.split("\n").map((l) => l.trim());
-  const needs = ["auth.json", "mcp.json", "agent/", "assets-store/", "store/", "node_modules/", "dist/", "/connections.json", "/speech.json", "apps/.staging/", "/repos/", "apps/*/data/__media/", "apps/*/data/__lookup/"].filter((e) => !lines.includes(e));
+  const needs = ["attachments/", "auth.json", "mcp.json", "agent/", "assets-store/", "store/", "node_modules/", "dist/", "/connections.json", "/speech.json", "apps/.staging/", "/repos/", "apps/*/data/__media/", "apps/*/data/__lookup/"].filter((e) => !lines.includes(e));
   if (needs.length === 0) return false;
   const head = cur ? cur.replace(/\n*$/, "\n") : "# runtime state + credentials never enter git\n";
   fs.writeFileSync(gi, head + needs.join("\n") + "\n", "utf8");
@@ -178,6 +178,7 @@ mcp.json
 # runtime state + agent chat logs live outside the repo (SPEC-v2 git boundary)
 agent/
 assets-store/
+attachments/
 store/
 # app imports and updates unpack a repository here before it is reviewed
 apps/.staging/

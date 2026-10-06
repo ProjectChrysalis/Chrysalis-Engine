@@ -1,7 +1,6 @@
 import { useLocale, tr } from "@/i18n"
 import {
   AssistantRuntimeProvider,
-  SimpleImageAttachmentAdapter,
   useExternalStoreRuntime,
   type AppendMessage,
   type ThreadMessageLike,
@@ -13,12 +12,13 @@ import type { ReadonlyJSONObject } from "assistant-stream/utils"
 import { Dialog } from "@base-ui/react/dialog"
 import { X } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
+import { AgentAttachmentAdapter } from "./attachments"
 import { Header } from "./Header"
 import { useAgent } from "./store"
 import { AgentToolFallback, toolConfig } from "./tools"
 import { visibleParts, type Msg } from "./runs"
 
-const imageAttachments = new SimpleImageAttachmentAdapter()
+const attachments = new AgentAttachmentAdapter()
 
 function toThreadMessage(m: Msg): ThreadMessageLike {
   if (m.role === "user") {
@@ -62,7 +62,8 @@ function extractSend(message: AppendMessage): { text: string; images?: SendImage
   const images: SendImage[] = []
   for (const a of message.attachments ?? [])
     for (const c of a.content)
-      if (c.type === "image" && typeof c.image === "string" && c.image.startsWith("data:")) {
+      if (c.type === "text") text += (text ? "\n\n" : "") + c.text
+      else if (c.type === "image" && typeof c.image === "string" && c.image.startsWith("data:")) {
         const m = /^data:([^;]+);base64,(.*)$/s.exec(c.image)
         if (m?.[1] && m[2]) images.push({ mimeType: m[1], data: m[2], url: c.image })
       }
@@ -109,7 +110,7 @@ export default function App(): ReactNode {
     messages,
     convertMessage: (m) => m,
     adapters: {
-      attachments: imageAttachments,
+      attachments,
       threadList: {
         threadId: sessionId ?? undefined,
         threads,
@@ -124,9 +125,9 @@ export default function App(): ReactNode {
     },
     onNew: async (message) => {
       const { text, images } = extractSend(message)
-      if (!text) return
+      if (!text && !images?.length) return
       await useAgent.getState().send(
-        text,
+        text || "Please inspect the attached images.",
         images?.map(({ data, mimeType }) => ({ data, mimeType })),
         images?.map(({ url }) => url),
       )

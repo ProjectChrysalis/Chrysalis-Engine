@@ -1,6 +1,7 @@
 /**
  * Hono app + routes (SPEC §6). Thin handlers over services.
  */
+import { saveAttachment, MAX_ATTACHMENT_BYTES } from "../agent/attachments.js";
 import { AppImports, IMPORT_CHUNK_BYTES } from "../apps/imports.js";
 import { abortable } from "../cancellation.js";
 import { Hono, type Context, type Next } from "hono";
@@ -2238,6 +2239,38 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       .map((l) => JSON.parse(l) as Record<string, unknown>)
       .filter((r) => r.type === "run" || r.type === "compact");
     return c.json({ sessionId: id, runs });
+  });
+
+  app.get("/v1/agent/attachments/:id/:name", (c) => {
+    const id = c.req.param("id"), name = c.req.param("name");
+    if (!/^[a-f0-9-]{36}$/.test(id) || name !== path.basename(name) || Array.from(name).some(char => char === "\\" || char.charCodeAt(0) < 32)) return c.notFound();
+    const root = c.get("paths").root;
+    const file = path.join(root, "attachments", id, name);
+    try {
+      if (!fs.realpathSync(file).startsWith(fs.realpathSync(root) + path.sep) || !fs.statSync(file).isFile()) return c.notFound();
+      return new Response(Bun.file(file), { headers: { "content-type": "application/octet-stream", "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(name)}`, "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'" } });
+    } catch { return c.notFound(); }
+  });
+
+  app.delete("/v1/agent/attachments/:id", (c) => {
+    const id = c.req.param("id");
+    if (!/^[a-f0-9-]{36}$/.test(id)) return c.json({ error: "invalid attachment id" }, 400);
+    const root = c.get("paths").root;
+    const target = path.join(root, "attachments", id);
+    try {
+      if (fs.existsSync(target) && !fs.realpathSync(target).startsWith(fs.realpathSync(root) + path.sep)) return c.json({ error: "invalid attachment path" }, 400);
+      fs.rmSync(target, { recursive: true, force: true });
+    } catch (error) { return c.json({ error: (error as Error).message }, 400); }
+    return c.json({ ok: true });
+  });
+
+  app.post("/v1/agent/attachments", async (c) => {
+    const name = c.req.query("name");
+    if (!name) return c.json({ error: "filename required" }, 400);
+    const body = await readCappedBody(c, MAX_ATTACHMENT_BYTES);
+    if (!body.ok) return c.json({ error: body.error }, 413);
+    try { return c.json(await saveAttachment(c.get("paths").root, name, body.bytes)); }
+    catch (error) { return c.json({ error: (error as Error).message }, 400); }
   });
 
   app.post("/v1/agent", async (c) => {
