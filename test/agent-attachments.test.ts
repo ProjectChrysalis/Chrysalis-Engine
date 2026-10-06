@@ -34,6 +34,7 @@ it("keeps original documents and makes PDF, Word, and text contents readable by 
   const dir = root();
   const p = bootstrapUserDir(dir, "alice");
   const fixtures = [
+    { name: "script.lua", bytes: strToU8('print("hello")'), expected: 'print(\"hello\")' },
     { name: "notes.md", bytes: strToU8("Hello document\n日本語"), expected: "日本語" },
     { name: "document.docx", bytes: zipSync({ "word/document.xml": strToU8('<w:document xmlns:w="urn:word"><w:p><w:r><w:t>Hello &amp; document</w:t></w:r></w:p></w:document>') }), expected: "Hello & document" },
     { name: "document.pdf", bytes: samplePdf(), expected: "Hello document" },
@@ -45,7 +46,7 @@ it("keeps original documents and makes PDF, Word, and text contents readable by 
     expect(result.notice).toBeUndefined();
     expect(result.readable).toBeDefined();
     const response = await read.execute("test", { path: result.readable! });
-    expect(JSON.stringify(response.content)).toContain(fixture.expected);
+    expect(response.content.map(part => part.type === "text" ? part.text : "").join("\n")).toContain(fixture.expected);
     expect(gitBoundaryIgnored(result.path)).toBe(true);
   }
 });

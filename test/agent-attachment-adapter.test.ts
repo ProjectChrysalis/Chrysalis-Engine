@@ -1,4 +1,4 @@
-import { expect, it } from "bun:test";
+import { expect, it, spyOn } from "bun:test";
 import { AgentAttachmentAdapter } from "../client-agent/src/attachments.js";
 
 it("passes document references to the message and retains native image attachments", async () => {
@@ -36,4 +36,24 @@ it("cleans up a document removed before upload finishes", async () => {
   release();
   expect((await completion).done).toBe(true);
   expect(requests).toEqual(["POST /v1/agent/attachments?name=notes.txt", "DELETE /v1/agent/attachments/pending"]);
+});
+
+it("calls browser fetch with its global receiver for Lua uploads and removal", async () => {
+  const browserFetch = Object.assign(async function (this: typeof globalThis, input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) {
+    expect(this).toBe(globalThis);
+    if (init?.method === "DELETE") return Response.json({ ok: true });
+    expect(String(input)).toContain("name=script.lua");
+    if (!(init?.body instanceof File)) throw new Error("Expected an uploaded file");
+    expect(await init.body.text()).toBe('print("hello")');
+    return Response.json({ id: "lua", name: "script.lua", path: "attachments/lua/script.lua", readable: "attachments/lua/text.txt" });
+  }, { preconnect: globalThis.fetch.preconnect });
+  const request = spyOn(globalThis, "fetch").mockImplementation(browserFetch);
+  try {
+    const adapter = new AgentAttachmentAdapter();
+    let file: Parameters<AgentAttachmentAdapter["send"]>[0] | undefined;
+    for await (const state of adapter.add({ file: new File(['print("hello")'], "script.lua") })) file = state;
+    expect(file?.status.type).toBe("requires-action");
+    await adapter.remove(file!);
+    expect(request).toHaveBeenCalledTimes(2);
+  } finally { request.mockRestore(); }
 });

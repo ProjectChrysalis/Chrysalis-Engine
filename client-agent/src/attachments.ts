@@ -8,7 +8,7 @@ export class AgentAttachmentAdapter implements AttachmentAdapter {
   private uploaded = new Map<string, UploadedFile>()
   private removed = new Set<string>()
 
-  constructor(private request: (url: string, init: RequestInit) => Promise<Response> = fetch) {}
+  constructor(private request: (url: string, init: RequestInit) => Promise<Response> = (url, init) => globalThis.fetch(url, init)) {}
 
   async *add({ file }: { file: File }): AsyncGenerator<PendingAttachment, void> {
     const mime = ({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" } as Record<string, string>)[file.name.split(".").pop()?.toLowerCase() ?? ""]
