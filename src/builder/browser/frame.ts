@@ -34,7 +34,12 @@ const transport = (ops: FsOp[]): Promise<FsResult[]> =>
     post({ t: "fs", rid: n, ops });
   });
 
+let activeBuildId: number | null = null;
+
 const env: BuilderEnv = {
+  onProgress: (stage) => {
+    if (activeBuildId !== null) post({ t: "progress", id: activeBuildId, stage });
+  },
   esbuild: esbuild as unknown as BuilderEnv["esbuild"],
   tailwindSheets: { "index.css": indexCss, "theme.css": themeCss, "preflight.css": preflightCss, "utilities.css": utilitiesCss },
   // app code (a Tailwind plugin) runs here and only here: this frame can
@@ -63,6 +68,7 @@ let dev: DevSession | null = null;
 let chain = Promise.resolve();
 
 async function build(kind: Extract<Msg, { t: "build" }>["kind"], changed: string[]) {
+  env.onProgress?.("reading");
   if (kind === "production") return buildProduction(await createContext(transport, env, "production"));
   if (kind === "full" || kind === "warm" || !devCtx || !dev) {
     devCtx = await createContext(transport, env, "development");
@@ -107,12 +113,14 @@ addEventListener("message", (e: MessageEvent) => {
     const { id, kind } = d;
     chain = chain.then(async () => {
       const started = Date.now();
+      activeBuildId = id;
       let output: BuildOutput;
       try {
         output = await build(kind, d.changed ?? []);
       } catch (err) {
         output = failure(kind === "production" ? "production" : "development", err);
       }
+      activeBuildId = null;
       post({ t: "result", id, output, ms: Date.now() - started });
     });
   }

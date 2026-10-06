@@ -305,6 +305,7 @@ export class DevSession {
   }
 
   private async buildDeps(): Promise<{ js: string; css: string | null; files: BuildOutput["files"] }> {
+    this.ctx.env.onProgress?.("dependencies");
     const ids = [...this.depIds].sort();
     const contents =
       ids.map((p, i) => `import * as d${i} from ${JSON.stringify("/" + p)};`).join("\n") +
@@ -388,6 +389,7 @@ export class DevSession {
    * nothing is written: the session is warm for the next hot update.
    */
   async full(opts: { adopt?: boolean } = {}): Promise<DevOutput> {
+    this.ctx.env.onProgress?.("reading");
     this.mods.clear();
     this.depIds.clear();
     this.entryIds = [];
@@ -406,6 +408,7 @@ export class DevSession {
       }
       this.entryIds.push(roots[roots.length - 1]!.id);
     }
+    this.ctx.env.onProgress?.("bundling");
     await this.process(roots);
     const key = await this.depsKey();
     const prior = this.meta;
@@ -440,6 +443,7 @@ export class DevSession {
 
   /** Files changed on disk: rebuild what they feed and emit a hot update. */
   async update(changed: string[]): Promise<DevOutput> {
+    this.ctx.env.onProgress?.("bundling");
     const { fs, tailwind, resolver } = this.ctx;
     fs.invalidate(changed);
     tailwind.invalidate(changed);

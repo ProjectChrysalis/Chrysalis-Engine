@@ -4346,7 +4346,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
     // the app is built in this browser before it first shows (same builder the
     // shell uses, lease and all); the overlay reports the build's progress
     var w = ChrysalisBuilder.watch(appId, function (s) {
-      if (s.phase === "building") bootmsg.textContent = "Building the app…";
+      if (s.phase === "building") bootmsg.textContent = s.message || "Building the app…";
       else if (s.phase === "waiting") bootmsg.textContent = s.message || "Waiting for the build…";
       else if (s.phase === "error") fail();
       else bootmsg.textContent = "Opening…";

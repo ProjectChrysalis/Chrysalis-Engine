@@ -95,7 +95,7 @@ export function StoreDialog(props: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 max-md:items-end" onClick={props.onClose}>
       <div
-        className="flex max-h-[85vh] w-full max-w-lg flex-col gap-3 overflow-hidden rounded-xl border border-line bg-panel p-4"
+        className="flex max-h-[85dvh] min-w-0 w-full max-w-lg flex-col gap-3 overflow-hidden rounded-xl border border-line bg-panel p-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2">
@@ -119,16 +119,16 @@ export function StoreDialog(props: {
             <IconSmall name="outline-xmark" />
           </button>
         </div>
-        {store.list?.error ? <p className="text-12 leading-4 text-danger">{store.list.error}</p> : null}
+        {store.list?.error ? <p className="text-12 leading-4 text-danger [overflow-wrap:anywhere]">{store.list.error}</p> : null}
         {store.list && !store.list.enabled ? (
           <p className="text-13 text-ink-muted">{tr("The Store is turned off in this server's config.yaml.")}</p>
         ) : null}
         {store.loading && !apps.length ? <p className="text-13 text-ink-faint">{tr("Loading the Store…")}</p> : null}
-        <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overscroll-contain">
+        <ul className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 overflow-x-hidden overflow-y-auto overscroll-contain">
           {apps.map((a) => (
-            <li key={a.id} className="flex flex-col gap-1.5 rounded-lg border border-line p-3">
-              <div className="flex items-center gap-1.5">
-                <span className="truncate text-14 font-medium text-ink">{a.name}</span>
+            <li key={a.id} className="flex min-w-0 flex-col gap-1.5 rounded-lg border border-line p-3">
+              <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                <span className="min-w-0 max-w-full truncate text-14 font-medium text-ink">{a.name}</span>
                 <OfficialBadge official={a.official} />
                 {shownNew.has(a.id) ? <NewBadge /> : null}
                 <span className="flex-1" />
@@ -142,12 +142,12 @@ export function StoreDialog(props: {
                   </Button>
                 )}
               </div>
-              <p className="text-12 text-ink-muted">{tr("by {author}", { author: a.author })}</p>
-              <p className="text-12 leading-4 text-ink">{a.description}</p>
+              <p className="text-12 text-ink-muted [overflow-wrap:anywhere]">{tr("by {author}", { author: a.author })}</p>
+              <p className="text-12 leading-4 text-ink [overflow-wrap:anywhere]">{a.description}</p>
               {a.tags.length ? (
                 <div className="flex flex-wrap gap-1">
                   {a.tags.map((t) => (
-                    <span key={t} className="rounded-full bg-pressed/50 px-1.5 py-0.5 text-10 text-ink-muted">{t}</span>
+                    <span key={t} className="max-w-full break-words rounded-full bg-pressed/50 px-1.5 py-0.5 text-10 text-ink-muted">{t}</span>
                   ))}
                 </div>
               ) : null}
@@ -235,8 +235,8 @@ export function WelcomeApps(props: { store: StoreState; onDone: (ids: string[]) 
                   onChange={() => toggle(a.id)}
                 />
                 <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-1.5">
-                    <span className="truncate text-14 font-medium text-ink">{a.name}</span>
+                  <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+                    <span className="min-w-0 max-w-full truncate text-14 font-medium text-ink">{a.name}</span>
                     <OfficialBadge official />
                   </span>
                   <span className="mt-0.5 block text-12 leading-4 text-ink-muted">{a.description}</span>

@@ -88,7 +88,7 @@ class BuilderFrame {
   private onMessage: (e: MessageEvent) => void;
   dead = false;
 
-  constructor(private appId: string, prior: unknown) {
+  constructor(private appId: string, prior: unknown, private onProgress: (message: string) => void) {
     this.iframe = document.createElement("iframe");
     this.iframe.setAttribute("sandbox", "allow-scripts");
     this.iframe.setAttribute("aria-hidden", "true");
@@ -104,14 +104,17 @@ class BuilderFrame {
     });
     this.onMessage = (e: MessageEvent) => {
       if (e.source !== this.iframe.contentWindow) return;
-      const d = e.data as { __chrysalisBuilder?: number; t?: string; rid?: unknown; ops?: unknown; id?: unknown; output?: unknown; error?: unknown; text?: unknown };
+      const d = e.data as { __chrysalisBuilder?: number; t?: string; rid?: unknown; ops?: unknown; id?: unknown; output?: unknown; error?: unknown; text?: unknown; stage?: unknown };
       if (!d || d.__chrysalisBuilder !== 1) return;
       if (d.t === "loaded") loaded();
       else if (d.t === "ready") readyOk();
       else if (d.t === "fatal") readyFail(new Error(String(d.error)));
       else if (d.t === "log") console.warn(`[builder:${appId}]`, String(d.text).slice(0, 4000));
       else if (d.t === "fs" && typeof d.rid === "number" && Array.isArray(d.ops)) void this.relay(d.rid, d.ops);
-      else if (d.t === "result" && typeof d.id === "number" && d.output && typeof d.output === "object") {
+      else if (d.t === "progress" && typeof d.id === "number" && this.waiting.has(d.id)) {
+        const messages: Record<string, string> = { reading: "Reading app files", bundling: "Building app", dependencies: "Building dependencies" };
+        if (typeof d.stage === "string" && Object.hasOwn(messages, d.stage)) this.onProgress(messages[d.stage]!);
+      } else if (d.t === "result" && typeof d.id === "number" && d.output && typeof d.output === "object") {
         this.waiting.get(d.id)?.(d.output as Record<string, unknown>);
         this.waiting.delete(d.id);
       }
@@ -288,7 +291,7 @@ class AppBuild {
       else {
         this.status(st.status?.errors?.length ? { phase: "error", errors: st.status.errors } : { phase: "ready" });
         if (this.running) return;
-        this.frame = new BuilderFrame(this.appId, st.dev);
+        this.frame = new BuilderFrame(this.appId, st.dev, this.progress);
         // warm the session in the background so the first edit is quick
         void this.frame.build("warm").catch(() => {});
         // no build to run: do not keep the lease, or another device that
@@ -392,6 +395,10 @@ class AppBuild {
     return this.settling;
   }
 
+  private progress = (message: string): void => {
+    if (!this.disposed && this.running) this.status({ phase: "building", message });
+  };
+
   private async run(kind: "full" | "update", rev: string, changed: string[] = []): Promise<void> {
     if (this.disposed) return;
     if (!this.frame || this.frame.dead) {
@@ -402,9 +409,9 @@ class AppBuild {
       } catch {
         /* start fresh */
       }
-      this.frame = new BuilderFrame(this.appId, prior);
+      this.frame = new BuilderFrame(this.appId, prior, this.progress);
     }
-    if (kind === "full") this.status({ phase: "building", message: "Building the app" });
+    this.status({ phase: "building", message: "Preparing compiler" });
     let output: Record<string, unknown>;
     try {
       output = await this.frame.build(kind, changed);
@@ -418,6 +425,7 @@ class AppBuild {
       return;
     }
     try {
+      this.status({ phase: "building", message: "Saving build" });
       await api(`${this.base()}/output`, { method: "PUT", body: JSON.stringify({ holder: this.holder, rev, builder: VERSION, output }) });
     } catch (e) {
       // the output never landed, but the session in the frame already advanced

@@ -99,6 +99,7 @@ export function pluginBase(ctx: BuildContext, emitter: Emitter) {
 }
 
 export async function buildProduction(ctx: BuildContext): Promise<BuildOutput> {
+  ctx.env.onProgress?.("reading");
   const emitter = new Emitter(ctx.fs);
   try {
     if (!(await ctx.fs.isFile("index.html"))) throw new Error("this app has no index.html");
@@ -108,6 +109,7 @@ export async function buildProduction(ctx: BuildContext): Promise<BuildOutput> {
     for (const e of plan.entries) {
       entries.set(`\0entry:${e.n}`, e.path ? { path: e.path } : { path: `index-inline-${e.n}.tsx`, contents: e.inline ?? "", loader: "tsx" });
     }
+    ctx.env.onProgress?.("bundling");
     const r = await ctx.env.esbuild.build({
       entryPoints: [...entries.keys()],
       bundle: true,

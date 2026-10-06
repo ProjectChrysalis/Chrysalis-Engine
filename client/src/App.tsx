@@ -650,6 +650,17 @@ function UserMenu(props: {
   )
 }
 
+function buildStatusText(status: AppBuildStatus): string {
+  switch (status.message) {
+    case "Preparing compiler": return tr("Preparing compiler")
+    case "Reading app files": return tr("Reading app files")
+    case "Building app": return tr("Building app")
+    case "Building dependencies": return tr("Building dependencies")
+    case "Saving build": return tr("Saving build")
+    default: return status.message ?? tr("Building the app…")
+  }
+}
+
 function AppCanvas(props: { username: string; tab: Tab; trusted?: boolean; onAskAgent: (prompt: string) => void; split?: boolean; onSplit: () => void; onPlugins: () => void }) {
   const frameRef = useRef<HTMLIFrameElement>(null)
   const [build, setBuild] = useState<AppBuildStatus>({ phase: "checking" })
@@ -791,7 +802,13 @@ function AppCanvas(props: { username: string; tab: Tab; trusted?: boolean; onAsk
         {!loaded ? (
           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-base text-13 text-ink-muted">
             <span className="size-4 animate-spin rounded-full border-2 border-line border-t-ink-muted" aria-hidden="true" />
-            {build.phase === "building" ? tr("Building the app…") : build.phase === "waiting" ? (build.message ?? tr("Waiting for the build…")) : tr("Opening…")}
+            <span role="status" aria-live="polite">{build.phase === "building" ? buildStatusText(build) : build.phase === "waiting" ? (build.message ?? tr("Waiting for the build…")) : tr("Opening…")}</span>
+          </div>
+        ) : null}
+        {loaded && (build.phase === "building" || build.phase === "waiting") ? (
+          <div role="status" aria-live="polite" className="pointer-events-none absolute bottom-3 left-3 z-10 flex max-w-[calc(100%-1.5rem)] items-center gap-2 rounded-lg border border-line bg-panel px-3 py-2 text-12 text-ink-muted shadow-sm">
+            <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-line border-t-ink-muted motion-reduce:animate-none" aria-hidden="true" />
+            <span className="min-w-0 break-words">{buildStatusText(build)}</span>
           </div>
         ) : null}
         {build.phase === "error" && !hideErrors ? <BuildErrors status={build} onClose={() => setHideErrors(true)} onAskAgent={(text) => props.onAskAgent(agentErrorPrompt(props.tab.name, props.tab.id, text))} /> : null}
