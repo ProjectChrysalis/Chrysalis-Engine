@@ -433,7 +433,15 @@ try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: f
         remove: (rel) => {
           const full = within(rel);
           if (full === fsRoot) throw new Error("refusing to remove the data dir itself");
-          try { fs.rmSync(full, { recursive: true, force: true }); } catch (e) { scrub(e, rel); }
+          try {
+            const remember = (file) => {
+              if (fs.lstatSync(file).isDirectory()) {
+                for (const name of fs.readdirSync(file)) remember(path.join(file, name));
+              } else fsWrites.add(path.relative(fsRoot, file).split(path.sep).join("/"));
+            };
+            if (fs.existsSync(full)) remember(full);
+            fs.rmSync(full, { recursive: true, force: true });
+          } catch (e) { scrub(e, rel); }
         },
       };
     })();

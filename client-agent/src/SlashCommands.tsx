@@ -3,7 +3,7 @@ import { useEffect, useState } from "react"
 import { Broom, Plus, TextAa } from "@phosphor-icons/react"
 import { ComposerPrimitive, unstable_useComposerInput, unstable_useSlashCommandAdapter } from "@assistant-ui/react"
 import type { ReactNode } from "react"
-import { agentCommands, type UserCommand } from "./api"
+import { agentCommands, appSkills, type UserCommand } from "./api"
 import { useAgent } from "./store"
 
 /** Icon shown next to a command in the "/" menu. */
@@ -25,6 +25,14 @@ function commandIcon(id: string): ReactNode {
  * sending it, because most are a starting point with a detail to add.
  */
 export function SlashCommands(): ReactNode {
+  const appId = useAgent((s) => s.appId)
+  const [skills, setSkills] = useState<{ name: string; description: string }[]>([])
+  useEffect(() => {
+    let current = true
+    setSkills([])
+    if (appId) void appSkills(appId).then((result) => { if (current) setSkills(result.skills) }).catch(() => undefined)
+    return () => { current = false }
+  }, [appId])
   const [mine, setMine] = useState<UserCommand[]>([])
   useEffect(() => {
     void agentCommands().then(setMine).catch(() => undefined)
@@ -59,6 +67,12 @@ export function SlashCommands(): ReactNode {
           void s.compact()
         },
       },
+      ...skills.map((skill) => ({
+        id: `skill:${skill.name}`,
+        label: `/skill ${skill.name}`,
+        description: skill.description,
+        execute: () => input.setText(`/skill ${skill.name} `),
+      })),
       ...mine.map((c) => ({
         id: `user:${c.name}`,
         label: `/${c.name}`,

@@ -49,7 +49,7 @@ export function AgentModelPicker() {
   }
   return (
     <Dialog open={open} onOpenChange={(next) => { setOpen(next); if (next) { setQuery(""); setConnection("") } }}>
-      <DialogTrigger render={<Button variant="ghost" size="sm" className="h-8 min-w-0 max-w-60 shrink gap-1 rounded-full px-2" />} aria-label={tr("Models")}>
+      <DialogTrigger render={<Button variant="ghost" size="sm" className="agent-composer-model" />} aria-label={tr("Models")}>
         <span className="truncate">{model ? shortModelName(model.label) : tr("Models")}</span>
         <CaretDown className="size-3 shrink-0" />
       </DialogTrigger>

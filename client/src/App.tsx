@@ -226,25 +226,32 @@ function Shell(props: { theme: "light" | "dark"; onTheme: () => void }) {
     }
     focusTab(t)
   }
+  const pendingAgentContext = useRef<string | null>(null)
   function openAgent() {
+    pendingAgentContext.current = active?.kind === "app" ? active.id : pinned?.id ?? null
     placeTab(agentTab())
+    deliverAgentPrompt()
   }
   // a prompt for the agent waits until its frame says it is listening: the
   // frame may not exist yet when the agent tab was closed
   const agentFrame = useRef<HTMLIFrameElement | null>(null)
   const agentReady = useRef(false)
-  const pendingAgentPrompt = useRef<string | null>(null)
+  const pendingAgentPrompt = useRef<{ text: string; appId: string | null } | null>(null)
   const bindAgentFrame = useCallback((el: HTMLIFrameElement | null) => {
     agentFrame.current = el
     // a remounted frame announces itself again
     if (!el) agentReady.current = false
   }, [])
   const deliverAgentPrompt = () => {
-    const text = pendingAgentPrompt.current
+    const prompt = pendingAgentPrompt.current
     const target = agentFrame.current?.contentWindow
-    if (!text || !target || !agentReady.current) return
+    if (!target || !agentReady.current) return
+    if (!prompt) {
+      target.postMessage({ __chrysalisAgent: "context", appId: pendingAgentContext.current }, location.origin)
+      return
+    }
     pendingAgentPrompt.current = null
-    target.postMessage({ __chrysalisAgent: "start", text }, location.origin)
+    target.postMessage({ __chrysalisAgent: "start", ...prompt }, location.origin)
   }
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
@@ -257,10 +264,9 @@ function Shell(props: { theme: "light" | "dark"; onTheme: () => void }) {
     return () => window.removeEventListener("message", onMessage)
   }, [])
   /** Open the agent on a fresh chat that starts with `prompt`. */
-  function askAgent(prompt: string) {
-    pendingAgentPrompt.current = prompt
+  function askAgent(prompt: string, appId?: string) {
+    pendingAgentPrompt.current = { text: prompt, appId: appId ?? (active?.kind === "app" ? active.id : pinned?.id ?? null) }
     openAgent()
-    deliverAgentPrompt()
   }
   /** Manifest name when known (launch list), else the id. Callers inside
    *  enter() pass the freshly fetched list — the `launch` state is still null
@@ -275,8 +281,7 @@ function Shell(props: { theme: "light" | "dark"; onTheme: () => void }) {
    * consumes anything, whatever tab you were on. */
   function focusTab(t: Tab) {
     setActive(t)
-    // the app you are looking at is the active app (agent tools + pipeline
-    // follow it); fire-and-forget and idempotent when already active
+    // Activation selects the app for shell catalogs, independently of agent conversations.
     if (t.kind === "app") void api("POST", `/v1/apps/${encodeURIComponent(t.id)}/activate`).catch(() => undefined)
   }
   /** The + button: one more New tab, focused. It stays in the strip until the
@@ -481,7 +486,7 @@ function Shell(props: { theme: "light" | "dark"; onTheme: () => void }) {
                     username={user.username}
                     tab={t}
                     trusted={launch?.apps.find((a) => a.id === t.id)?.official === true}
-                    onAskAgent={askAgent}
+                    onAskAgent={(prompt) => askAgent(prompt, t.id)}
                     split={pinned?.id === t.id}
                     onSplit={() => splitWith(t)}
                     onPlugins={() => openPlugins(t.id)}

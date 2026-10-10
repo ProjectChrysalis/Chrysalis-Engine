@@ -1,5 +1,8 @@
 // Simplified Chinese (zh) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Choose app": "选择应用",
+  "Working app": "当前工作应用",
+  "missing": "不存在",
   " · disabled": " · 已停用",
   " · needs key": " · 需要密钥",
   " · off": " · 关闭",
@@ -453,6 +456,10 @@ const dict = {
   "Confirm": "确认",
   "Context auto-compacted": "上下文已自动压缩",
   "Context usage": "上下文用量",
+  "Last request": "上次请求",
+  "Input tokens": "输入 token",
+  "Cached input": "缓存输入",
+  "Usage available after a run.": "运行后显示用量。",
   "Conversations": "对话",
   "Copy image": "复制图片",
   "Current model": "当前模型",

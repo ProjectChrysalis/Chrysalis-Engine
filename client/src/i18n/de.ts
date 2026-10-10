@@ -1,5 +1,8 @@
 // German (de) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Choose app": "App wählen",
+  "Working app": "Arbeits-App",
+  "missing": "fehlt",
   " · disabled": " · deaktiviert",
   " · needs key": " · Schlüssel nötig",
   " · off": " · aus",
@@ -453,6 +456,10 @@ const dict = {
   "Confirm": "Bestätigen",
   "Context auto-compacted": "Kontext automatisch zusammengefasst",
   "Context usage": "Kontextnutzung",
+  "Last request": "Letzte Anfrage",
+  "Input tokens": "Eingabe-Tokens",
+  "Cached input": "Zwischengespeicherte Eingabe",
+  "Usage available after a run.": "Nutzung nach einem Lauf verfügbar.",
   "Conversations": "Unterhaltungen",
   "Copy image": "Bild kopieren",
   "Current model": "Aktuelles Modell",

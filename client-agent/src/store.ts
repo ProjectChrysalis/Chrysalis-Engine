@@ -4,6 +4,8 @@ import { tr } from "./i18n"
 // resolves it is replaced by the authoritative turn record.
 import { create } from "zustand"
 import {
+  agentApps,
+  setAgentTarget,
   answerAgent,
   agentState,
   cancelQueuedAgent,
@@ -45,6 +47,10 @@ export interface AgentState {
   dismissAsk: () => Promise<void>
   sessions: EngineSession[]
   sessionId: string | null
+  appId: string | null
+  apps: { id: string; name: string }[]
+  targetChanging: boolean
+  setApp: (appId: string | null) => Promise<void>
   msgs: Msg[]
   running: boolean
   stopping: boolean
@@ -122,11 +128,31 @@ const rememberSession = (id: string | null): void => prefs.set("agent-ui-session
 let runSequence = 0
 let liveId: string | null = null
 
+let targetChange: Promise<void> | null = null
+
 export const useAgent = create<AgentState>()((set, get) => {
   return {
     queue: (() => { try { return (JSON.parse(prefs.get("agent-ui-queue") ?? "[]") as QueuedMessage[]).map((item) => ({ ...item, pending: false })) } catch { return [] } })(),
     sessions: [],
     sessionId: null,
+    appId: null,
+    apps: [],
+    targetChanging: false,
+    setApp: async (appId) => {
+      const state = get();
+      if (state.running || state.targetChanging) return;
+      set({ targetChanging: true });
+      const operation = (async () => {
+        try {
+          if (state.sessionId) await setAgentTarget(state.sessionId, appId);
+          if (get().sessionId === state.sessionId) set({ appId });
+        } catch (e) { set({ banner: { kind: "error", text: e instanceof Error ? e.message : String(e) } }); }
+        finally { set({ targetChanging: false }); }
+      })();
+      targetChange = operation;
+      await operation;
+      if (targetChange === operation) targetChange = null;
+    },
     msgs: [],
     running: false,
     stopping: false,
@@ -144,9 +170,10 @@ export const useAgent = create<AgentState>()((set, get) => {
 
     init: async () => {
       try {
-        const [settings, models] = await Promise.all([getSettings(), listModels()])
+        const [settings, models, catalog] = await Promise.all([getSettings(), listModels(), agentApps()])
         set({
           models,
+          apps: catalog.apps,
           model: get().model ?? settings.model ?? null,
           reasoning: get().reasoning || settings.reasoning || "",
         })
@@ -185,7 +212,7 @@ export const useAgent = create<AgentState>()((set, get) => {
         const r = await sessionsApi.get(id)
         if (get().sessionId === id) {
           const delivered = new Set((r.runs ?? []).flatMap((run) => run.turns?.map((turn) => turn.userId).filter(Boolean) ?? []));
-          set((state) => ({ msgs: msgsFromRuns(r.runs ?? [], tr), queue: state.queue.filter((item) => !delivered.has(item.id)) }));
+          set((state) => ({ appId: r.appId, msgs: msgsFromRuns(r.runs ?? [], tr), queue: state.queue.filter((item) => !delivered.has(item.id)) }));
           const live = await agentState(id);
           if (get().sessionId === id) set((state) => ({ running: live.running, ask: live.ask ?? null, queue: [...state.queue.filter((item) => item.sessionId !== id || !live.queue.some((queued) => queued.id === item.id)).map((item) => item.sessionId === id ? { ...item, accepted: false } : item), ...live.queue.map((item) => ({ ...item, sessionId: id, pending: false, accepted: true }))] }));
         }
@@ -228,10 +255,11 @@ export const useAgent = create<AgentState>()((set, get) => {
       if (get().running) void get().stop()
       streamDeltaBatcher.reset()
       rememberSession(null)
-      set({ running: false, stopping: false, sessionId: null, msgs: [], banner: null, ask: null, sidebarOpen: false })
+      set({ running: false, stopping: false, sessionId: null, appId: null, msgs: [], banner: null, ask: null, sidebarOpen: false })
     },
 
     send: async (text, images, urls) => {
+      if (targetChange) await targetChange
       const s = get()
       if (s.stopping) return
       if (s.running && s.sessionId) {
@@ -276,6 +304,7 @@ export const useAgent = create<AgentState>()((set, get) => {
       try {
         const res: AgentResponse = await sendAgent({
           message: text,
+          appId: s.appId,
           sessionId: sid,
           model: s.model ?? undefined,
           reasoning: s.reasoning || undefined,
@@ -291,6 +320,7 @@ export const useAgent = create<AgentState>()((set, get) => {
           running: false,
           stopping: false,
           sessionId: res.sessionId,
+          appId: res.appId === undefined ? st.appId : res.appId,
           usage: res.usage ?? null,
           banner: res.stopped
             ? { kind: "info", text: tr("Stopped") }
@@ -506,6 +536,10 @@ export function connectWs(): void {
     }
     const st = useAgent.getState()
     const payload = msg.payload
+    if (msg.type === "agent_target" && payload?.sessionId === st.sessionId) {
+      useAgent.setState({ appId: (payload as { appId?: string | null }).appId ?? null });
+      return;
+    }
     if (msg.type === "agent_settled" && payload?.sessionId === st.sessionId) {
       streamDeltaBatcher.flush();
       useAgent.setState({ running: false, stopping: false, ask: null });

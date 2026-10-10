@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import isomorphicGit from "isomorphic-git";
-import { initRepo, commitAll, log, restoreFile, status, untrackBoundary, changedPaths, commitPaths } from "../src/git.js";
+import { initRepo, commitAll, log, restoreFile, status, untrackBoundary, changedPaths, commitPaths, commitWrittenPaths } from "../src/git.js";
 import { ensureGitignoreEntries } from "../src/paths.js";
 import { gcRepoIfChunky } from "../src/apps/git.js";
 
@@ -157,4 +157,28 @@ describe("workspace garbage collection", () => {
     fs.appendFileSync(path.join(dir, ".git", "config"), "\n[gc]\nrecentObjectsHook = evil\n");
     expect(await gcRepoIfChunky(dir, 0)).toBe(false);
   });
+});
+
+it("known-file commits track edits and deletions without sweeping unrelated files", async () => {
+  await initRepo(dir);
+  await commitAll(dir, "alice", "initial");
+  fs.writeFileSync(path.join(dir, "other.json"), "pending");
+  fs.writeFileSync(path.join(dir, "card.json"), "changed");
+  expect(await commitWrittenPaths(dir, "alice", "edit", ["card.json"])).toBeTruthy();
+  expect(await commitWrittenPaths(dir, "alice", "unchanged", ["card.json"])).toBeNull();
+  fs.unlinkSync(path.join(dir, "card.json"));
+  expect(await commitWrittenPaths(dir, "alice", "delete", ["card.json"])).toBeTruthy();
+  expect((await changedPaths(dir))).toEqual(["other.json"]);
+});
+
+it("known-file commits retain same-size edits within one filesystem timestamp", async () => {
+  await initRepo(dir);
+  await commitAll(dir, "alice", "initial");
+  const file = path.join(dir, "card.json");
+  const stat = fs.statSync(file);
+  fs.writeFileSync(file, '{"name":"v2"}');
+  fs.utimesSync(file, stat.atime, stat.mtime);
+  const oid = await commitWrittenPaths(dir, "alice", "edit", ["card.json"]);
+  expect(oid).toBeTruthy();
+  expect(new TextDecoder().decode((await isomorphicGit.readBlob({ fs, dir, oid: oid!, filepath: "card.json" })).blob)).toBe('{"name":"v2"}');
 });

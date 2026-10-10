@@ -1,5 +1,8 @@
 // Russian (ru) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Choose app": "Выбрать приложение",
+  "Working app": "Рабочее приложение",
+  "missing": "отсутствует",
   " · disabled": " · отключено",
   " · needs key": " · нужен ключ",
   " · off": " · выкл.",
@@ -453,6 +456,10 @@ const dict = {
   "Confirm": "Подтвердить",
   "Context auto-compacted": "Контекст автоматически сжат",
   "Context usage": "Использование контекста",
+  "Last request": "Последний запрос",
+  "Input tokens": "Входные токены",
+  "Cached input": "Кэшированный ввод",
+  "Usage available after a run.": "Использование доступно после запуска.",
   "Conversations": "Разговоры",
   "Copy image": "Копировать изображение",
   "Current model": "Текущая модель",

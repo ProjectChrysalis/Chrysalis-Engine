@@ -1,3 +1,4 @@
+import { readAppContext, writeAppContext, discoverSkills, contextFile } from "../agent/skills.js";
 /**
  * Hono app + routes (SPEC §6). Thin handlers over services.
  */
@@ -6,6 +7,7 @@ import { AppImports, IMPORT_CHUNK_BYTES } from "../apps/imports.js";
 import { abortable } from "../cancellation.js";
 import { Hono, type Context, type Next } from "hono";
 import { compress } from "hono/compress";
+import { BuildBodyError, readBuildBody } from "./build-body.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -585,7 +587,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     // the agent is made. Editing a note or an AGENTS.md mid-conversation and
     // having it ignored until the next chat is the kind of thing nobody works
     // out on their own, so a changed file drops the cached agent instead.
-    const docsNow = instructionDocsStamp(userPaths(dataDir, u.username));
+    const docsNow = instructionDocsStamp(userPaths(dataDir, u.username), sessionId);
     if (a && a.docsStamp !== docsNow) {
       if (key) agentInstances.delete(key);
       a = undefined;
@@ -2220,6 +2222,38 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     return c.json({ commands: out });
   });
 
+  app.get("/v1/agent/apps", (c) => {
+    return c.json({ apps: listApps(c.get("paths").apps).map((a) => ({ id: a.id, name: a.manifest.name })) });
+  });
+
+  app.get("/v1/agent/apps/:id/skills", (c) => {
+    const result = discoverSkills(c.get("paths"), c.req.param("id"));
+    return c.json({ skills: result.skills.map(({ name, description }) => ({ name, description })), errors: result.errors });
+  });
+
+  app.get("/v1/agent/sessions/:id/skills", (c) => {
+    const p = c.get("paths"), id = c.req.param("id");
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id)) return c.json({ error: "Invalid session id" }, 400);
+    const context = readAppContext(p, id);
+    const result = discoverSkills(p, context.appId);
+    return c.json({ appId: context.appId, skills: result.skills.map(({ name, description }) => ({ name, description })), errors: result.errors });
+  });
+
+  app.post("/v1/agent/sessions/:id/target", async (c) => {
+    const p = c.get("paths"), id = c.req.param("id"), username = c.get("user").username;
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id)) return c.json({ error: "Invalid session id" }, 400);
+    if (activeRuns.has(`${username}:${id}`) || runControllers.has(`${username}:${id}`)) return c.json({ error: "Wait for the current run to finish" }, 409);
+    const body = await c.req.json<{ appId?: unknown }>().catch(() => null);
+    if (!body || (body.appId !== null && typeof body.appId !== "string")) return c.json({ error: "appId required" }, 400);
+    try {
+      if (readAppContext(p, id).appId !== body.appId) writeAppContext(p, id, { appId: body.appId as string | null, loaded: [] });
+    }
+    catch (e) { return c.json({ error: (e as Error).message }, 400); }
+    evictAgents(username);
+    bus.emit(username, "agent_target", { sessionId: id, appId: body.appId });
+    return c.json({ appId: body.appId });
+  });
+
   app.get("/v1/agent/sessions", (c) => {
     const p = c.get("paths");
     return c.json({ sessions: listSessions(p) });
@@ -2238,7 +2272,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       .filter((l) => l.trim())
       .map((l) => JSON.parse(l) as Record<string, unknown>)
       .filter((r) => r.type === "run" || r.type === "compact");
-    return c.json({ sessionId: id, runs });
+    return c.json({ sessionId: id, runs, appId: readAppContext(c.get("paths"), id).appId });
   });
 
   app.get("/v1/agent/attachments/:id/:name", (c) => {
@@ -2278,6 +2312,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const body = (await c.req.json<{
       message: string;
       sessionId?: string;
+      appId?: string | null;
       model?: string;
       reasoning?: string;
       mode?: string;
@@ -2308,6 +2343,21 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const requestedSessionId = body.sessionId ?? nodeCrypto.randomUUID();
     const runKey = `${u.username}:${requestedSessionId}`;
     if (activeRuns.has(runKey) || runControllers.has(runKey)) return c.json({ error: "A run is already active for this session" }, 409);
+    if (body.appId !== undefined) {
+      try {
+        const current = readAppContext(paths, requestedSessionId);
+        if (!fs.existsSync(contextFile(paths, requestedSessionId))) writeAppContext(paths, requestedSessionId, { appId: body.appId, loaded: [] });
+        else if (current.appId !== body.appId) return c.json({ error: "Conversation app changed. Reopen the chat before sending." }, 409);
+      } catch (e) { return c.json({ error: (e as Error).message }, 400); }
+    }
+    const explicit = /^\/skill\s+([a-z0-9-]+)(?:\s|$)/.exec(body.message);
+    if (explicit) {
+      const context = readAppContext(paths, requestedSessionId);
+      const name = explicit[1]!;
+      if (!discoverSkills(paths, context.appId).skills.some((skill) => skill.name === name)) return c.json({ error: "Skill is not available for the selected app" }, 400);
+      if (!context.loaded.includes(name)) context.loaded.push(name);
+      writeAppContext(paths, requestedSessionId, context);
+    }
     const controller = new AbortController();
     runControllers.set(runKey, controller);
     let agent: UserAgent;
@@ -2367,7 +2417,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
           log.warn(`[agent] auto-compact failed for ${u.username}/${agent.sessionId}: ${(e as Error).message}`);
         }
       }
-      return c.json({ sessionId: agent.sessionId, ...result, ...(autoCompacted ? { autoCompacted: true } : {}) });
+      return c.json({ sessionId: agent.sessionId, appId: readAppContext(paths, agent.sessionId).appId, ...result, ...(autoCompacted ? { autoCompacted: true } : {}) });
     } catch (e) {
       return c.json({ error: (e as Error).message }, 500);
     } finally {
@@ -2475,6 +2525,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const file = path.join(sessionDir(p), `${id}.jsonl`);
     if (!fs.existsSync(file)) return c.json({ error: "session not found" }, 404);
     fs.rmSync(file);
+    fs.rmSync(file.replace(/\.jsonl$/, ".context.json"), { force: true });
     evictAgents(c.get("user").username);
     return c.json({ ok: true });
   });
@@ -2512,6 +2563,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       newId = `fork-${Math.random().toString(36).slice(2, 10)}`;
     }
     writeRuns(p, newId, keep);
+    const context = readAppContext(p, id);
+    if (context.appId === null || readApp(p.apps, context.appId)) writeAppContext(p, newId, context);
     return c.json({ sessionId: newId, runs: keep.length });
   });
 
@@ -4287,15 +4340,12 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const u = c.get("user");
     const a = buildableApp(c);
     if (!a) return c.json({ error: "app not found" }, 404);
-    const capped = await readCappedBody(c, 384 * 1024 * 1024);
-    if (!capped.ok) {
-      c.header("connection", "close");
-      return c.json({ error: capped.error }, 413);
-    }
     let body: { holder?: unknown; rev?: unknown; builder?: unknown; output?: unknown };
     try {
-      body = JSON.parse(new TextDecoder().decode(capped.bytes)) as typeof body;
-    } catch {
+      const bytes = await readBuildBody(c.req.raw, 384 * 1024 * 1024);
+      body = JSON.parse(new TextDecoder().decode(bytes)) as typeof body;
+    } catch (error) {
+      if (error instanceof BuildBodyError) return c.json({ error: error.message }, error.status);
       return c.json({ error: "bad json" }, 400);
     }
     // only the tab holding the lease writes, so two builders never interleave
@@ -4587,7 +4637,9 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
             const preview = dirtyBefore.slice(0, 3).join(", ") + (dirtyBefore.length > 3 ? ` +${dirtyBefore.length - 3} more` : "");
             await git.commitPaths(p.root, u.username, `out-of-band: ${preview}`, dirtyBefore).catch(() => undefined);
           }
-          await git.commitAll(p.root, u.username, `app(${appId}): ${method} ${rel}`).catch(() => undefined);
+          const written = (res.fsWrites ?? []).map((file) => `apps/${appId}/data/${file}`);
+          if (written.length) await git.commitWrittenPaths(p.root, u.username, `app(${appId}): ${method} ${rel}`, written).catch(() => undefined);
+          else await git.commitAll(p.root, u.username, `app(${appId}): ${method} ${rel}`).catch(() => undefined);
         }
         if (res.json !== undefined) return { status: res.status ?? 200, payload: res.json, fsWrites: (res.fsWrites ?? []).map((file) => `apps/${appId}/data/${file}`) };
         return { status: res.status ?? 200, payload: res.text ?? "", ...(res.contentType ? { contentType: res.contentType } : {}) };

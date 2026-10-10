@@ -27,10 +27,16 @@ createRoot(document.getElementById("root")!).render(
 // last thread, so the restore cannot swap the new chat out from under it.
 window.addEventListener("message", (e) => {
   if (e.origin !== location.origin || e.source !== window.parent) return
-  const d = e.data as { __chrysalisAgent?: unknown; text?: unknown } | null
+  const d = e.data as { __chrysalisAgent?: unknown; text?: unknown; appId?: unknown } | null
+  if (d?.__chrysalisAgent === "context") {
+    const state = useAgent.getState()
+    if (!state.sessionId && !state.running) useAgent.setState({ appId: typeof d.appId === "string" ? d.appId : null })
+    return
+  }
   if (d?.__chrysalisAgent !== "start" || typeof d.text !== "string" || !d.text.trim()) return
   const agent = useAgent.getState()
   agent.newChat()
+  if (typeof d.appId === "string") useAgent.setState({ appId: d.appId })
   void agent.send(d.text)
 })
 

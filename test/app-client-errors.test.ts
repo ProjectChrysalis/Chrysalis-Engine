@@ -134,3 +134,17 @@ describe("app client errors", () => {
     expect((await app.request("/v1/apps/demo/client-logs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ events: [] }) })).status).toBe(401);
   });
 });
+
+it("build output accepts gzip and retains lease ownership checks", async () => {
+  const holder = "abcdefgh1234";
+  const lease = await app.request("/v1/apps/demo/build/lease", { method: "POST", headers: h(), body: JSON.stringify({ holder, busy: true }) });
+  expect(await lease.json()).toEqual({ granted: true });
+  const contents = "<!doctype html><p>" + "loaded".repeat(20_000) + "</p>";
+  const payload = { holder, output: { mode: "production", ok: true, files: [{ path: "index.html", contents }], copies: [], errors: [], warnings: [] } };
+  const upload = async (value: unknown) => app.request("/v1/apps/demo/build/output", {
+    method: "PUT", headers: { ...h(), "content-encoding": "gzip" }, body: Bun.gzipSync(JSON.stringify(value)),
+  });
+  expect((await upload({ ...payload, holder: "different123" })).status).toBe(409);
+  expect((await upload(payload)).status).toBe(200);
+  expect(fs.readFileSync(path.join(appDir, "dist/index.html"), "utf8")).toBe(contents);
+});

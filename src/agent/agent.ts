@@ -4,6 +4,7 @@
  * Sessions persist as JSONL run records (agent can read its own history);
  * resume reconstructs dialogue from past runs.
  */
+import { readAppContext, writeAppContext, discoverSkills, skillContext, skillResources } from "./skills.js";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -289,6 +290,7 @@ export class UserAgent {
     const sessionId = opts.sessionId ?? new Date().toISOString().slice(0, 10) + "-" + Math.random().toString(36).slice(2, 8);
     const sFile = sessionFile(paths, sessionId);
 
+    const appContext = readAppContext(paths, sessionId);
     let tools: AgentTool[] = [
       ...buildUserTools(username, paths, {
         ...(opts.notify ? { notify: opts.notify } : {}),
@@ -314,6 +316,37 @@ export class UserAgent {
     if (opts.mode === "plan") {
       tools = tools.filter((t) => !WRITE_TOOLS.has(t.name) || t.name === "ask_user");
     }
+
+    const appPrompt = () => systemPromptFor(username, isAdmin, paths, opts.sandbox, appContext.appId) + "\n\n" + skillContext(paths, appContext) + (opts.mode === "plan" ? PLAN_MODE_PROMPT : "");
+    tools.push({
+      name: "app_target", label: "Choose app", executionMode: "sequential",
+      description: "Select the installed app this conversation works on. Use when the user names an app unambiguously. If ambiguous, ask_user first. This changes app instructions and available skills, not workspace permissions. Null clears the target.",
+      parameters: Type.Object({ appId: Type.Union([Type.String(), Type.Null()]) }),
+      async execute(_id, params) {
+        const { appId } = params as { appId: string | null };
+        if (appContext.appId !== appId) {
+          writeAppContext(paths, sessionId, { appId, loaded: [] });
+          appContext.appId = appId; appContext.loaded = [];
+        }
+        opts.notify?.("agent_target", { sessionId, appId });
+        return { content: [{ type: "text", text: skillContext(paths, appContext) }], details: { appId } };
+      },
+    }, {
+      name: "skill_load", label: "Load app skill", executionMode: "sequential",
+      description: "Load a skill from the conversation's selected app. Choose by its advertised description. Supporting resources remain on disk; loading never executes scripts. Loaded instructions remain available after compaction.",
+      parameters: Type.Object({ name: Type.String() }),
+      async execute(_id, params) {
+        const { name } = params as { name: string };
+        const skill = discoverSkills(paths, appContext.appId).skills.find((s) => s.name === name);
+        if (!skill) throw new Error("Skill is not available for the selected app");
+        const loaded = discoverSkills(paths, appContext.appId).skills.filter((s) => appContext.loaded.includes(s.name) || s.name === name);
+        if (loaded.reduce((bytes, s) => bytes + Buffer.byteLength(s.body), 0) > 65_536) throw new Error("Loaded skills exceed 64 KB. Start a focused conversation or shorten the skills.");
+        const next = { ...appContext, loaded: [...new Set([...appContext.loaded, name])] };
+        writeAppContext(paths, sessionId, next);
+        appContext.loaded = next.loaded;
+        return { content: [{ type: "text", text: `Loaded skill: ${name}\nDirectory: ${path.dirname(skill.file)}\n${skill.body}\nSupporting files (up to 50): ${JSON.stringify(skillResources(paths, skill))}` }], details: { name, appId: appContext.appId } };
+      },
+    });
 
     // the user's context override is the model's window here too: it decides
     // when the session auto-compacts
@@ -347,7 +380,12 @@ export class UserAgent {
         // pi-agent-core's contract: this hook must never throw
         try {
           const st = agent.state;
-          const fit = fitContext(st.model, { messages: msgs }, { force: budget.force, state: trim });
+          const current = msgs.map((message, index) => {
+            if (index === 0 && message.role === "system") return { ...message, content: appPrompt(), sections: undefined };
+            if (message.role === "toolResult" && message.toolName === "skill_load" && !message.isError) return { ...message, content: [{ type: "text" as const, text: "Historical skill load. Currently active skill instructions are in the system prompt." }] };
+            return message;
+          });
+          const fit = fitContext(st.model, { messages: current }, { force: budget.force, state: trim });
           if (fit.advanced) log.info(`[agent:${sessionId}] context trimmed ~${fit.before} → ~${fit.after} tokens (window ${st.model.contextWindow})`);
           return fit.messages;
         } catch (e) {
@@ -357,7 +395,7 @@ export class UserAgent {
       },
       initialState: {
         model,
-        systemPrompt: systemPromptFor(username, isAdmin, paths, opts.sandbox) + (opts.mode === "plan" ? PLAN_MODE_PROMPT : ""),
+        systemPrompt: appPrompt(),
         tools,
         messages,
         // pi-agent-core reads the level from state; undefined = "off"
@@ -988,17 +1026,6 @@ You are in plan mode. You may read, search, and call read-only tools (including 
 - Then present a concise, actionable plan: goals, steps, files you would touch, risks.
 - Do not attempt to execute the plan. When the user approves it, they will switch you out of plan mode and ask you to carry it out.`;
 
-/** The apps this user actually has, as the agent's list of worked examples.
- *  The engine hosts apps of any kind, so nothing here may name a particular
- *  one: the shipped app is just the app that happens to be installed. */
-function activeAppId(paths: UserPaths): string | null {
-  try {
-    return (JSON.parse(fs.readFileSync(paths.settings, "utf8")) as { activeApp?: string | null }).activeApp ?? null;
-  } catch {
-    return null;
-  }
-}
-
 /** A documentation file, capped. Past the cap the model is told which file to
  *  read for the rest rather than handed a silently truncated contract. */
 function readDoc(root: string, rel: string, cap: number): string | null {
@@ -1018,21 +1045,20 @@ function readDoc(root: string, rel: string, cap: number): string | null {
  * under any pressure to get on with the job, and skipping it is how a change
  * that belonged in a data file ends up rewriting the app's source.
  *
- * Only the ACTIVE app's contract rides along — the others are named in the
+ * Only the selected app's contract rides along — the others are named in the
  * app list and read on demand. It all sits in the system prompt, so it is
  * cached between turns rather than paid for on each one.
  */
-function instructionDocs(paths: UserPaths): string {
+function instructionDocs(paths: UserPaths, active: string | null): string {
   const out: string[] = [];
   const add = (heading: string, rel: string, cap: number): void => {
     const body = readDoc(paths.root, rel, cap);
     if (body) out.push(`# ${heading} (${rel})\n${body}`);
   };
   add("The workspace contract", "AGENTS.md", 10_000);
-  const active = activeAppId(paths);
   if (active && /^[a-z0-9][a-z0-9_-]*$/i.test(active)) {
-    add(`The active app's own contract: ${active}`, `apps/${active}/AGENTS.md`, 14_000);
-    add(`The active app's data shapes: ${active}`, `apps/${active}/data/README.md`, 6_000);
+    add(`The selected app's own contract: ${active}`, `apps/${active}/AGENTS.md`, 14_000);
+    add(`The selected app's data shapes: ${active}`, `apps/${active}/data/README.md`, 6_000);
   }
   return out.join("\n\n");
 }
@@ -1061,10 +1087,9 @@ function notesIndex(paths: UserPaths, username: string): string {
   return `# ${username}'s notes (plans, specs, reference)\nThese are the user's own working files. Read the ones that bear on what you are about to do, BEFORE you start — they are where the plan for this work lives, and they outrank your own guess at what was meant. Write new ones there when asked to keep a plan or a spec.\n${rows.join("\n")}`;
 }
 
-/** A cheap fingerprint of every file that feeds the system prompt: each one's
- *  size and mtime. Cheaper than re-reading them on every request, and it
- *  changes whenever any of them does. */
-export function instructionDocsStamp(paths: UserPaths): string {
+/** Instruction identity for cached agents, including the conversation target
+ * and current skill contents. */
+export function instructionDocsStamp(paths: UserPaths, sessionId?: string): string {
   const parts: string[] = [];
   const stamp = (rel: string): void => {
     try {
@@ -1077,7 +1102,9 @@ export function instructionDocsStamp(paths: UserPaths): string {
   stamp("AGENTS.md");
   stamp("persona.md");
   stamp("notes");
-  const active = activeAppId(paths);
+  const context = sessionId ? readAppContext(paths, sessionId) : { appId: null, loaded: [] };
+  const active = context.appId;
+  parts.push(JSON.stringify(context), skillContext(paths, context));
   parts.push(`active:${active ?? "-"}`);
   if (active && /^[a-z0-9][a-z0-9_-]*$/i.test(active)) {
     stamp(`apps/${active}/AGENTS.md`);
@@ -1089,19 +1116,18 @@ export function instructionDocsStamp(paths: UserPaths): string {
   return parts.join("|");
 }
 
-function installedAppsSection(paths: UserPaths): string {
+function installedAppsSection(paths: UserPaths, active: string | null): string {
   const apps = listApps(paths.apps);
   if (!apps.length) return "";
-  const active = activeAppId(paths);
   const lines = apps.map((a) => {
     const note = a.manifest.description ? ` — ${a.manifest.description.split(/(?<=\.)\s/)[0]}` : "";
-    const activeMark = a.id === active ? " [ACTIVE]" : "";
+    const activeMark = a.id === active ? " [TARGET]" : "";
     return `- apps/${a.id}/ (${a.manifest.name})${activeMark}${note}${a.pluginIds.length ? ` · plugins: ${a.pluginIds.join(", ")}` : ""}`;
   });
   return `${lines.join("\n")}\n`;
 }
 
-function systemPromptFor(username: string, isAdmin: boolean, paths: UserPaths, sandbox?: AgentToolOptions["sandbox"]): string {
+function systemPromptFor(username: string, isAdmin: boolean, paths: UserPaths, sandbox?: AgentToolOptions["sandbox"], appId: string | null = null): string {
   const base = `You are the personal agent of "${username}" on their Chrysalis instance — a local engine where EVERYTHING is files you can edit (like code): apps, characters, chats, plugins, looks.
 
 # Workspace layout (your whole world)
@@ -1135,7 +1161,7 @@ manifest.json may declare schedule: { intervalMs } → onTick(ctx, host) fires o
 - Static assets go in public/ (served at the app root). State: useState or @preact/signals-react (signal/effect — same API on React). Fast refresh preserves component state, not module state.
 
 # Learn from the apps already installed
-${installedAppsSection(paths)}Before editing an app, read its own AGENTS.md and its data/README.md when present: they name the exact files, field shapes and gotchas so you never have to rediscover the layout. To learn how to build one, read its plugins/ for backend behavior (routes, two-phase LLM turns, how it lays out data/) and its src/ for the UI. An app is free to be anything — a chat studio, a visual novel, a game, a tool — so take the patterns, not the subject matter. New app: app_create (UI app scaffolded), app_deps, then write plugins + src/ + seed data.
+${installedAppsSection(paths, appId)}Before editing an app, read its own AGENTS.md and its data/README.md when present: they name the exact files, field shapes and gotchas so you never have to rediscover the layout. To learn how to build one, read its plugins/ for backend behavior (routes, two-phase LLM turns, how it lays out data/) and its src/ for the UI. An app is free to be anything — a chat studio, a visual novel, a game, a tool — so take the patterns, not the subject matter. New app: app_create (UI app scaffolded), app_deps, then write plugins + src/ + seed data.
 
 # Workflow rules
 - write_file/edit_file commit each change immediately under your name; after changes made through bash, commit them in the shell (git add -A && git commit -m "..."). git status and git diff review work, git log and git show read history, git restore --source <commit> -- <path> or git revert <commit> undo.
@@ -1164,11 +1190,11 @@ ${installedAppsSection(paths)}Before editing an app, read its own AGENTS.md and 
       "- Use it for data work, edits across many files, searches and checking your work; read_file/edit_file remain better for a single file.";
   }
   // The contracts themselves, not a pointer to them: the workspace's, the
-  // active app's, and an index of the user's own notes. Last, so that where
+  // selected app's, and an index of the user's own notes. Last, so that where
   // they disagree with the general prompt above, they are what was read most
   // recently — these files describe THIS install, the prompt above describes
   // Chrysalis in general.
-  const docs = instructionDocs(paths);
+  const docs = instructionDocs(paths, appId);
   if (docs) out += `\n\n${docs}`;
   const notes = notesIndex(paths, username);
   if (notes) out += `\n\n${notes}`;

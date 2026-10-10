@@ -2,7 +2,7 @@ import { MessageQueue } from "@/MessageQueue"
 import { tr } from "@/i18n"
 "use client";
 
-import { ComposerSettings } from "@/Header";
+import { ComposerSettingsMenu } from "@/Header";
 import { ContextActions } from "@/ContextActions";
 
 import {
@@ -10,7 +10,6 @@ import {
   ComposerAttachments,
   UserMessageAttachments,
 } from "@/components/assistant-ui/elements/attachment.aui";
-import { ContextDisplay } from "@/components/assistant-ui/elements/context-display";
 import { File } from "@/components/assistant-ui/elements/file";
 import { ThreadFollowupSuggestions } from "@/components/assistant-ui/elements/follow-up-suggestions.aui";
 import { Image } from "@/components/assistant-ui/elements/image";
@@ -330,29 +329,6 @@ const ThreadSuggestionItem: FC = () => {
   );
 };
 
-/** Context fill of the last run (input + cached input) against the selected
- *  model's window — engine-reported numbers only; hidden while unknown. */
-const ComposerContextRing: FC = () => {
-  const usage = useAgentStore((s) => s.usage)
-  const model = useAgentStore((s) => s.model)
-  const models = useAgentStore((s) => s.models)
-  if (!usage) return null
-  const window = models.find((m) => `${m.provider}/${m.modelId}` === model)?.contextWindow
-  if (!window) return null
-  return (
-    <ContextDisplay.Ring
-      modelContextWindow={window}
-      usage={{
-        totalTokens: usage.input + usage.cacheRead,
-        inputTokens: usage.input,
-        cachedInputTokens: usage.cacheRead,
-        outputTokens: usage.output,
-      }}
-      side="top"
-    />
-  )
-};
-
 /** Unsent composer text lives under a per-thread key so a reload — the app's
  *  own reload after a rebuild included — never eats a half-written message. */
 const draftKey = (sessionId: string | null) =>
@@ -438,15 +414,13 @@ const ComposerAction: FC = () => {
   const stopping = useAgentStore((s) => s.stopping);
   const aui = useAui();
   return (
-    // one row at every width: the model name truncates before anything wraps
-    <div className="aui-composer-action-wrapper relative flex items-center justify-between gap-1">
+    <div className="aui-composer-action-wrapper agent-composer-actions">
       <div className="flex min-w-0 flex-1 items-center gap-1">
         <ComposerAddAttachment />
-        <ComposerSettings />
+        <ComposerSettingsMenu />
+        <ContextActions />
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
-        <ComposerContextRing />
-        <ContextActions />
         <AuiIf condition={(s) => s.thread.capabilities.dictation}>
           <AuiIf condition={(s) => s.composer.dictation == null}>
             <ComposerPrimitive.Dictate asChild>

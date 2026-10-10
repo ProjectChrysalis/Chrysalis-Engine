@@ -51,6 +51,7 @@ export interface EngineRun {
 }
 
 export interface AgentResponse {
+  appId?: string | null
   sessionId: string
   finalText: string
   turns: EngineTurn[]
@@ -115,7 +116,7 @@ export async function api<T>(method: string, p: string, body?: unknown): Promise
 
 export const sessionsApi = {
   list: () => api<{ sessions: EngineSession[] }>("GET", "/v1/agent/sessions").then((r) => r.sessions ?? []),
-  get: (id: string) => api<{ runs: EngineRun[] }>("GET", `/v1/agent/sessions/${encodeURIComponent(id)}`),
+  get: (id: string) => api<{ runs: EngineRun[]; appId: string | null }>("GET", `/v1/agent/sessions/${encodeURIComponent(id)}`),
   remove: (id: string) => api("DELETE", `/v1/agent/sessions/${encodeURIComponent(id)}`),
   rename: (id: string, title: string) =>
     api<{ ok: boolean }>("POST", `/v1/agent/sessions/${encodeURIComponent(id)}/rename`, { title }),
@@ -131,6 +132,7 @@ export const sessionsApi = {
 }
 
 export interface SendInput {
+  appId?: string | null;
   message: string
   sessionId?: string
   mode?: "normal" | "plan" | "accept"
@@ -193,3 +195,9 @@ export async function agentCommands(): Promise<UserCommand[]> {
 }
 
 export const agentState = (sessionId: string): Promise<{ running: boolean; queue: { id: string; text: string }[]; ask?: { id: string; sessionId: string; question: string; options?: string[]; detail?: string } | null }> => api("GET", `/v1/agent/state?sessionId=${encodeURIComponent(sessionId)}`)
+
+export const agentApps = () => api<{ apps: { id: string; name: string }[] }>("GET", "/v1/agent/apps");
+export const setAgentTarget = (id: string, appId: string | null) => api("POST", `/v1/agent/sessions/${encodeURIComponent(id)}/target`, { appId });
+export const agentSkills = (id: string) => api<{ skills: { name: string; description: string }[]; errors: string[] }>("GET", `/v1/agent/sessions/${encodeURIComponent(id)}/skills`);
+
+export const appSkills = (id: string) => api<{ skills: { name: string; description: string }[]; errors: string[] }>("GET", `/v1/agent/apps/${encodeURIComponent(id)}/skills`);

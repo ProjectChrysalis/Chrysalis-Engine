@@ -39,6 +39,7 @@ export function userDir(dataDir: string, username: string): string {
  * and all RP entities are app files the agent edits like code (SPEC-v2 §1).
  */
 export const AGENT_WRITE_DENYLIST: readonly { pattern: RegExp; reason: string }[] = [
+  { pattern: /^agent\/sessions\/[^/]+\.context\.json(?:\.tmp)?$/i, reason: "conversation targets and loaded skills are managed by agent tools" },
   { pattern: /^auth\.json$/i, reason: "credentials are never agent-editable" },
   // the real file lives outside the workspace; refuse the name here rather
   // than let a write land as a silent no-op

@@ -1,5 +1,8 @@
 // Italian (it) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Choose app": "Scegli app",
+  "Working app": "App di lavoro",
+  "missing": "mancante",
   " · disabled": " · disattivato",
   " · needs key": " · chiave richiesta",
   " · off": " · spento",
@@ -453,6 +456,10 @@ const dict = {
   "Confirm": "Conferma",
   "Context auto-compacted": "Contesto riassunto automaticamente",
   "Context usage": "Uso del contesto",
+  "Last request": "Ultima richiesta",
+  "Input tokens": "Token di input",
+  "Cached input": "Input in cache",
+  "Usage available after a run.": "Utilizzo disponibile dopo un’esecuzione.",
   "Conversations": "Conversazioni",
   "Copy image": "Copia immagine",
   "Current model": "Modello attuale",

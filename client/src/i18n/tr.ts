@@ -1,5 +1,8 @@
 // Turkish (tr) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Choose app": "Uygulama seç",
+  "Working app": "Çalışılan uygulama",
+  "missing": "eksik",
   " · disabled": " · devre dışı",
   " · needs key": " · anahtar gerekli",
   " · off": " · kapalı",
@@ -453,6 +456,10 @@ const dict = {
   "Confirm": "Onayla",
   "Context auto-compacted": "Bağlam otomatik özetlendi",
   "Context usage": "Bağlam kullanımı",
+  "Last request": "Son istek",
+  "Input tokens": "Girdi tokenları",
+  "Cached input": "Önbellekteki girdi",
+  "Usage available after a run.": "Kullanım, çalıştırma sonrasında gösterilir.",
   "Conversations": "Sohbetler",
   "Copy image": "Görseli kopyala",
   "Current model": "Geçerli model",

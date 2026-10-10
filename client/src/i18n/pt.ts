@@ -1,5 +1,8 @@
 // Brazilian Portuguese (pt) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Choose app": "Escolher aplicativo",
+  "Working app": "Aplicativo de trabalho",
+  "missing": "ausente",
   " · disabled": " · desativada",
   " · needs key": " · falta chave",
   " · off": " · desligado",
@@ -453,6 +456,10 @@ const dict = {
   "Confirm": "Confirmar",
   "Context auto-compacted": "Contexto resumido automaticamente",
   "Context usage": "Uso do contexto",
+  "Last request": "Última solicitação",
+  "Input tokens": "Tokens de entrada",
+  "Cached input": "Entrada em cache",
+  "Usage available after a run.": "Uso disponível após uma execução.",
   "Conversations": "Conversas",
   "Copy image": "Copiar imagem",
   "Current model": "Modelo atual",

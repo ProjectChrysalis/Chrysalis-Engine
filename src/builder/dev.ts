@@ -342,13 +342,13 @@ export class DevSession {
 
   private html(meta: DevMeta): string {
     const scripts =
-      `<script src="/client/builder/runtime.js"></script>` +
+      `<script defer src="/client/builder/runtime.js"></script>` +
       (meta.depsCss ? `<link rel="stylesheet" href="./${meta.depsCss}">` : "") +
-      `<script src="./${meta.depsJs}"></script>` +
-      `<script src="./${meta.snapshot}"></script>` +
-      meta.hot.map((h) => `<script src="./${h}"></script>`).join("") +
+      `<script defer src="./${meta.depsJs}"></script>` +
+      `<script defer src="./${meta.snapshot}"></script>` +
+      meta.hot.map((h) => `<script defer src="./${h}"></script>`).join("") +
       // a file, not inline: the app frame's policy allows no inline script
-      `<script src="./dev/boot.js?v=${meta.seq}"></script>`;
+      `<script defer src="./dev/boot.js?v=${meta.seq}"></script>`;
     return fillHtml(this.plan!, () => "", scripts);
   }
 

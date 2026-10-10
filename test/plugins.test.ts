@@ -791,3 +791,16 @@ it("stores deduplicated scoped media, strips PNG text, and reads a bounded archi
     expect(fs.readFileSync(path.join(root, "__media", files[0]!)).includes(Buffer.from("chara"))).toBe(false);
   } finally { await box.dispose(); }
 }, 20_000);
+
+it("filesystem change reports include recursively removed files", async () => {
+  const appData = path.join(dir, "data");
+  fs.mkdirSync(path.join(appData, "nested"), { recursive: true });
+  fs.writeFileSync(path.join(appData, "nested/a.json"), "{}");
+  fs.writeFileSync(path.join(appData, "nested/b.json"), "{}");
+  writePlugin("remove", { id: "remove", name: "Remove", version: "1.0.0", permissions: ["fs", "routes"] },
+    'export function handleRoute(req, host) { host.fs.remove("nested"); host.fs.write("new.json", "{}"); return { json: { ok: true } }; }');
+  const plugin = discoverPlugins(path.join(dir, "plugins"))[0]!;
+  plugin.fsRoot = appData;
+  const out = await runPluginRoute(plugin, { method: "POST", path: "/", query: {}, body: null }, deps(["fs", "routes"]));
+  expect(out?.fsWrites?.sort()).toEqual(["nested/a.json", "nested/b.json", "new.json"]);
+});

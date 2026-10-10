@@ -109,6 +109,12 @@ export interface ModelPricing {
   cacheWrite: number;
 }
 
+export interface GenerationReplay {
+  /** Visible answer this sequence belongs to; edits invalidate its binding. */
+  text: string;
+  messages: (AssistantMessage | ToolResultMessage)[];
+}
+
 export interface GenerateRequest {
   /**
    * Chat turns sent to the model. `system` entries are allowed anywhere in
@@ -117,7 +123,7 @@ export interface GenerateRequest {
    * Context carries just one — and any later system entry keeps its index and
    * is sent as a user turn, because where it sits is what it means.
    */
-  messages: { role: "user" | "assistant" | "system"; content: string }[];
+  messages: { role: "user" | "assistant" | "system"; content: string; replay?: GenerationReplay; reasoning?: string; reasoningModel?: string }[];
   systemPrompt?: string;
   model?: string | null; // "provider/model-id" or null = default/first available
   /** Stable id for this conversation (chat id, agent session, …). Keys
@@ -175,6 +181,7 @@ export interface GenerateRequest {
 
 export interface GenerateResult {
   text: string;
+  replay?: GenerationReplay;
   /** Reasoning-model thinking (provider-reported ThinkingContent, or inline
    *  tags split out via reasoningTags) — separate from the answer text. */
   reasoning?: string;
@@ -697,7 +704,10 @@ export class UserModelService {
     }
 
     const resolved = (await this.resolvePromptFormat(model.provider, model.id, req.promptFormat))!;
-    const prompt = renderPrompt(resolved.format, req.systemPrompt, req.messages, req.assistantPrefill);
+    const turns = req.messages.map((m) => m.role === "assistant" && m.reasoning && m.reasoningModel === `${model.provider}/${model.id}`
+      ? { ...m, content: `${req.reasoningTags?.open ?? "<think>"}\n${m.reasoning}\n${req.reasoningTags?.close ?? "</think>"}\n\n${m.content}` }
+      : m);
+    const prompt = renderPrompt(resolved.format, req.systemPrompt, turns, req.assistantPrefill);
 
     const extra = { ...req.presetParams?.params } as Record<string, unknown>;
     const stop = [...new Set([...(Array.isArray(extra.stop) ? (extra.stop as unknown[]).map(String) : []), ...stopStrings(resolved.format)])];
@@ -868,23 +878,28 @@ export class UserModelService {
       .slice(lead)
       .filter((m) => m.role !== "system" || m.content.trim())
       .map((m) => (m.role === "system" ? { role: "user" as const, content: m.content } : m))
-      .map((m) =>
-        m.role === "user"
-          ? { role: "user", content: m.content, timestamp: Date.now() }
-          : {
-              // pi-ai expects full AssistantMessage objects in context (usage is
-              // required — estimate.js walks it). Zero-usage anchors are ignored
-              // for estimation, which falls back to char-based tokens.
-              role: "assistant",
-              content: [{ type: "text", text: m.content }],
-              api: model.api,
-              provider: model.provider,
-              model: model.id,
-              usage: zeroUsage(),
-              stopReason: "stop",
-              timestamp: Date.now(),
-            },
-      ) as Message[];
+      .flatMap((m): Message[] => {
+        if (m.role === "user") return [{ role: "user", content: m.content, timestamp: Date.now() }];
+        const replay = m.replay;
+        if (replay?.text === m.content && Array.isArray(replay.messages) && replay.messages.length &&
+          replay.messages.every((r) => Array.isArray(r.content) &&
+            (r.role === "toolResult" || (r.role === "assistant" && r.usage && r.usage.cost && r.provider === model.provider && r.model === model.id && r.api === model.api)))) {
+          return replay.messages.map((r) => r.role === "assistant" ? { ...r,
+            content: r.content.map((b) => b.type === "thinking" && !b.thinkingSignature && !b.redacted
+              ? { type: "text" as const, text: `<think>\n${b.thinking}\n</think>` } : b),
+          } : { ...r });
+        }
+        return [{
+          role: "assistant",
+          content: [
+            ...(m.reasoning && m.reasoningModel === `${model.provider}/${model.id}`
+              ? [{ type: "text" as const, text: `<think>\n${m.reasoning}\n</think>` }] : []),
+            { type: "text", text: m.content },
+          ],
+          api: model.api, provider: model.provider, model: model.id,
+          usage: zeroUsage(), stopReason: "stop", timestamp: Date.now(),
+        }];
+      });
     const toolTrace: GenerateResult["toolTrace"] = [];
     // legacy presets write the short level "med"; pi-ai clamps unknown levels
     // to OFF (silently disabling thinking) — normalize to "medium"
@@ -1023,6 +1038,7 @@ export class UserModelService {
       }
     };
 
+    const replayMessages: GenerationReplay["messages"] = [];
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       const context: Context = {
         systemPrompt: systemPrompt ? systemPrompt + schemaSystemSuffix : schemaSystemSuffix.trim() || undefined,
@@ -1064,9 +1080,11 @@ export class UserModelService {
           pushRoundParts(final);
           res.parts = parts;
         }
+        if (final.stopReason !== "aborted") res.replay = { text: res.text, messages: [...replayMessages, final] };
         return res;
       }
 
+      replayMessages.push(final);
       // keep the round's text for the joined result text; parts get the
       // round's blocks in order, then the tool calls that ended it
       const roundText = final.content
@@ -1102,6 +1120,7 @@ export class UserModelService {
           timestamp: Date.now(),
         };
         messages.push(tr);
+        replayMessages.push(tr);
       }
     }
     // exhausted rounds: do one final call WITHOUT tools to force a text answer
@@ -1123,6 +1142,7 @@ export class UserModelService {
       pushRoundParts(final);
       exhausted.parts = parts;
     }
+    if (final.stopReason !== "aborted") exhausted.replay = { text: exhausted.text, messages: [...replayMessages, final] };
     return exhausted;
   }
 

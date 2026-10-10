@@ -359,6 +359,12 @@ export function createPlugin(o: PluginOptions): esbuild.Plugin {
         } else if (loader !== "css" && loader !== "local-css" && loader !== "json") {
           contents = transformNewUrl(await transformGlobs(contents, args.path, walk));
         }
+        if (loader === "css" || loader === "local-css") {
+          // Asset callbacks can arrive serially from the compiler. Resolve
+          // them together so remote file checks share a transport batch.
+          const urls = [...contents.matchAll(/url\(\s*(['"]?)([^'"\)]+)\1\s*\)/g)];
+          await Promise.all(urls.map((m) => resolveImport(o, m[2]!.trim(), args.path, "url-token")));
+        }
         return { contents, loader };
       });
 

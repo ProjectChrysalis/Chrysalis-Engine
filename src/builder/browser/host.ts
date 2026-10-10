@@ -10,6 +10,8 @@
  * chose; it can never name another app or reach anything but the file route.
  */
 
+import { buildUpload } from "./upload.js";
+
 declare const __BUILDER_VERSION__: string;
 
 interface BuildMessage {
@@ -426,7 +428,7 @@ class AppBuild {
     }
     try {
       this.status({ phase: "building", message: "Saving build" });
-      await api(`${this.base()}/output`, { method: "PUT", body: JSON.stringify({ holder: this.holder, rev, builder: VERSION, output }) });
+      await api(`${this.base()}/output`, { method: "PUT", ...await buildUpload({ holder: this.holder, rev, builder: VERSION, output }) });
     } catch (e) {
       // the output never landed, but the session in the frame already advanced
       // (seq, maybe a new snapshot): keeping it would make the next upload

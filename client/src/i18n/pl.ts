@@ -1,5 +1,8 @@
 // Polish (pl) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Choose app": "Wybierz aplikację",
+  "Working app": "Aplikacja robocza",
+  "missing": "brak",
   " · disabled": " · wyłączone",
   " · needs key": " · wymaga klucza",
   " · off": " · wył.",
@@ -453,6 +456,10 @@ const dict = {
   "Confirm": "Potwierdź",
   "Context auto-compacted": "Kontekst automatycznie podsumowany",
   "Context usage": "Użycie kontekstu",
+  "Last request": "Ostatnie żądanie",
+  "Input tokens": "Tokeny wejściowe",
+  "Cached input": "Wejście w pamięci podręcznej",
+  "Usage available after a run.": "Zużycie dostępne po uruchomieniu.",
   "Conversations": "Rozmowy",
   "Copy image": "Kopiuj obraz",
   "Current model": "Bieżący model",

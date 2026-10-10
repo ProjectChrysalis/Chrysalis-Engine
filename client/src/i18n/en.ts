@@ -2,6 +2,9 @@
 // {name} placeholders and falls back to the key itself, so a locale dictionary
 // only needs the entries it translates.
 const en = {
+  "Choose app": "",
+  "Working app": "",
+  "missing": "",
   " · disabled": "",
   " · needs key": "",
   " · off": "",
@@ -455,6 +458,10 @@ const en = {
   "Confirm": "",
   "Context auto-compacted": "",
   "Context usage": "",
+  "Last request": "",
+  "Input tokens": "",
+  "Cached input": "",
+  "Usage available after a run.": "",
   "Conversations": "",
   "Copy image": "",
   "Current model": "",

@@ -44,3 +44,29 @@ test("production builds report reading and bundling without inventing a percenta
   expect(out.ok).toBe(true);
   expect(stages).toEqual(["reading", "bundling"]);
 });
+
+test("CSS asset checks share a batch and startup scripts defer in order", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "build-assets-"));
+  dirs.push(root);
+  const app = path.join(root, "sample");
+  fs.mkdirSync(app);
+  fs.writeFileSync(path.join(app, "index.html"), '<script type="module" src="./main.js"></script>');
+  fs.writeFileSync(path.join(app, "main.js"), 'import "./style.css"; document.body.textContent = "Ready";');
+  fs.writeFileSync(path.join(app, "style.css"), '@font-face {font-family: a; src: url("./a.woff2"), url("./b.woff2")}');
+  fs.writeFileSync(path.join(app, "a.woff2"), "first");
+  fs.writeFileSync(path.join(app, "b.woff2"), "second");
+  const hashBatches: string[][] = [];
+  const ctx = await createContext(async (ops) => {
+    const hashes = ops.filter((op) => op.op === "hash").map((op) => op.path);
+    if (hashes.length) hashBatches.push(hashes);
+    return appFsOps(root, "sample", ops);
+  }, { esbuild, tailwindSheets: {} }, "development");
+  const out = await new DevSession(ctx, null).full();
+  expect(out.errors).toEqual([]);
+  expect(hashBatches.some((batch) => batch.includes("a.woff2") && batch.includes("b.woff2"))).toBe(true);
+  expect(out.copies?.filter((copy) => copy.from.endsWith(".woff2"))).toHaveLength(2);
+  const html = out.files.find((file) => file.path === "index.html")!.contents;
+  expect(html).toContain('<script defer src="/client/builder/runtime.js"');
+  expect(html.indexOf("runtime.js")).toBeLessThan(html.indexOf("./dev/app-"));
+  expect(html.indexOf("./dev/app-")).toBeLessThan(html.indexOf("./dev/boot.js"));
+});

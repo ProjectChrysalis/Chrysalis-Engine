@@ -11,13 +11,12 @@
   var CH = (window.ChrysalisBridgeHost = window.ChrysalisBridgeHost || {});
 
   var frames = new Map(); // contentWindow -> { appId, username, nonce }
-  var wsClients = new Map(); // "<appId>\n<wsId>" -> WebSocket
   var MAX_BODY = 64 * 1024 * 1024;
 
-  /** Sockets are owned by the frame that opened them: ids are chosen by the
-   *  app, so a shared map would let one app send on or close another's. */
-  function wsKey(appId, wsId) {
-    return appId + "\n" + String(wsId);
+  function closeSockets(record) {
+    var sockets = Array.from(record.sockets.values());
+    record.sockets.clear();
+    sockets.forEach(function (ws) { try { ws.close(); } catch { /* already closed */ } });
   }
 
   function randomNonce() {
@@ -252,22 +251,29 @@
       send(source, { __chrysalis: 1, type: "ws-event", wsId: d.wsId, event: "error" });
       return;
     }
-    var ownKey = wsKey(record.appId, d.wsId);
-    wsClients.set(ownKey, ws);
+    var ownKey = String(d.wsId);
+    var previous = record.sockets.get(ownKey);
+    record.sockets.set(ownKey, ws);
+    if (previous) { try { previous.close(); } catch { /* already closed */ } }
+    function current() { return frames.get(source) === record && record.sockets.get(ownKey) === ws; }
     ws.binaryType = "arraybuffer";
     ws.onopen = function () {
+      if (!current()) return;
       send(source, { __chrysalis: 1, type: "ws-event", wsId: d.wsId, event: "open", protocol: ws.protocol });
     };
     // /v1/ws carries the whole user event bus: only this app's events pass
     ws.onmessage = function (ev) {
+      if (!current()) return;
       if (typeof ev.data !== "string" || !eventAllowed(record.appId, record.trusted === true, ev.data)) return;
       send(source, { __chrysalis: 1, type: "ws-event", wsId: d.wsId, event: "message", data: ev.data, binary: false });
     };
     ws.onclose = function (ev) {
-      wsClients.delete(ownKey);
+      if (!current()) return;
+      record.sockets.delete(ownKey);
       send(source, { __chrysalis: 1, type: "ws-event", wsId: d.wsId, event: "close", code: ev.code, reason: ev.reason });
     };
     ws.onerror = function () {
+      if (!current()) return;
       send(source, { __chrysalis: 1, type: "ws-event", wsId: d.wsId, event: "error" });
     };
   }
@@ -316,6 +322,11 @@
     var d = e.data;
     if (!d || d.__chrysalis !== 1) return;
     if (d.type === "hello") {
+      if (!record.handshake || record.documentId !== d.documentId) {
+        closeSockets(record);
+        record.documentId = d.documentId;
+        record.handshake = true;
+      }
       send(e.source, { __chrysalis: 1, type: "init", nonce: record.nonce });
       return;
     }
@@ -332,11 +343,11 @@
     else if (d.type === "fetch") handleFetch(record, e.source, d);
     else if (d.type === "ws-open") handleWsOpen(record, e.source, d);
     else if (d.type === "ws-send") {
-      var ws = wsClients.get(wsKey(record.appId, d.wsId));
+      var ws = record.sockets.get(String(d.wsId));
       if (ws && ws.readyState === 1) ws.send(d.binary ? b64ToBytes(d.data) : d.data);
     } else if (d.type === "ws-close") {
-      var closing = wsClients.get(wsKey(record.appId, d.wsId));
-      if (closing) { wsClients.delete(wsKey(record.appId, d.wsId)); try { closing.close(d.code, d.reason); } catch { /* already closed */ } }
+      var closing = record.sockets.get(String(d.wsId));
+      if (closing) { record.sockets.delete(String(d.wsId)); try { closing.close(d.code, d.reason); } catch { /* already closed */ } }
     }
   });
 
@@ -352,10 +363,14 @@
    *  contentWindow and only with the nonce minted here. `trusted` = shipped
    *  by the engine (see allowedRequest/eventAllowed). */
   CH.serve = function (iframe, appId, username, trusted) {
-    var record = { appId: appId, username: username, nonce: randomNonce(), trusted: trusted === true };
-    frames.set(iframe.contentWindow, record);
+    var source = iframe.contentWindow;
+    var previous = frames.get(source);
+    if (previous) closeSockets(previous);
+    var record = { appId: appId, username: username, nonce: randomNonce(), trusted: trusted === true, sockets: new Map() };
+    frames.set(source, record);
     return function unserve() {
-      frames.delete(iframe.contentWindow);
+      if (frames.get(source) === record) frames.delete(source);
+      closeSockets(record);
       if (pendingDownload && pendingDownload.record === record) pendingDownload.close();
     };
   };

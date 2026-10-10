@@ -298,7 +298,20 @@
   function makeStorage(which, initial) {
     var data = {};
     Object.keys(initial || {}).forEach(function (k) { data[k] = String(initial[k]); });
+    seed[which] = data;
     function pushOp(op, key, value) {
+      // A frame reload uses its current URL, not the host's newer storage.
+      // Keep that bootstrap snapshot current without adding history entries.
+      try {
+        var params = new URLSearchParams(location.hash.slice(1));
+        params.set("__storage", bytesToB64(new TextEncoder().encode(JSON.stringify(seed))));
+        var hash = "#" + params.toString();
+        if (hash !== location.hash) {
+          try { window.history.replaceState(null, "", hash); }
+          catch { location.replace(hash); }
+        }
+      } catch (e) { console.warn("Could not refresh app storage snapshot", e); }
+
       // posted even before the handshake: a write followed immediately by a
       // reload used to sit in a queue that died with the frame, losing the
       // write (and looping any reload guard built on it). The host accepts
@@ -443,10 +456,11 @@
   // the host may not have registered this frame yet when the script runs, so
   // hello repeats until init lands
   if (parentWin) {
-    post({ type: "hello" });
+    var documentId = String(Date.now()) + ":" + Math.random().toString(36).slice(2);
+    post({ type: "hello", documentId: documentId });
     var helloTimer = setInterval(function () {
       if (ready) { clearInterval(helloTimer); return; }
-      post({ type: "hello" });
+      post({ type: "hello", documentId: documentId });
     }, 300);
   }
 })();

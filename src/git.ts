@@ -242,8 +242,19 @@ export async function commitWrittenPaths(dir: string, username: string, message:
     for (const filepath of new Set(paths)) {
       const full = path.resolve(dir, filepath);
       if (!full.startsWith(path.resolve(dir) + path.sep) || gitBoundaryIgnored(filepath)) continue;
-      if (!fs.existsSync(full) || !fs.statSync(full).isFile()) continue;
-      await git.add({ fs, dir, filepath });
+      const state = await git.status({ fs, dir, filepath });
+      if (state === "absent" || state === "ignored") continue;
+      if (state === "unmodified") {
+        const head = await resolveHead(dir);
+        const [{ oid: committed }, { oid: current }] = await Promise.all([
+          git.readBlob({ fs, dir, oid: head, filepath }),
+          git.hashBlob({ object: fs.readFileSync(full) }),
+        ]);
+        if (committed === current) continue;
+      }
+      if (!fs.existsSync(full)) await git.remove({ fs, dir, filepath });
+      else if (fs.statSync(full).isFile()) await git.add({ fs, dir, filepath });
+      else continue;
       added++;
     }
     return added ? commitWithReflog(dir, username, message, false) : null;

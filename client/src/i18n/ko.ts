@@ -1,5 +1,8 @@
 // Korean (ko) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Choose app": "앱 선택",
+  "Working app": "작업 대상 앱",
+  "missing": "없음",
   " · disabled": " · 사용 안 함",
   " · needs key": " · 키 필요",
   " · off": " · 꺼짐",
@@ -453,6 +456,10 @@ const dict = {
   "Confirm": "확인",
   "Context auto-compacted": "컨텍스트 자동 요약됨",
   "Context usage": "컨텍스트 사용량",
+  "Last request": "마지막 요청",
+  "Input tokens": "입력 토큰",
+  "Cached input": "캐시된 입력",
+  "Usage available after a run.": "실행 후 사용량이 표시됩니다.",
   "Conversations": "대화",
   "Copy image": "이미지 복사",
   "Current model": "현재 모델",

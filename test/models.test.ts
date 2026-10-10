@@ -127,6 +127,60 @@ describe("UserModelService message construction (regression: assistant history)"
     expect(result.toolTrace?.[0]?.resultText).toBe("rolled 42");
   }, 20_000);
 
+  it("replays signed thinking, signed text and tool results across turns", async () => {
+    const svc = makeService();
+    const handle = fauxProvider({ models: [{ id: "replay", reasoning: true }] });
+    handle.setResponses([
+      { ...fauxAssistantMessage([
+        { type: "thinking", thinking: "Plan the roll", thinkingSignature: "signed-think" },
+        { type: "toolCall", id: "r1", name: "roll", arguments: {}, thoughtSignature: "signed-call" },
+      ]), stopReason: "toolUse" },
+      fauxAssistantMessage([{ type: "text", text: "Five", textSignature: "signed-text" }]),
+    ]);
+    svc.models.setProvider(handle.provider);
+    const first = await svc.generate({ model: "faux/replay", messages: [{ role: "user", content: "Roll" }],
+      tools: [{ name: "roll", description: "Roll", parameters: { type: "object" } as never }],
+      executeTool: async () => ({ text: "5" }),
+    });
+    expect(first.replay?.messages.map((m) => m.role)).toEqual(["assistant", "toolResult", "assistant"]);
+    let seen = "";
+    handle.setResponses([(ctx) => { seen = JSON.stringify(ctx.messages); return fauxAssistantMessage("Next"); }]);
+    const run = (model: string, content = first.text) => svc.generate({ model, messages: [
+      { role: "user", content: "Roll" }, { role: "assistant", content, replay: first.replay }, { role: "user", content: "Next" },
+    ] });
+    await run("faux/replay");
+    expect(seen).toContain("signed-think");
+    expect(seen).toContain("signed-call");
+    expect(seen).toContain("signed-text");
+    expect(seen).toContain('"role":"toolResult"');
+    handle.setResponses([(ctx) => { seen = JSON.stringify(ctx.messages); return fauxAssistantMessage("Next"); }]);
+    await run("faux/replay", "Edited answer");
+    expect(seen).not.toContain("signed-think");
+    expect(seen).not.toContain("Plan the roll");
+    expect(seen).toContain("Edited answer");
+    const other = fauxProvider({ provider: "other", models: [{ id: "replay" }] });
+    other.setResponses([(ctx) => { seen = JSON.stringify(ctx.messages); return fauxAssistantMessage("Other"); }]);
+    svc.models.setProvider(other.provider);
+    await run("other/replay");
+    expect(seen).not.toContain("signed-think");
+    expect(seen).not.toContain("Plan the roll");
+    expect(seen).toContain("Five");
+  });
+
+  it("includes edited unsigned thinking as ordinary context for the matching model", async () => {
+    const svc = makeService();
+    const handle = fauxProvider({ models: [{ id: "edited" }] });
+    let seen = "";
+    handle.setResponses([(ctx) => { seen = JSON.stringify(ctx.messages); return fauxAssistantMessage("Next"); }]);
+    svc.models.setProvider(handle.provider);
+    await svc.generate({ model: "faux/edited", messages: [
+      { role: "assistant", content: "Answer", reasoning: "Changed plan", reasoningModel: "faux/edited" },
+      { role: "user", content: "Next" },
+    ] });
+    expect(seen).toContain("Changed plan");
+    expect(seen).not.toContain('"type":"thinking"');
+  });
+
   it("structured output: schema forces __structured_output tool; json extracted from args", async () => {
     const svc = makeService();
     const toolCallMsg = { ...fauxAssistantMessage([{ type: "toolCall", id: "sc1", name: "__structured_output", arguments: { mood: "tense", beats: 3 } }]), stopReason: "toolUse" as const };

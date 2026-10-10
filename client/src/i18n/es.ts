@@ -1,5 +1,8 @@
 // Spanish (es) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Choose app": "Elegir aplicación",
+  "Working app": "Aplicación de trabajo",
+  "missing": "no disponible",
   " · disabled": " · desactivada",
   " · needs key": " · falta clave",
   " · off": " · apagado",
@@ -453,6 +456,10 @@ const dict = {
   "Confirm": "Confirmar",
   "Context auto-compacted": "Contexto resumido automáticamente",
   "Context usage": "Uso del contexto",
+  "Last request": "Última solicitud",
+  "Input tokens": "Tokens de entrada",
+  "Cached input": "Entrada en caché",
+  "Usage available after a run.": "Uso disponible después de una ejecución.",
   "Conversations": "Conversaciones",
   "Copy image": "Copiar imagen",
   "Current model": "Modelo actual",

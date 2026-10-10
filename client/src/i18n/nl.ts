@@ -1,5 +1,8 @@
 // Dutch (nl) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Choose app": "App kiezen",
+  "Working app": "Werkapp",
+  "missing": "ontbreekt",
   " · disabled": " · uitgeschakeld",
   " · needs key": " · sleutel nodig",
   " · off": " · uit",
@@ -453,6 +456,10 @@ const dict = {
   "Confirm": "Bevestigen",
   "Context auto-compacted": "Context automatisch samengevat",
   "Context usage": "Contextgebruik",
+  "Last request": "Laatste verzoek",
+  "Input tokens": "Invoertokens",
+  "Cached input": "Invoer in cache",
+  "Usage available after a run.": "Gebruik beschikbaar na een uitvoering.",
   "Conversations": "Gesprekken",
   "Copy image": "Afbeelding kopiëren",
   "Current model": "Huidig model",

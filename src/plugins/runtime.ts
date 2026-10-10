@@ -448,7 +448,10 @@ export async function applyLlmResponseHooks(
     }
     if (!Object.keys(applied).length) continue;
     log.info(`[plugin:${self.id}] llm "${key}" result patched by ${plugin.id}`);
-    out = { ...out, ...applied } as GenerateResult;
+    out = { ...out, ...applied,
+      ...((typeof applied.text === "string" && applied.text !== out.text) ||
+        (typeof applied.reasoning === "string" && applied.reasoning !== out.reasoning) ? { replay: undefined } : {}),
+    } as GenerateResult;
   }
   return out;
 }

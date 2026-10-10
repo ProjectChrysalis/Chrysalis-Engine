@@ -1,5 +1,8 @@
 // French (fr) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Choose app": "Choisir une application",
+  "Working app": "Application de travail",
+  "missing": "introuvable",
   " · disabled": " · désactivé",
   " · needs key": " · clé requise",
   " · off": " · éteint",
@@ -453,6 +456,10 @@ const dict = {
   "Confirm": "Confirmer",
   "Context auto-compacted": "Contexte résumé automatiquement",
   "Context usage": "Utilisation du contexte",
+  "Last request": "Dernière requête",
+  "Input tokens": "Tokens d’entrée",
+  "Cached input": "Entrée en cache",
+  "Usage available after a run.": "Utilisation disponible après une exécution.",
   "Conversations": "Conversations",
   "Copy image": "Copier l’image",
   "Current model": "Modèle actuel",

@@ -1,5 +1,8 @@
 // Japanese (ja) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Choose app": "アプリを選択",
+  "Working app": "作業対象のアプリ",
+  "missing": "見つかりません",
   " · disabled": " · 無効",
   " · needs key": " · キーが必要",
   " · off": " · オフ",
@@ -453,6 +456,10 @@ const dict = {
   "Confirm": "確認",
   "Context auto-compacted": "コンテキストを自動要約しました",
   "Context usage": "コンテキスト使用量",
+  "Last request": "前回のリクエスト",
+  "Input tokens": "入力トークン",
+  "Cached input": "キャッシュ済み入力",
+  "Usage available after a run.": "実行後に使用量を表示します。",
   "Conversations": "会話",
   "Copy image": "画像をコピー",
   "Current model": "現在のモデル",
