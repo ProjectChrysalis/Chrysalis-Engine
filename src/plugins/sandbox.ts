@@ -34,6 +34,7 @@ export interface SandboxRequest {
   maxStoreBytes?: number;
   fsAllowed?: boolean;
   fsRoot?: string | null;
+  fsReadOnly?: boolean;
   zipAllowed?: boolean;
   zipBase64?: string;
   zipEntries?: Record<string, unknown>;

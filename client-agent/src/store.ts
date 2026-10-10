@@ -39,9 +39,12 @@ export interface Banner {
   text: string
 }
 
-export interface QueuedMessage { id: string; sessionId: string; text: string; pending: boolean; accepted?: boolean }
+export interface QueuedMessage { id: string; sessionId: string; text: string; pending: boolean; accepted?: boolean; mode?: "steer" | "followUp" }
 
 export interface AgentState {
+  selection: { appId: string; selection: unknown } | null
+  availableSelection: { appId: string; selection: unknown } | null
+  queueMode: "steer" | "followUp"
   queue: QueuedMessage[]
   cancelQueued: (id: string) => Promise<string | null>
   dismissAsk: () => Promise<void>
@@ -127,6 +130,7 @@ const rememberSession = (id: string | null): void => prefs.set("agent-ui-session
 
 let runSequence = 0
 let liveId: string | null = null
+let liveUserId: string | null = null
 
 let targetChange: Promise<void> | null = null
 
@@ -136,6 +140,9 @@ export const useAgent = create<AgentState>()((set, get) => {
     sessions: [],
     sessionId: null,
     appId: null,
+    selection: null,
+    availableSelection: null,
+    queueMode: "steer",
     apps: [],
     targetChanging: false,
     setApp: async (appId) => {
@@ -145,7 +152,7 @@ export const useAgent = create<AgentState>()((set, get) => {
       const operation = (async () => {
         try {
           if (state.sessionId) await setAgentTarget(state.sessionId, appId);
-          if (get().sessionId === state.sessionId) set({ appId });
+          if (get().sessionId === state.sessionId) set({ appId, selection: null, availableSelection: null });
         } catch (e) { set({ banner: { kind: "error", text: e instanceof Error ? e.message : String(e) } }); }
         finally { set({ targetChanging: false }); }
       })();
@@ -204,6 +211,8 @@ export const useAgent = create<AgentState>()((set, get) => {
     open: async (id) => {
       if (get().running) await get().stop()
       streamDeltaBatcher.reset()
+      lastLiveSeq = 0; lastLiveRun = null; liveUserId = null;
+      set({ selection: null, availableSelection: null });
       runSequence += 1
       liveId = null
       rememberSession(id)
@@ -215,6 +224,7 @@ export const useAgent = create<AgentState>()((set, get) => {
           set((state) => ({ appId: r.appId, msgs: msgsFromRuns(r.runs ?? [], tr), queue: state.queue.filter((item) => !delivered.has(item.id)) }));
           const live = await agentState(id);
           if (get().sessionId === id) set((state) => ({ running: live.running, ask: live.ask ?? null, queue: [...state.queue.filter((item) => item.sessionId !== id || !live.queue.some((queued) => queued.id === item.id)).map((item) => item.sessionId === id ? { ...item, accepted: false } : item), ...live.queue.map((item) => ({ ...item, sessionId: id, pending: false, accepted: true }))] }));
+          if (get().sessionId === id && live.running && live.live) restoreLive(live.live);
         }
       } catch (e) {
         set({ banner: { kind: "error", text: e instanceof Error ? e.message : String(e) } })
@@ -251,6 +261,8 @@ export const useAgent = create<AgentState>()((set, get) => {
     },
 
     newChat: () => {
+      lastLiveSeq = 0; lastLiveRun = null; liveUserId = null;
+      set({ selection: null, availableSelection: null });
       runSequence += 1
       if (get().running) void get().stop()
       streamDeltaBatcher.reset()
@@ -268,9 +280,9 @@ export const useAgent = create<AgentState>()((set, get) => {
           throw new Error(tr("Send attachments after the run finishes"))
         }
         const id = uid("queued")
-        set({ queue: [...s.queue, { id, sessionId: s.sessionId, text, pending: true }] })
+        set({ queue: [...s.queue, { id, sessionId: s.sessionId, text, pending: true, mode: s.queueMode }] })
         try {
-          const reply = await steerAgent(s.sessionId, text, id)
+          const reply = await steerAgent(s.sessionId, text, id, s.queueMode)
           if (reply.queued === false) set((state) => ({ queue: state.queue.filter((item) => item.id !== id) }))
           set((state) => ({ queue: state.queue.map((item) => item.id === id ? { ...item, accepted: true } : item) }))
         } catch (e) {
@@ -289,12 +301,15 @@ export const useAgent = create<AgentState>()((set, get) => {
       }
       set((state) => ({ queue: state.queue.map((item) => item.sessionId === s.sessionId ? { ...item, accepted: false } : item) }))
       const id = uid("live")
+      lastLiveSeq = 0; lastLiveRun = null; liveUserId = null;
       const sequence = ++runSequence
       liveId = id
+      liveUserId = userMsg.id
       const sid = s.sessionId ?? uid("session")
       rememberSession(sid)
       set({
         msgs: [...s.msgs, userMsg, { id, role: "assistant", parts: [], streaming: true }],
+        selection: null,
         running: true,
         stopping: false,
         sessionId: sid,
@@ -305,6 +320,7 @@ export const useAgent = create<AgentState>()((set, get) => {
         const res: AgentResponse = await sendAgent({
           message: text,
           appId: s.appId,
+          selection: s.selection?.appId === s.appId ? s.selection : undefined,
           sessionId: sid,
           model: s.model ?? undefined,
           reasoning: s.reasoning || undefined,
@@ -484,6 +500,39 @@ export const useAgent = create<AgentState>()((set, get) => {
 
 // ---- WS feed: text deltas + lifecycle events for the live run ----
 
+let lastLiveSeq = 0
+let lastLiveRun: string | null = null
+function restoreLive(live: { id: string; seq: number; user: string; events: StreamEvent[] }): void {
+  if (lastLiveRun === live.id && lastLiveSeq > live.seq) return;
+  streamDeltaBatcher.reset();
+  lastLiveRun = live.id; lastLiveSeq = live.seq;
+  const previous = liveId;
+  liveId = `live_${live.id}`;
+  useAgent.setState(state => {
+    const prefix = `live_${live.id}`;
+    const boundary = liveUserId ? state.msgs.findIndex(message => message.id === liveUserId) : -1;
+    const msgs = boundary >= 0 ? state.msgs.slice(0, boundary + 1) : state.msgs.filter(message => message.id !== previous && !message.id.startsWith(prefix) && message.id !== `user_${live.id}`);
+    if (boundary < 0) {
+      liveUserId = `user_${live.id}`;
+      msgs.push({ id: liveUserId, role: "user", parts: [{ kind: "text", text: live.user }] });
+    }
+    let index = 0;
+    let parts: PartData[] = [];
+    const queue = new Map(state.queue.map(item => [item.id, item]));
+    for (const event of live.events) {
+      if (event.type === "queue_sent" && event.text) {
+        msgs.push({ id: `${prefix}_${index++}`, role: "assistant", parts, streaming: false });
+        msgs.push({ id: `${prefix}_user_${index}`, role: "user", parts: [{ kind: "text", text: event.text }] });
+        parts = [];
+        if (event.id) queue.delete(event.id);
+      } else if (event.type === "queue_cancelled" && event.id) queue.delete(event.id);
+      else if (event.type === "queue_added" && event.id && event.text && state.sessionId) queue.set(event.id, { id: event.id, text: event.text, sessionId: state.sessionId, mode: event.mode, pending: false, accepted: true });
+      else parts = applyStreamEvent(parts, event);
+    }
+    liveId = `${prefix}_${index}`;
+    return { msgs: [...msgs, { id: liveId, role: "assistant", parts, streaming: true }], queue: [...queue.values()], running: true };
+  });
+}
 let retry = 0
 
 export function connectWs(): void {
@@ -494,6 +543,13 @@ export function connectWs(): void {
   ws.onopen = () => {
     retry = 0
     useAgent.setState({ wsDown: false })
+    const sid = useAgent.getState().sessionId;
+    if (sid) void agentState(sid).then(state => {
+      if (useAgent.getState().sessionId !== sid) return;
+      useAgent.setState(current => ({ ask: state.ask ?? null, queue: [...current.queue.filter(item => item.sessionId !== sid), ...state.queue.map(item => ({ ...item, sessionId: sid, pending: false, accepted: true }))] }));
+      if (state.running && state.live) restoreLive(state.live);
+      else if (useAgent.getState().running) { useAgent.setState({ running: false, stopping: false }); void useAgent.getState().reloadCurrent(); }
+    }).catch(() => undefined);
   }
   ws.onclose = () => {
     useAgent.setState({ wsDown: true })
@@ -501,7 +557,7 @@ export function connectWs(): void {
     setTimeout(connectWs, wait)
   }
   ws.onmessage = (ev) => {
-    let msg: { type?: string; build?: number; payload?: { sessionId?: string; delta?: string; ev?: StreamEvent } }
+    let msg: { type?: string; build?: number; payload?: { sessionId?: string; delta?: string; ev?: StreamEvent; seq?: number; runId?: string; id?: string; appId?: string } }
     try {
       msg = JSON.parse(ev.data as string)
     } catch {
@@ -534,10 +590,15 @@ export function connectWs(): void {
         .catch(() => undefined)
       return
     }
+    if (msg.type === "agent_inspect" && msg.payload?.id && msg.payload.appId) {
+      if (msg.payload.sessionId !== useAgent.getState().sessionId) return;
+      if (window.parent !== window) window.parent.postMessage({ __chrysalisAgent: "inspect", id: msg.payload.id, appId: msg.payload.appId }, location.origin);
+      return;
+    }
     const st = useAgent.getState()
     const payload = msg.payload
     if (msg.type === "agent_target" && payload?.sessionId === st.sessionId) {
-      useAgent.setState({ appId: (payload as { appId?: string | null }).appId ?? null });
+      useAgent.setState({ appId: (payload as { appId?: string | null }).appId ?? null, selection: null, availableSelection: null });
       return;
     }
     if (msg.type === "agent_settled" && payload?.sessionId === st.sessionId) {
@@ -562,6 +623,11 @@ export function connectWs(): void {
         // minutes of the list looking like nothing was created
         void useAgent.getState().refreshSessions()
       } else return
+    }
+    if ((msg.type === "agent_delta" || msg.type === "agent_event") && payload.runId && typeof payload.seq === "number") {
+      if (lastLiveRun !== payload.runId) { lastLiveRun = payload.runId; lastLiveSeq = 0; }
+      if (payload.seq <= lastLiveSeq) return;
+      lastLiveSeq = payload.seq;
     }
     if (msg.type === "agent_delta" && payload.delta) {
       streamDeltaBatcher.enqueue({ type: "text", delta: payload.delta })

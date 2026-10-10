@@ -5,6 +5,7 @@ import "@fontsource/ibm-plex-mono/400.css"
 import "@fontsource/ibm-plex-mono/600.css"
 import "@/globals.css"
 import App from "./App"
+import { tr } from "./i18n"
 import { connectWs, useAgent } from "./store"
 
 // theme comes from the launcher (same-origin localStorage), defaulting to dark
@@ -27,7 +28,18 @@ createRoot(document.getElementById("root")!).render(
 // last thread, so the restore cannot swap the new chat out from under it.
 window.addEventListener("message", (e) => {
   if (e.origin !== location.origin || e.source !== window.parent) return
-  const d = e.data as { __chrysalisAgent?: unknown; text?: unknown; appId?: unknown } | null
+  const d = e.data as { __chrysalisAgent?: unknown; text?: unknown; appId?: unknown; selection?: { appId?: unknown; selection?: unknown } } | null
+  if (d?.__chrysalisAgent === "selection_preview") {
+    if (d.appId !== useAgent.getState().appId) return;
+    useAgent.setState({ availableSelection: d.selection && d.selection.appId === d.appId && typeof d.appId === "string" ? { appId: d.appId, selection: d.selection.selection } : null });
+    return;
+  }
+  if (d?.__chrysalisAgent === "selection") {
+    const state = useAgent.getState();
+    if (d.selection?.appId === state.appId && typeof d.selection.appId === "string") useAgent.setState({ selection: { appId: d.selection.appId, selection: d.selection.selection } });
+    else useAgent.setState({ banner: { kind: "info", text: tr("No selection available") } });
+    return;
+  }
   if (d?.__chrysalisAgent === "context") {
     const state = useAgent.getState()
     if (!state.sessionId && !state.running) useAgent.setState({ appId: typeof d.appId === "string" ? d.appId : null })

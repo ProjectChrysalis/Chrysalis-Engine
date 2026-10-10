@@ -20,9 +20,9 @@ function hostFrame() {
   }
   const window = { addEventListener: (_type: string, handler: typeof handlers[number]) => handlers.push(handler) };
   const context = vm.createContext({ window, document: {}, location: { origin: "http://localhost:8788" },
-    localStorage: { getItem: () => null }, crypto, WebSocket: Socket, URL, TextEncoder, TextDecoder, btoa, atob, Uint8Array });
+    localStorage: { getItem: () => null }, crypto, WebSocket: Socket, URL, TextEncoder, TextDecoder, btoa, atob, Uint8Array, setTimeout, clearTimeout });
   vm.runInContext(fs.readFileSync("client/public/app-bridge-host.js", "utf8"), context);
-  const host = (window as typeof window & { ChrysalisBridgeHost: { serve: (frame: { contentWindow: Source }, app: string, user: string) => () => void } }).ChrysalisBridgeHost;
+  const host = (window as typeof window & { ChrysalisBridgeHost: { serve: (frame: { contentWindow: Source }, app: string, user: string) => () => void; inspect: (app: string) => Promise<Record<string, unknown>>; selection: (app: string) => unknown } }).ChrysalisBridgeHost;
   const dispatch = (source: Source, data: Record<string, unknown>) => handlers.forEach((handler) => handler({ source, data: { __chrysalis: 1, ...data } }));
   const frame = () => {
     const source: Source = { messages: [], postMessage: (message) => source.messages.push(message) };
@@ -36,7 +36,7 @@ function hostFrame() {
     const send = () => dispatch(source, { type: "ws-send", nonce, wsId: 1, data: "hello" });
     return { source, hello, open, send, stop };
   };
-  return { frame, sockets };
+  return { frame, sockets, host, dispatch };
 }
 
 describe("app stream socket ownership", () => {
@@ -81,4 +81,26 @@ describe("app stream socket ownership", () => {
     one.stop(); two.stop();
     expect(sockets.every((socket) => socket.closed)).toBe(true);
   });
+});
+
+it("inspection and selection require the registered source and nonce without opening agent routes", async () => {
+  const { frame, host, dispatch } = hostFrame();
+  const app = frame(), stranger = frame();
+  app.hello("first"); stranger.hello("stranger");
+  const nonce = app.source.messages.at(-1)!.nonce;
+  dispatch(app.source, { type: "agent-context", nonce: "wrong", selection: { label: "forged" } });
+  expect(host.selection("roleplay")).toBeNull();
+  dispatch(app.source, { type: "agent-context", nonce, selection: { label: "selected", messageId: "m" } });
+  expect(JSON.stringify(host.selection("roleplay"))).toContain("selected");
+  let settled = false;
+  const request = host.inspect("roleplay").then(value => { settled = true; return value; });
+  const id = app.source.messages.at(-1)!.id;
+  dispatch(stranger.source, { type: "inspection", nonce: stranger.source.messages.at(-1)!.nonce, id, result: { text: "forged" } });
+  dispatch(app.source, { type: "inspection", nonce: "wrong", id, result: { text: "forged" } });
+  await Promise.resolve(); expect(settled).toBe(false);
+  dispatch(app.source, { type: "inspection", nonce, id, result: { text: "real", appId: "other" } });
+  const result = await request;
+  expect(result.text).toBe("real"); expect(result.appId).toBe("roleplay");
+  app.hello("second"); expect(host.selection("roleplay")).toBeNull();
+  app.stop(); stranger.stop();
 });

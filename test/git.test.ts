@@ -182,3 +182,21 @@ it("known-file commits retain same-size edits within one filesystem timestamp", 
   expect(oid).toBeTruthy();
   expect(new TextDecoder().decode((await isomorphicGit.readBlob({ fs, dir, oid: oid!, filepath: "card.json" })).blob)).toBe('{"name":"v2"}');
 });
+
+it("committing named files preserves unrelated staged and unstaged edits", async () => {
+  await initRepo(dir);
+  fs.writeFileSync(path.join(dir, "other.json"), "before");
+  await commitAll(dir, "alice", "initial");
+  fs.writeFileSync(path.join(dir, "other.json"), "staged user edit");
+  await isomorphicGit.add({ fs, dir, filepath: "other.json" });
+  fs.writeFileSync(path.join(dir, "other.json"), "unstaged user edit");
+  fs.writeFileSync(path.join(dir, "card.json"), "agent edit");
+  const oid = await commitWrittenPaths(dir, "alice", "agent: update card", ["card.json"], true);
+  expect(oid).toBeTruthy();
+  expect(new TextDecoder().decode((await isomorphicGit.readBlob({ fs, dir, oid: oid!, filepath: "other.json" })).blob)).toBe("before");
+  expect(new TextDecoder().decode((await isomorphicGit.readBlob({ fs, dir, oid: oid!, filepath: "card.json" })).blob)).toBe("agent edit");
+  expect(fs.readFileSync(path.join(dir, "other.json"), "utf8")).toBe("unstaged user edit");
+  const row = (await isomorphicGit.statusMatrix({ fs, dir })).find(item => item[0] === "other.json");
+  expect(row).toEqual(["other.json", 1, 2, 3]);
+  expect((await log(dir))[0]!.author).toBe("alice (via agent)");
+});

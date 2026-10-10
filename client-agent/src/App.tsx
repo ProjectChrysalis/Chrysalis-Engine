@@ -3,12 +3,11 @@ import {
   AssistantRuntimeProvider,
   useExternalStoreRuntime,
   type AppendMessage,
-  type ThreadMessageLike,
+  type ThreadMessage,
 } from "@assistant-ui/react"
 import { Thread } from "@/components/assistant-ui/elements/thread.aui"
 import { ThreadList } from "@/components/assistant-ui/elements/thread-list.aui"
 import { useEffect, useMemo, type ReactNode } from "react"
-import type { ReadonlyJSONObject } from "assistant-stream/utils"
 import { Dialog } from "@base-ui/react/dialog"
 import { X } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
@@ -16,39 +15,10 @@ import { AgentAttachmentAdapter } from "./attachments"
 import { Header } from "./Header"
 import { useAgent } from "./store"
 import { AgentToolFallback, toolConfig } from "./tools"
-import { visibleParts, type Msg } from "./runs"
+import { threadMessageRepository } from "./thread-messages"
 
 const attachments = new AgentAttachmentAdapter()
 
-function toThreadMessage(m: Msg): ThreadMessageLike {
-  if (m.role === "user") {
-    const content: ThreadMessageLike["content"] = [
-      ...(m.images ?? []).map((image) => ({ type: "image" as const, image })),
-      ...m.parts.map((p) => ({ type: "text" as const, text: p.kind === "text" ? p.text : "" })),
-    ]
-    return { id: m.id, role: "user", content }
-  }
-  return {
-    id: m.id,
-    role: "assistant",
-    ...(m.streaming ? { status: { type: "running" as const } } : {}),
-    content: visibleParts(m).map((p) => {
-      if (p.kind === "think") return { type: "reasoning" as const, text: p.text }
-      if (p.kind === "text") return { type: "text" as const, text: p.text }
-      // engine tool args arrive from JSON.parse — display-only cast at this boundary
-      return {
-        type: "tool-call" as const,
-        toolCallId: p.callId,
-        toolName: p.name,
-        args: p.args as ReadonlyJSONObject,
-        isError: p.state === "error",
-        ...(p.state === "running"
-          ? {}
-          : { result: { ok: p.state === "ok", summary: p.summary, output: p.output, diff: p.diff } }),
-      }
-    }),
-  }
-}
 
 interface SendImage {
   data: string
@@ -96,7 +66,7 @@ export default function App(): ReactNode {
     return () => media.removeEventListener("change", closeDrawer)
   }, [setSidebar])
 
-  const messages = useMemo(() => msgs.map(toThreadMessage), [msgs])
+  const messageRepository = useMemo(() => threadMessageRepository(msgs), [msgs])
   const threads = useMemo(
     () => sessions.filter((s) => !s.archived).map((s) => ({ status: "regular" as const, id: s.sessionId, title: s.title?.trim() || tr("Untitled") })),
     [sessions],
@@ -105,10 +75,9 @@ export default function App(): ReactNode {
     () => sessions.filter((s) => s.archived).map((s) => ({ status: "archived" as const, id: s.sessionId, title: s.title?.trim() || tr("Untitled") })),
     [sessions],
   )
-  const runtime = useExternalStoreRuntime({
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
     isRunning: running,
-    messages,
-    convertMessage: (m) => m,
+    messageRepository,
     adapters: {
       attachments,
       threadList: {

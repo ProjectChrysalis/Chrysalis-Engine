@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Type } from "typebox";
+import { revisionOf, atomicText, recordChange, undoChange, withMutation } from "./changes.js";
 import { createTwoFilesPatch } from "diff";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { UserPaths } from "../paths.js";
@@ -48,6 +49,8 @@ export const WRITE_TOOLS = new Set([
   "app_create",
   "app_deps",
   "bash",
+  "skill_edit",
+  "undo_change",
 ]);
 
 const MAX_READ_BYTES = 256 * 1024;
@@ -75,6 +78,7 @@ function fileDiff(rel: string, before: string, after: string): string | undefine
 
 export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOptions = { dataDir: "." }): AgentTool[] {
   const guard = makePathGuard(p.root);
+  const readRevisions = new Map<string, string>();
 
   const askUser: AgentTool = {
     name: "ask_user",
@@ -139,7 +143,9 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
         );
       }
       const content = fs.readFileSync(abs, "utf8");
-      if (offset === undefined && limit === undefined) return textResult(content, { path: rel });
+      const revision = revisionOf(content);
+      readRevisions.set(abs, revision);
+      if (offset === undefined && limit === undefined) return textResult(`[revision ${revision}]\n${content}`, { path: rel, revision });
       // sliced read: 1-based lines, numbered like a code viewer
       const lines = content.split("\n");
       const start = Math.max(1, Math.floor(offset ?? 1));
@@ -148,7 +154,7 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
       const numbered = slice.map((l, i) => `${String(start + i).padStart(5)}| ${l}`).join("\n");
       const end = Math.min(start + slice.length - 1, lines.length);
       const header = `[${rel} lines ${start}-${end} of ${lines.length}]\n`;
-      return textResult(header + numbered, { path: rel, from: start, to: end, totalLines: lines.length });
+      return textResult(`[revision ${revision}]\n` + header + numbered, { path: rel, revision, from: start, to: end, totalLines: lines.length });
     },
   };
 
@@ -161,32 +167,39 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
       path: Type.String(),
       oldText: Type.String({ description: "Exact text to replace — must be unique in the file" }),
       newText: Type.String(),
+      expectedRevision: Type.Optional(Type.String()),
     }),
     async execute(_id, params) {
-      const { path: rel, oldText, newText } = params as { path: string; oldText: string; newText: string };
-      const denied = agentWriteDenied(rel);
-      if (denied) throw new Error(`Refused: ${rel} is not agent-writable.`);
-      const abs = safeResolve(p.root, rel);
-      guard.assertReadable(abs, rel);
-      guard.assertWritable(abs, rel);
-      if (!fs.existsSync(abs)) throw new Error(`File not found: ${rel}`);
-      const content = fs.readFileSync(abs, "utf8");
-      const count = content.split(oldText).length - 1;
-      if (count === 0) throw new Error("oldText not found in file.");
-      if (count > 1) throw new Error(`oldText matches ${count} times — include more surrounding lines to make it unique.`);
-      const next = content.replace(oldText, newText);
-      fs.writeFileSync(abs, next, "utf8");
-      let committed = "";
-      try {
-        const oid = await git.commitAll(p.root, username, `agent: edit ${rel}`, true);
-        if (oid) committed = `, committed ${oid.slice(0, 8)}`;
-      } catch (e) {
-        committed = `. Commit failed: ${(e as Error).message} — run git_commit to retry`;
-      }
-      const diff = fileDiff(rel, content, next);
-      return textResult(`Edited ${rel} (${oldText.length}→${newText.length} chars)${committed}.`, {
-        path: rel,
-        ...(diff ? { diff } : {}),
+      return withMutation(p.root, async () => {
+        const { path: rel, oldText, newText } = params as { path: string; oldText: string; newText: string };
+        const denied = agentWriteDenied(rel);
+        if (denied) throw new Error(`Refused: ${rel} is not agent-writable.`);
+        const abs = safeResolve(p.root, rel);
+        guard.assertReadable(abs, rel);
+        guard.assertWritable(abs, rel);
+        if (!fs.existsSync(abs)) throw new Error(`File not found: ${rel}`);
+        const content = fs.readFileSync(abs, "utf8");
+        const expected = (params as { expectedRevision?: string }).expectedRevision ?? readRevisions.get(abs);
+        if (expected && expected !== revisionOf(content)) throw new Error("File changed since it was read. Read it again before editing.");
+        const count = content.split(oldText).length - 1;
+        if (count === 0) throw new Error("oldText not found in file.");
+        if (count > 1) throw new Error(`oldText matches ${count} times — include more surrounding lines to make it unique.`);
+        const next = content.replace(oldText, newText);
+        atomicText(abs, next);
+        readRevisions.set(abs, revisionOf(next));
+        const changeId = recordChange(p.root, [{ path: rel, before: content, after: next }]);
+        let committed = "";
+        try {
+          const oid = await git.commitWrittenPaths(p.root, username, `agent: edit ${rel}`, [rel], true);
+          if (oid) committed = `, committed ${oid.slice(0, 8)}`;
+        } catch (e) {
+          committed = `. Commit failed: ${(e as Error).message}. The file was saved; inspect repository status before retrying the commit.`;
+        }
+        const diff = fileDiff(rel, content, next);
+        return textResult(`Edited ${rel} (${oldText.length}→${newText.length} chars)${committed}. Undo id: ${changeId}`, {
+          path: rel, changeId,
+          ...(diff ? { diff } : {}),
+      });
       });
     },
   };
@@ -205,6 +218,7 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
       const { pattern, ignoreCase } = params as { pattern: string; ignoreCase?: boolean };
       const rel = (params as { path?: string }).path ?? ".";
       const start = safeResolve(p.root, rel);
+      guard.assertReadable(start, rel);
       let re: RegExp;
       try {
         re = new RegExp(pattern, ignoreCase ? "gi" : "g");
@@ -259,33 +273,42 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
     name: "write_file",
     label: "Write file",
     description:
-      "Create or overwrite a text file inside the user's directory. Each write commits to the user's repo immediately (author: you).",
+      "Create or replace a text file. Read an existing file first; replacement checks its revision. Commits only this file and returns an undo id.",
     parameters: Type.Object({
       path: Type.String(),
       content: Type.String(),
+      expectedRevision: Type.Optional(Type.Union([Type.String(), Type.Null()])),
     }),
     async execute(_id, params) {
-      const { path: rel, content } = params as { path: string; content: string };
-      const denied = agentWriteDenied(rel);
-      if (denied) throw new Error(`Refused: ${rel} is not agent-writable.`);
-      const abs = safeResolve(p.root, rel);
-      guard.assertWritable(abs, rel);
-      // read the file the write replaces BEFORE it lands: the write commits
-      // immediately, so afterwards there is nothing left to diff against
-      const before = fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : "";
-      fs.mkdirSync(path.dirname(abs), { recursive: true });
-      fs.writeFileSync(abs, content, "utf8");
-      let committed = "";
-      try {
-        const oid = await git.commitAll(p.root, username, `agent: write ${rel}`, true);
-        if (oid) committed = `, committed ${oid.slice(0, 8)}`;
-      } catch (e) {
-        committed = `. Commit failed: ${(e as Error).message} — run git_commit to retry`;
-      }
-      const diff = fileDiff(rel, before, content);
-      return textResult(`Wrote ${rel} (${content.length} bytes)${committed}.`, {
-        path: rel,
-        ...(diff ? { diff } : {}),
+      return withMutation(p.root, async () => {
+        const { path: rel, content } = params as { path: string; content: string };
+        const denied = agentWriteDenied(rel);
+        if (denied) throw new Error(`Refused: ${rel} is not agent-writable.`);
+        const abs = safeResolve(p.root, rel);
+        guard.assertWritable(abs, rel);
+        // read the file the write replaces BEFORE it lands: the write commits
+        // immediately, so afterwards there is nothing left to diff against
+        const before = fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : "";
+        const exists = fs.existsSync(abs);
+        const supplied = (params as { expectedRevision?: string | null }).expectedRevision;
+        const expected = supplied === undefined ? readRevisions.get(abs) : supplied;
+        if (exists && expected === undefined) throw new Error("Read the existing file before replacing it.");
+        if (expected !== undefined && expected !== (exists ? revisionOf(before) : null)) throw new Error("File changed since it was read. Read it again before replacing it.");
+        atomicText(abs, content);
+        readRevisions.set(abs, revisionOf(content));
+        const changeId = recordChange(p.root, [{ path: rel, before: exists ? before : null, after: content }]);
+        let committed = "";
+        try {
+          const oid = await git.commitWrittenPaths(p.root, username, `agent: write ${rel}`, [rel], true);
+          if (oid) committed = `, committed ${oid.slice(0, 8)}`;
+        } catch (e) {
+          committed = `. Commit failed: ${(e as Error).message}. The file was saved; inspect repository status before retrying the commit.`;
+        }
+        const diff = fileDiff(rel, before, content);
+        return textResult(`Wrote ${rel} (${Buffer.byteLength(content)} bytes)${committed}. Undo id: ${changeId}`, {
+          path: rel, changeId,
+          ...(diff ? { diff } : {}),
+      });
       });
     },
   };
@@ -562,5 +585,15 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
       }
     : bash;
 
-  return [readFile, writeFile, editFile, grepFiles, appCreate, appDeps, appCheck, appRebuild, appConsole, shell, askUser];
+  const undo: AgentTool = {
+    name: "undo_change", label: "Undo agent change",
+    description: "Undo a file or skill edit using its undo id. Refuses if any affected file changed afterward, preserving later edits.",
+    parameters: Type.Object({ id: Type.String() }),
+    async execute(_id, params) {
+      const paths = await undoChange(p.root, (params as { id: string }).id);
+      await git.commitWrittenPaths(p.root, username, "agent: undo change", paths, true);
+      return textResult(`Undone: ${paths.join(", ")}`, { paths });
+    },
+  };
+  return [readFile, writeFile, editFile, undo, grepFiles, appCreate, appDeps, appCheck, appRebuild, appConsole, shell, askUser];
 }

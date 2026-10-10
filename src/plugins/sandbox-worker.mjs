@@ -124,7 +124,7 @@ if (typeof fn === "function") { out = fn(env.ctx, env.host); }`);
 }
 
 port.on("message", async (msg) => {
-  const { id, source, hook, ctx, storeSnapshot = {}, llmResults = {}, netResults = {}, netAllowed = false, maxStoreBytes = 1024 * 1024, storeAllowed = true, llmAllowed = true, fsAllowed = false, fsRoot = null, fsTransaction = null, zipAllowed = false, zipBase64 = null, zipEntries: providedEntries = null, siblingToolDefs = null, embedResults = {}, executionTimeoutMs = 10_000, memoryLimitBytes = 64 * 1024 * 1024 } = msg;
+  const { id, source, hook, ctx, storeSnapshot = {}, llmResults = {}, netResults = {}, netAllowed = false, maxStoreBytes = 1024 * 1024, storeAllowed = true, llmAllowed = true, fsAllowed = false, fsRoot = null, fsReadOnly = false, fsTransaction = null, zipAllowed = false, zipBase64 = null, zipEntries: providedEntries = null, siblingToolDefs = null, embedResults = {}, executionTimeoutMs = 10_000, memoryLimitBytes = 64 * 1024 * 1024 } = msg;
   const logs = [];
   const fsWrites = new Set();
   const llmRequests = [];
@@ -366,6 +366,31 @@ try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: f
         const msg = String(e?.message ?? e).split(fsRoot).join("[app-data]");
         throw new Error(`${msg} (${rel})`);
       };
+      if (fsReadOnly) {
+        let bytesRead = 0;
+        const readVersioned = (rel) => {
+          try {
+            const full = within(rel);
+            const size = fs.statSync(full).size;
+            if (size > 1024 * 1024 || bytesRead + size > 16 * 1024 * 1024) throw new Error("Skill read limit exceeded");
+            const text = fs.readFileSync(full, "utf8");
+            bytesRead += Buffer.byteLength(text);
+            if (bytesRead > 16 * 1024 * 1024) throw new Error("Skill read limit exceeded");
+            return { text, revision: createHash("sha256").update(text).digest("hex") };
+          } catch (e) { scrub(e, rel); }
+        };
+        return {
+          read: (rel) => readVersioned(rel).text,
+          readVersioned,
+          list: (rel = ".") => {
+            try {
+              const names = fs.readdirSync(within(rel));
+              if (names.length > 2000) throw new Error("Skill directory limit exceeded");
+              return names.sort();
+            } catch (e) { scrub(e, rel); }
+          },
+        };
+      }
       const recorded = new Map();
       const beforeWrite = (full) => {
         if (!fsTransaction || recorded.has(full)) return;

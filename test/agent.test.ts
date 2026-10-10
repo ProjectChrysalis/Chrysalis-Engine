@@ -114,6 +114,7 @@ describe("agent tools", () => {
     expect(JSON.stringify(r1)).toContain("Edited");
     expect(fs.readFileSync(f, "utf8")).toContain("razor-sharp");
     fs.writeFileSync(f, "same same");
+    await tools.find((t) => t.name === "read_file")!.execute("read", { path: "apps/roleplay/data/card.json" });
     await expect(edit.execute("t2", { path: "apps/roleplay/data/card.json", oldText: "same", newText: "x" }))
       .rejects.toThrow(/matches 2 times/);
   });

@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { SidebarSimple, SlidersHorizontal, WifiSlash } from "@phosphor-icons/react"
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "@/components/ui/popover"
-import type { ReactNode } from "react"
+import { useEffect, type ReactNode } from "react"
 import { useAgent } from "./store"
 
 function ComposerSettings(): ReactNode {
@@ -14,6 +14,19 @@ function ComposerSettings(): ReactNode {
   const running = useAgent((s) => s.running || s.targetChanging)
   const setApp = useAgent((s) => s.setApp)
   const setMode = useAgent((s) => s.setMode)
+  const selection = useAgent((s) => s.selection)
+  const available = useAgent((s) => s.availableSelection)
+  const queueMode = useAgent(s => s.queueMode)
+  const label = (value: unknown): string => typeof (value as { label?: unknown } | null)?.label === "string" ? (value as { label: string }).label : "";
+  const item = available?.appId === appId ? label(available.selection) : "";
+  useEffect(() => {
+    useAgent.setState({ availableSelection: null });
+    if (!appId || window.parent === window) return;
+    const refresh = () => window.parent.postMessage({ __chrysalisAgent: "selection_preview", appId }, location.origin);
+    refresh();
+    const timer = window.setInterval(refresh, 1000);
+    return () => window.clearInterval(timer);
+  }, [appId]);
 
   return (
     <div className="agent-composer-settings">
@@ -23,10 +36,24 @@ function ComposerSettings(): ReactNode {
           <SelectTrigger className="agent-composer-app" aria-label={tr("Working app")}><SelectValue /></SelectTrigger>
           <SelectContent><SelectItem value="">{tr("Choose app")}</SelectItem>{apps.map((app) => <SelectItem key={app.id} value={app.id}>{app.name}</SelectItem>)}</SelectContent>
         </Select>
+        <p className="text-xs text-muted-foreground">{tr("Ask the agent to switch apps anytime.")}</p>
+      </div>
+      <div className="agent-setting">
+        <Button variant="outline" size="sm" disabled={!item || running} title={item} onClick={() => { if (available) useAgent.setState({ selection: available }); }}><span className="truncate">{item ? tr("Attach {item}", { item }) : tr("No item selected in this app")}</span></Button>
+        <p className="text-xs text-muted-foreground">{tr("Adds this item to your next message.")}</p>
+        {selection ? <p className="text-xs text-muted-foreground break-words">{tr("Attached: {item}", { item: label(selection.selection) })}</p> : null}
+        {selection ? <Button variant="ghost" size="sm" onClick={() => useAgent.setState({ selection: null })}>{tr("Remove attachment")}</Button> : null}
       </div>
       <div className="agent-setting">
         <span className="agent-setting-label">{tr("Current model")}</span>
         <AgentModelPicker />
+      </div>
+      <div className="agent-setting">
+        <span className="agent-setting-label">{tr("Queued messages")}</span>
+        <Select items={[{ label: tr("Change course now"), value: "steer" }, { label: tr("After this task"), value: "followUp" }]} value={queueMode} onValueChange={value => useAgent.setState({ queueMode: value === "followUp" ? "followUp" : "steer" })}>
+          <SelectTrigger className="agent-composer-mode"><SelectValue /></SelectTrigger>
+          <SelectContent><SelectItem value="steer">{tr("Change course now")}</SelectItem><SelectItem value="followUp">{tr("After this task")}</SelectItem></SelectContent>
+        </Select>
       </div>
       <div className="agent-setting">
         <span className="agent-setting-label">{tr("Mode")}</span>
@@ -74,6 +101,7 @@ export function ComposerSettingsMenu(): ReactNode {
 
 export function Header(): ReactNode {
   const sessionId = useAgent((s) => s.sessionId)
+  const workingApp = useAgent(s => s.apps.find(app => app.id === s.appId)?.name ?? s.appId)
   const title = useAgent((s) => s.sessions.find((item) => item.sessionId === sessionId)?.title)
   const wsDown = useAgent((s) => s.wsDown)
   const sidebarOpen = useAgent((s) => s.sidebarOpen)
@@ -89,6 +117,7 @@ export function Header(): ReactNode {
         <SidebarSimple size={18} />
       </Button>
       <span className="min-w-0 truncate text-sm font-medium">{title?.trim() || tr("New chat")}</span>
+      {workingApp ? <span className="ml-auto max-w-[40%] truncate text-xs text-muted-foreground" title={`${tr("Working app")}: ${workingApp}`}>{workingApp}</span> : null}
       {wsDown ? <span className="text-destructive ml-auto flex shrink-0 items-center gap-1.5 text-xs" role="status"><WifiSlash size={14} />{tr("Reconnecting")}</span> : null}
     </header>
   )

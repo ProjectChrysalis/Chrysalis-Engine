@@ -74,6 +74,10 @@
     if (!parentWin || e.source !== parentWin) return;
     var d = e.data;
     if (!d || d.__chrysalis !== 1) return;
+    if (d.type === "inspect" && ready && d.nonce === nonce) {
+      inspectPage().then(function (result) { post({ type: "inspection", id: d.id, result: result }); });
+      return;
+    }
     if (d.type === "init") {
       nonce = d.nonce;
       ready = true;
@@ -451,6 +455,56 @@
       attributeFilter: ["src", "srcset", "style", "poster"],
     });
   } catch { /* no observer */ }
+
+  window.ChrysalisApp = {
+    setAgentContext: function (selection) { whenReady(function () { post({ type: "agent-context", selection: selection }); }); },
+  };
+
+  async function inspectPage() {
+    var width = window.innerWidth, height = window.innerHeight;
+    var controls = Array.from(document.querySelectorAll("button,input,textarea,select,[role=button],[role=tab]")).filter(function (el) { var box = el.getBoundingClientRect(); return box.width && box.height && box.bottom > 0 && box.top < height; }).slice(0, 100).map(function (el) {
+      return { role: el.getAttribute("role") || el.tagName.toLowerCase(), label: el.getAttribute("aria-label") || el.getAttribute("title") || (el.textContent || "").trim().slice(0, 160), disabled: !!el.disabled };
+    });
+    var result = { viewport: { width: width, height: height }, text: (document.body.innerText || "").slice(0, 12000), controls: controls };
+    try {
+      if (document.querySelectorAll("*").length > 4000) throw new Error("Page is too large for screenshot capture");
+      var clone = document.body.cloneNode(true);
+      var sourceNodes = [document.body].concat(Array.from(document.body.querySelectorAll("*")));
+      var cloneNodes = [clone].concat(Array.from(clone.querySelectorAll("*")));
+      for (var i = 0; i < sourceNodes.length; i++) {
+        var original = sourceNodes[i], copied = cloneNodes[i];
+        if (!copied) continue;
+        var computed = getComputedStyle(original);
+        for (var j = 0; j < computed.length; j++) { var key = computed[j]; copied.style.setProperty(key, computed.getPropertyValue(key)); }
+        copied.style.setProperty("animation", "none");
+        copied.style.setProperty("transition", "none");
+        if (original instanceof HTMLInputElement || original instanceof HTMLTextAreaElement) {
+          copied.value = original.type === "password" ? "" : original.value;
+          copied.setAttribute("value", copied.value);
+          if (original instanceof HTMLTextAreaElement) copied.textContent = copied.value;
+        }
+        if (original instanceof HTMLImageElement && original.complete && original.naturalWidth) {
+          var imageCanvas = document.createElement("canvas"); imageCanvas.width = original.naturalWidth; imageCanvas.height = original.naturalHeight;
+          imageCanvas.getContext("2d").drawImage(original, 0, 0);
+          copied.setAttribute("src", imageCanvas.toDataURL("image/png")); copied.removeAttribute("srcset");
+        }
+        if (original.scrollTop || original.scrollLeft) {
+          for (var child of copied.children) child.style.transform = "translate(" + (-original.scrollLeft) + "px," + (-original.scrollTop) + "px) " + (child.style.transform === "none" ? "" : child.style.transform);
+        }
+      }
+      if (Array.from(document.querySelectorAll("iframe,video,audio,canvas")).some(function (el) { var box = el.getBoundingClientRect(); return box.width > 0 && box.height > 0 && box.bottom > 0 && box.top < height; })) throw new Error("This view contains media that cannot be captured. Use the reported text and controls.");
+      clone.querySelectorAll("script").forEach(function (el) { el.remove(); });
+      clone.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+      clone.style.margin = "0"; clone.style.width = width + "px"; clone.style.height = height + "px";
+      var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + height + '"><foreignObject width="100%" height="100%">' + new XMLSerializer().serializeToString(clone) + '</foreignObject></svg>';
+      var capture = new Image();
+      await new Promise(function (resolve, reject) { capture.onload = resolve; capture.onerror = function () { reject(new Error("Screenshot rendering failed")); }; capture.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg); });
+      var canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
+      var context = canvas.getContext("2d"); context.fillStyle = getComputedStyle(document.documentElement).backgroundColor; context.fillRect(0, 0, width, height); context.drawImage(capture, 0, 0);
+      result.screenshot = { data: canvas.toDataURL("image/png").split(",")[1], mimeType: "image/png" };
+    } catch (error) { result.screenshotError = String(error.message || error); }
+    return result;
+  }
 
   // ---------- handshake ----------
   // the host may not have registered this frame yet when the script runs, so

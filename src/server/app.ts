@@ -1,3 +1,5 @@
+import { recoverRun } from "../agent/journal.js";
+import type { AppInspection } from "../agent/inspection.js";
 import { readAppContext, writeAppContext, discoverSkills, contextFile } from "../agent/skills.js";
 /**
  * Hono app + routes (SPEC §6). Thin handlers over services.
@@ -569,6 +571,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   const agentInstances = new Map<string, UserAgent>();
   /** username:sessionId -> currently running agent (steering target). */
   const activeRuns = new Map<string, UserAgent>();
+  const pendingInspections = new Map<string, { username: string; appId: string; resolve: (value: AppInspection) => void }>();
   const runControllers = new Map<string, AbortController>();
   const evictAgents = (username: string) => {
     for (const key of agentInstances.keys()) if (key.startsWith(`${username}:`)) agentInstances.delete(key);
@@ -598,6 +601,16 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         ...(sessionId ? { sessionId } : {}),
         notify: (type, payload) => bus.emit(u.username, type, payload),
         mcp: getMcp(u),
+        inspect: (appId, signal) => new Promise<AppInspection>((resolve, reject) => {
+          const id = nodeCrypto.randomUUID();
+          const cleanup = () => { clearTimeout(timer); pendingInspections.delete(id); signal?.removeEventListener("abort", aborted); };
+          const aborted = () => { cleanup(); reject(new Error("Inspection cancelled")); };
+          const timer = setTimeout(() => { cleanup(); reject(new Error("Open the selected app in the shell to inspect it")); }, 15000);
+          pendingInspections.set(id, { username: u.username, appId, resolve: value => { cleanup(); resolve(value); } });
+          signal?.addEventListener("abort", aborted, { once: true });
+          if (signal?.aborted) { aborted(); return; }
+          bus.emit(u.username, "agent_inspect", { id, appId, sessionId });
+        }),
         ...(deps.settings && u.role === "admin" ? { settings: deps.settings } : {}),
         ...(u.role === "admin" ? { provisionAccount } : {}),
         ...(sandbox.enabled ? { sandbox } : {}),
@@ -2222,6 +2235,20 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     return c.json({ commands: out });
   });
 
+  app.post("/v1/agent/inspect/:id", async c => {
+    const pending = pendingInspections.get(c.req.param("id"));
+    if (!pending || pending.username !== c.get("user").username) return c.notFound();
+    const capped = await readCappedBody(c, 6 * 1024 * 1024);
+    if (!capped.ok) return c.json({ error: capped.error }, 413);
+    let body: (AppInspection & { appId?: unknown; error?: string }) | null;
+    try { body = JSON.parse(new TextDecoder().decode(capped.bytes)); } catch { body = null; }
+    if (!body || body.appId !== pending.appId || Buffer.byteLength(JSON.stringify(body)) > 6 * 1024 * 1024) return c.json({ error: "Invalid app inspection" }, 400);
+    if (body.screenshot && (body.screenshot.mimeType !== "image/png" || typeof body.screenshot.data !== "string" || !/^[A-Za-z0-9+/=]+$/.test(body.screenshot.data))) return c.json({ error: "Invalid screenshot" }, 400);
+    if (body.screenshotError && !body.text && !body.controls && !body.screenshot) return c.json({ ok: true });
+    pending.resolve(body);
+    return c.json({ ok: true });
+  });
+
   app.get("/v1/agent/apps", (c) => {
     return c.json({ apps: listApps(c.get("paths").apps).map((a) => ({ id: a.id, name: a.manifest.name })) });
   });
@@ -2265,13 +2292,15 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return c.json({ error: "invalid session id" }, 400);
     const file = path.join(sessionDir(c.get("paths")), `${id}.jsonl`);
     if (!fs.existsSync(file)) return c.json({ error: "session not found" }, 404);
+    if (!activeRuns.has(`${c.get("user").username}:${id}`)) recoverRun(file);
     // run + compact records — the client renders compact markers as dividers
     const runs = fs
       .readFileSync(file, "utf8")
       .split("\n")
       .filter((l) => l.trim())
       .map((l) => JSON.parse(l) as Record<string, unknown>)
-      .filter((r) => r.type === "run" || r.type === "compact");
+      .filter((r) => r.type === "run" || r.type === "compact")
+      .map(({ native: _native, ...record }) => record);
     return c.json({ sessionId: id, runs, appId: readAppContext(c.get("paths"), id).appId });
   });
 
@@ -2313,6 +2342,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       message: string;
       sessionId?: string;
       appId?: string | null;
+      selection?: { appId?: unknown; [key: string]: unknown };
       model?: string;
       reasoning?: string;
       mode?: string;
@@ -2358,6 +2388,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       if (!context.loaded.includes(name)) context.loaded.push(name);
       writeAppContext(paths, requestedSessionId, context);
     }
+    if (body.selection && (body.selection.appId !== readAppContext(paths, requestedSessionId).appId || Buffer.byteLength(JSON.stringify(body.selection)) > 16384)) return c.json({ error: "Selection does not match this conversation's app" }, 400);
     const controller = new AbortController();
     runControllers.set(runKey, controller);
     let agent: UserAgent;
@@ -2385,8 +2416,9 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     activeRuns.set(runKey, agent);
     try {
       const result = await agent.run(body.message, {
-        onDelta: (d) => bus.emit(u.username, "agent_delta", { sessionId: agent.sessionId, delta: d }),
-        onEvent: (ev) => bus.emit(u.username, "agent_event", { sessionId: agent.sessionId, ev }),
+        onDelta: (d) => bus.emit(u.username, "agent_delta", { sessionId: agent.sessionId, runId: agent.liveSnapshot()?.id, seq: agent.liveSnapshot()?.seq, delta: d }),
+        onEvent: (ev) => bus.emit(u.username, "agent_event", { sessionId: agent.sessionId, runId: agent.liveSnapshot()?.id, seq: agent.liveSnapshot()?.seq, ev }),
+        selection: body.selection,
         images,
         signal: controller.signal,
         ...(imageUrls.length ? { imageUrls } : {}),
@@ -2433,14 +2465,14 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const key = `${c.get("user").username}:${sid}`;
     const pending = [...pendingQuestions].find(([, item]) => item.username === c.get("user").username && item.sessionId === sid);
     const ask = pending ? { id: pending[0], sessionId: sid, question: pending[1].question, options: pending[1].options, detail: pending[1].detail } : null;
-    return c.json({ ask, running: activeRuns.has(key) || runControllers.has(key), queue: activeRuns.get(key)?.queuedMessages() ?? [] });
+    return c.json({ ask, running: activeRuns.has(key) || runControllers.has(key), queue: activeRuns.get(key)?.queuedMessages() ?? [], live: activeRuns.get(key)?.liveSnapshot() ? (({ messages: _messages, ...live }) => live)(activeRuns.get(key)!.liveSnapshot()!) : null });
   });
 
   // Queue a user message into a RUNNING agent (steering): injected after the
   // current tool batch, before the next model call.
   app.post("/v1/agent/steer", async (c) => {
     const u = c.get("user");
-    const body = await c.req.json<{ sessionId?: string; message?: string; id?: string; cancel?: boolean }>().catch(() => null) ?? {};
+    const body = await c.req.json<{ sessionId?: string; message?: string; id?: string; cancel?: boolean; mode?: "steer" | "followUp" }>().catch(() => null) ?? {};
     if (!body.sessionId || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(body.sessionId)) {
       return c.json({ error: "valid sessionId required" }, 400);
     }
@@ -2455,9 +2487,9 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     }
     if (body.message!.length > 8000) return c.json({ error: "queued message exceeds 8000 characters" }, 413);
     try {
-      const id = agent.steer(body.message!, body.id);
+      const id = agent.steer(body.message!, body.id, body.mode === "followUp" ? "followUp" : "steer");
       const queued = agent.queuedMessages().some((message) => message.id === id);
-      if (queued) bus.emit(u.username, "agent_event", { sessionId: body.sessionId, ev: { type: "queue_added", id, text: body.message } });
+      if (queued) bus.emit(u.username, "agent_event", { sessionId: body.sessionId, ev: { type: "queue_added", id, text: body.message, mode: body.mode === "followUp" ? "followUp" : "steer" } });
       return c.json({ ok: true, id, queued });
     } catch (error) { return c.json({ error: (error as Error).message }, 409); }
   });
@@ -2526,6 +2558,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     if (!fs.existsSync(file)) return c.json({ error: "session not found" }, 404);
     fs.rmSync(file);
     fs.rmSync(file.replace(/\.jsonl$/, ".context.json"), { force: true });
+    fs.rmSync(file.replace(/\.jsonl$/, ".permissions.json"), { force: true });
+    fs.rmSync(file + ".active.json", { force: true });
     evictAgents(c.get("user").username);
     return c.json({ ok: true });
   });

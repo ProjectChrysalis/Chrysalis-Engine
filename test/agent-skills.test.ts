@@ -105,3 +105,21 @@ it("target APIs persist, fork, clear, and delete context without activating an a
   await server.request(`/v1/agent/sessions/${fork.sessionId}`, { method: "DELETE", headers });
   expect(readAppContext(p, fork.sessionId)).toEqual({ appId: null, loaded: [] });
 });
+
+it("switches an existing conversation to another app during a task and refreshes its instructions", async () => {
+  const users = new UserService(root); users.create("alice", "admin", { password: "test-password-1" });
+  const p = bootstrapUserDir(root, "alice");
+  app(p, "first", "FIRST BODY"); app(p, "second", "SECOND BODY");
+  writeAppContext(p, "switch", { appId: "first", loaded: ["preset-editing"] });
+  const svc = new UserModelService("alice", p, defaultInstanceConfig());
+  const faux = fauxProvider({ models: [{ id: "switch-model" }] }); svc.models.setProvider(faux.provider);
+  const notifications: unknown[] = [];
+  faux.setResponses([
+    context => { expect(JSON.stringify(context)).toContain("FIRST BODY"); return fauxAssistantMessage([{ type: "toolCall", id: "switch", name: "app_target", arguments: { appId: "second" } }], { stopReason: "toolUse" }); },
+    context => { expect(JSON.stringify(context)).toContain("second contract"); expect(JSON.stringify(context)).not.toContain("FIRST BODY"); return fauxAssistantMessage("Working on second"); },
+  ]);
+  const agent = await UserAgent.create("alice", svc, p, users, defaultInstanceConfig(), { sessionId: "switch", mode: "plan", notify: (type, payload) => { if (type === "agent_target") notifications.push(payload); } });
+  expect((await agent.run("Switch to the second app")).finalText).toBe("Working on second");
+  expect(readAppContext(p, "switch")).toEqual({ appId: "second", loaded: [] });
+  expect(notifications).toEqual([{ sessionId: "switch", appId: "second" }]);
+}, 20_000);

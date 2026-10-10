@@ -134,6 +134,7 @@ export const sessionsApi = {
 export interface SendInput {
   appId?: string | null;
   message: string
+  selection?: { appId: string; selection: unknown }
   sessionId?: string
   mode?: "normal" | "plan" | "accept"
   model?: string
@@ -145,8 +146,8 @@ export function sendAgent(input: SendInput): Promise<AgentResponse> {
   return api("POST", "/v1/agent", input)
 }
 
-export function steerAgent(sessionId: string, message: string, id?: string): Promise<{ id: string; queued?: boolean }> {
-  return api("POST", "/v1/agent/steer", { sessionId, message, id })
+export function steerAgent(sessionId: string, message: string, id?: string, mode: "steer" | "followUp" = "steer"): Promise<{ id: string; queued?: boolean }> {
+  return api("POST", "/v1/agent/steer", { sessionId, message, id, mode })
 }
 export function cancelQueuedAgent(sessionId: string, id: string): Promise<void> {
   return api("POST", "/v1/agent/steer", { sessionId, id, cancel: true })
@@ -194,7 +195,7 @@ export async function agentCommands(): Promise<UserCommand[]> {
   return r.commands ?? []
 }
 
-export const agentState = (sessionId: string): Promise<{ running: boolean; queue: { id: string; text: string }[]; ask?: { id: string; sessionId: string; question: string; options?: string[]; detail?: string } | null }> => api("GET", `/v1/agent/state?sessionId=${encodeURIComponent(sessionId)}`)
+export const agentState = (sessionId: string): Promise<{ running: boolean; live?: { id: string; seq: number; user: string; events: import("./streaming.js").StreamEvent[] } | null; queue: { id: string; text: string; mode?: "steer" | "followUp" }[]; ask?: { id: string; sessionId: string; question: string; options?: string[]; detail?: string } | null }> => api("GET", `/v1/agent/state?sessionId=${encodeURIComponent(sessionId)}`)
 
 export const agentApps = () => api<{ apps: { id: string; name: string }[] }>("GET", "/v1/agent/apps");
 export const setAgentTarget = (id: string, appId: string | null) => api("POST", `/v1/agent/sessions/${encodeURIComponent(id)}/target`, { appId });

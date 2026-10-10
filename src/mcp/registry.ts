@@ -153,13 +153,14 @@ export interface McpRegistryFile {
 
 interface ConnectedServer {
   client: Client;
-  tools: { name: string; description?: string; inputSchema: unknown }[];
+  tools: { name: string; description?: string; inputSchema: unknown; annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean } }[];
 }
 
 export interface McpToolInfo {
   name: string; // namespaced: mcp_<server>_<tool>
   server: string;
   rawName: string;
+  readOnly?: boolean;
   description?: string;
   inputSchema: unknown;
 }
@@ -371,6 +372,7 @@ export class McpRegistry {
           rawName: t.name,
           description: t.description,
           inputSchema: t.inputSchema,
+          readOnly: t.annotations?.readOnlyHint === true && t.annotations?.destructiveHint !== true,
         });
       }
     }

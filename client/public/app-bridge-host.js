@@ -11,6 +11,7 @@
   var CH = (window.ChrysalisBridgeHost = window.ChrysalisBridgeHost || {});
 
   var frames = new Map(); // contentWindow -> { appId, username, nonce }
+  var inspections = new Map();
   var MAX_BODY = 64 * 1024 * 1024;
 
   function closeSockets(record) {
@@ -325,6 +326,7 @@
       if (!record.handshake || record.documentId !== d.documentId) {
         closeSockets(record);
         record.documentId = d.documentId;
+        record.selection = null;
         record.handshake = true;
       }
       send(e.source, { __chrysalis: 1, type: "init", nonce: record.nonce });
@@ -339,6 +341,18 @@
       return;
     }
     if (d.nonce !== record.nonce) return;
+    if (d.type === "agent-context") {
+      try { if (JSON.stringify(d.selection).length <= 16000) record.selection = d.selection; } catch { /* Invalid selection is ignored. */ }
+      return;
+    }
+    if (d.type === "inspection") {
+      var inspection = inspections.get(d.id);
+      if (inspection && inspection.source === e.source && inspection.record === record && inspection.documentId === record.documentId) {
+        inspections.delete(d.id);
+        inspection.resolve(Object.assign({}, d.result, { appId: record.appId, selection: record.selection }));
+      }
+      return;
+    }
     if (d.type === "download") handleDownload(record, e.source, d);
     else if (d.type === "fetch") handleFetch(record, e.source, d);
     else if (d.type === "ws-open") handleWsOpen(record, e.source, d);
@@ -375,6 +389,24 @@
     };
   };
 
+  CH.selection = function (appId) {
+    for (var record of frames.values()) if (record.appId === appId && record.selection) return { appId: appId, selection: record.selection };
+    return null;
+  };
+  CH.inspect = function (appId) {
+    return new Promise(function (resolve, reject) {
+      for (var entry of frames.entries()) {
+        var source = entry[0], record = entry[1];
+        if (record.appId !== appId || !record.handshake) continue;
+        var id = randomNonce();
+        var timer = setTimeout(function () { inspections.delete(id); reject(new Error("App inspection timed out")); }, 10000);
+        inspections.set(id, { source: source, record: record, documentId: record.documentId, resolve: function (value) { clearTimeout(timer); resolve(value); } });
+        send(source, { __chrysalis: 1, type: "inspect", nonce: record.nonce, id: id });
+        return;
+      }
+      reject(new Error("Open the selected app to inspect it"));
+    });
+  };
   CH.allowedRequest = allowedRequest;
   CH.eventAllowed = eventAllowed;
   CH.storageKey = storageKey;

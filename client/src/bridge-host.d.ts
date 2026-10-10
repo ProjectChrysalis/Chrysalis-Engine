@@ -7,6 +7,8 @@ declare global {
       serve(iframe: HTMLIFrameElement, appId: string, username: string, trusted?: boolean): () => void;
       allowedRequest(appId: string, method: string, path: string, trusted?: boolean): boolean;
       eventAllowed(appId: string, trusted: boolean, raw: string): boolean;
+      selection(appId: string): { appId: string; selection: unknown } | null;
+      inspect(appId: string): Promise<unknown>;
       storageKey(username: string, appId: string): string;
     };
     /** In-browser app builder (src/builder/browser/host.ts, /client/builder/host.js). */

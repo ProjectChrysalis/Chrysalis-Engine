@@ -70,11 +70,12 @@ async function commitWithReflog(
   username: string,
   message: string,
   viaAgent: boolean,
+  tree?: string,
 ): Promise<string> {
   await ensureCliIdentity(dir, username);
   const oldOid = await resolveHead(dir);
   const author = authorFor(username, viaAgent);
-  const oid = await git.commit({ fs, dir, message, author });
+  const oid = await git.commit({ fs, dir, message, author, ...(tree ? { tree } : {}) });
   appendReflog(dir, oldOid, oid, author, message);
   return oid;
 }
@@ -234,30 +235,47 @@ export async function commitPaths(
   });
 }
 
-/** Known written files need no workspace-wide status scan. */
-export async function commitWrittenPaths(dir: string, username: string, message: string, paths: string[]): Promise<string | null> {
+/** Replace one tree entry without involving unrelated staged files. */
+async function replaceTreeFile(dir: string, oid: string | undefined, segments: string[], blob: string | null, mode = "100644"): Promise<string> {
+  const entries = oid ? (await git.readTree({ fs, dir, oid })).tree : [];
+  const name = segments[0]!;
+  const previous = entries.find(entry => entry.path === name);
+  const next = entries.filter(entry => entry.path !== name);
+  if (segments.length > 1) {
+    if (previous && previous.type !== "tree") throw new Error("File blocks a directory: " + name);
+    const child = await replaceTreeFile(dir, previous?.oid, segments.slice(1), blob, mode);
+    if ((await git.readTree({ fs, dir, oid: child })).tree.length) next.push({ path: name, mode: "040000", type: "tree", oid: child });
+  } else if (blob) next.push({ path: name, mode, type: "blob", oid: blob });
+  return git.writeTree({ fs, dir, tree: next });
+}
+
+/** Commit only the named paths; unrelated index entries keep their staging. */
+export async function commitWrittenPaths(dir: string, username: string, message: string, paths: string[], viaAgent = false): Promise<string | null> {
   return withRepoLock(dir, async () => {
     await ensureRepo(dir);
-    let added = 0;
-    for (const filepath of new Set(paths)) {
+    const head = await resolveHead(dir);
+    const original = head === "0".repeat(40) ? undefined : (await git.readCommit({ fs, dir, oid: head })).commit.tree;
+    let tree = original;
+    const changed: string[] = [];
+    for (const raw of new Set(paths)) {
+      const filepath = path.posix.normalize(raw.replaceAll("\\", "/"));
       const full = path.resolve(dir, filepath);
       if (!full.startsWith(path.resolve(dir) + path.sep) || gitBoundaryIgnored(filepath)) continue;
       const state = await git.status({ fs, dir, filepath });
       if (state === "absent" || state === "ignored") continue;
-      if (state === "unmodified") {
-        const head = await resolveHead(dir);
-        const [{ oid: committed }, { oid: current }] = await Promise.all([
-          git.readBlob({ fs, dir, oid: head, filepath }),
-          git.hashBlob({ object: fs.readFileSync(full) }),
-        ]);
-        if (committed === current) continue;
-      }
-      if (!fs.existsSync(full)) await git.remove({ fs, dir, filepath });
-      else if (fs.statSync(full).isFile()) await git.add({ fs, dir, filepath });
-      else continue;
-      added++;
+      const exists = fs.existsSync(full);
+      if (exists && !fs.lstatSync(full).isFile()) continue;
+      const blob = exists ? await git.writeBlob({ fs, dir, blob: fs.readFileSync(full) }) : null;
+      const mode = exists && (fs.statSync(full).mode & 0o111) ? "100755" : "100644";
+      const updated = await replaceTreeFile(dir, tree, filepath.split("/"), blob, mode);
+      if (updated !== tree) { tree = updated; changed.push(filepath); }
     }
-    return added ? commitWithReflog(dir, username, message, false) : null;
+    if (!tree || tree === original) return null;
+    for (const filepath of changed) {
+      if (fs.existsSync(path.join(dir, filepath))) await git.add({ fs, dir, filepath });
+      else await git.remove({ fs, dir, filepath });
+    }
+    return commitWithReflog(dir, username, message, viaAgent, tree);
   });
 }
 

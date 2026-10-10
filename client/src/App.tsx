@@ -256,6 +256,15 @@ function Shell(props: { theme: "light" | "dark"; onTheme: () => void }) {
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
       if (e.origin !== location.origin || e.source !== agentFrame.current?.contentWindow) return
+      if ((e.data?.__chrysalisAgent === "selection" || e.data?.__chrysalisAgent === "selection_preview") && typeof e.data.appId === "string") {
+        agentFrame.current?.contentWindow?.postMessage({ __chrysalisAgent: e.data.__chrysalisAgent, appId: e.data.appId, selection: window.ChrysalisBridgeHost.selection(e.data.appId) }, location.origin);
+        return;
+      }
+      if (e.data?.__chrysalisAgent === "inspect" && typeof e.data.id === "string" && typeof e.data.appId === "string") {
+        const { id, appId } = e.data as { id: string; appId: string };
+        void window.ChrysalisBridgeHost.inspect(appId).catch(error => ({ screenshotError: error instanceof Error ? error.message : String(error) })).then(result => fetch(`/v1/agent/inspect/${encodeURIComponent(id)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...(result as object), appId }) })).catch(() => undefined);
+        return;
+      }
       if ((e.data as { __chrysalisAgent?: unknown } | null)?.__chrysalisAgent !== "ready") return
       agentReady.current = true
       deliverAgentPrompt()
