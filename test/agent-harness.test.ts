@@ -34,7 +34,7 @@ function fixture() {
   fs.mkdirSync(skill, { recursive: true });
   fs.writeFileSync(path.join(app, "manifest.json"), '{"name":"Studio","kind":"web","version":"1.0.0"}');
   fs.writeFileSync(path.join(skill, "SKILL.md"), "---\nname: preset-editing\ndescription: Inspect and edit presets\n---\nInspect before editing.");
-  for (const name of ["inspect.js", "edit.js"]) fs.copyFileSync(path.resolve("../chrysalis-roleplay/.agents/skills/preset-editing", name), path.join(skill, name));
+  for (const name of ["inspect.js", "edit.js"]) fs.copyFileSync(path.join(import.meta.dir, "fixtures/preset-skill", name), path.join(skill, name));
   const file = path.join(app, "data/presets/example.json");
   const record = { id: "example", name: "Example", opaque: { future: [1, 2] }, prompts: [{ identifier: "main", name: "Main", role: "system", content: "before" }], prompt_order: [{ character_id: 100001, order: [{ identifier: "main", enabled: true }] }], studio: { sections: [{ id: "main", name: "Main", role: "system", content: "before", enabled: true }] } };
   fs.writeFileSync(file, JSON.stringify(record));

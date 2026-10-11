@@ -214,6 +214,7 @@ afterEach(() => {
   });
 
   it("app image proxy: allowlisted plugin hosts only, images only, redirect hops re-validated", async () => {
+    // Fetch is mocked; an address literal keeps this fixture independent of DNS.
     const realFetch = globalThis.fetch;
     const hops: string[] = [];
     globalThis.fetch = Object.assign(
@@ -221,7 +222,7 @@ afterEach(() => {
         const target = String(input);
         hops.push(target);
         if (target.includes("/hop1")) {
-          return new Response(null, { status: 302, headers: { location: "https://avatars.charhub.io/final.webp" } });
+          return new Response(null, { status: 302, headers: { location: "https://203.0.113.10/final.webp" } });
         }
         return new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "content-type": "image/webp" } });
       },
@@ -231,24 +232,24 @@ afterEach(() => {
       // a plugin in the app allowlists the image host
       const plugin = path.join(dataDir, "users", "alice", "apps", "notes", "plugins", "art");
       fs.mkdirSync(plugin, { recursive: true });
-      fs.writeFileSync(path.join(plugin, "manifest.json"), JSON.stringify({ name: "Art", version: "1.0.0", permissions: ["routes", "network"], networkHosts: ["avatars.charhub.io"] }));
+      fs.writeFileSync(path.join(plugin, "manifest.json"), JSON.stringify({ name: "Art", version: "1.0.0", permissions: ["routes", "network"], networkHosts: ["203.0.113.10"] }));
       fs.writeFileSync(path.join(plugin, "plugin.js"), "export function handleRoute() { return null; }");
-      const ok = await app.request(`/v1/apps/notes/img?url=${encodeURIComponent("https://avatars.charhub.io/avatars/u/b/avatar.webp")}`, { headers: h() });
+      const ok = await app.request(`/v1/apps/notes/img?url=${encodeURIComponent("https://203.0.113.10/avatars/u/b/avatar.webp")}`, { headers: h() });
       expect(ok.status).toBe(200);
       expect(ok.headers.get("content-type")).toBe("image/webp");
       expect(new Uint8Array(await ok.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
       // allowlisted hop → redirects are followed onto a still-allowlisted host
-      const via = await app.request(`/v1/apps/notes/img?url=${encodeURIComponent("https://avatars.charhub.io/hop1")}`, { headers: h() });
+      const via = await app.request(`/v1/apps/notes/img?url=${encodeURIComponent("https://203.0.113.10/hop1")}`, { headers: h() });
       expect(via.status).toBe(200);
-      expect(hops.at(-1)).toBe("https://avatars.charhub.io/final.webp");
+      expect(hops.at(-1)).toBe("https://203.0.113.10/final.webp");
       // host no plugin declared → refused; plain http too
       const denied = await app.request(`/v1/apps/notes/img?url=${encodeURIComponent("https://evil.example.com/x.png")}`, { headers: h() });
       expect(denied.status).toBe(403);
-      const http = await app.request(`/v1/apps/notes/img?url=${encodeURIComponent("http://avatars.charhub.io/x.png")}`, { headers: h() });
+      const http = await app.request(`/v1/apps/notes/img?url=${encodeURIComponent("http://203.0.113.10/x.png")}`, { headers: h() });
       expect(http.status).toBe(400);
       // non-image content-type is refused even from an allowlisted host
       globalThis.fetch = Object.assign(async () => new Response("nope", { status: 200, headers: { "content-type": "text/html" } }), { preconnect: (): void => {} }) as typeof fetch;
-      const html = await app.request(`/v1/apps/notes/img?url=${encodeURIComponent("https://avatars.charhub.io/x")}`, { headers: h() });
+      const html = await app.request(`/v1/apps/notes/img?url=${encodeURIComponent("https://203.0.113.10/x")}`, { headers: h() });
       expect(html.status).toBe(415);
     } finally {
       globalThis.fetch = realFetch;

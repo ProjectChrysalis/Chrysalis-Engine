@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { normalizeContext } from "@earendil-works/pi-ai";
+import { normalizeContext, type Model } from "@earendil-works/pi-ai";
 import { discoverAppPlugins, discoverPlugins, invalidatePluginCache } from "../src/plugins/runtime.js";
 import { CURATED_PROVIDERS, curatedProviders, mapOpenAiModelsResponse } from "../src/providers/custom.js";
 import { UserModelService } from "../src/models.js";
@@ -137,7 +137,7 @@ describe("curated providers", () => {
 
     const { buildProvider } = await import("../src/providers/custom.js");
     const prov = buildProvider("nanogpt", { ...CURATED_PROVIDERS["nanogpt"]!, models: [{ id: "anthropic/claude-x", reasoning: true }, { id: "zai/glm-x" }] }, { codeDefined: true });
-    const models = prov.getModels() as readonly { id: string; compat?: { cacheControlFormat?: string; thinkingFormat?: string } }[];
+    const models = prov.getModels() as readonly Model<"openai-completions">[];
     // the endpoint places cache breakpoints itself, so no inline markers
     expect(models[0]?.compat).toEqual({ supportsFinishReason: false, thinkingFormat: "openrouter" });
 
@@ -166,7 +166,7 @@ describe("curated providers", () => {
       models: [{ id: "anthropic/claude-x" }, { id: "claude-y" }, { id: "openai/gpt-x" }, { id: "meta/llama" }],
     });
     // without the marker every turn re-reads the whole context at full price
-    const models = prov.getModels() as readonly { id: string; compat?: { cacheControlFormat?: string } }[];
+    const models = prov.getModels() as readonly Model<"openai-completions">[];
     const compatOf = (id: string) => models.find((m) => m.id === id)?.compat?.cacheControlFormat;
     expect(compatOf("anthropic/claude-x")).toBe("anthropic");
     expect(compatOf("claude-y")).toBe("anthropic");
@@ -181,7 +181,7 @@ describe("curated providers", () => {
       baseUrl: "http://127.0.0.1:8080/v1",
       models: [{ id: "claude-ish-merge" }],
     });
-    const localModel = local.getModels()[0] as { compat?: { cacheControlFormat?: string } };
+    const localModel = local.getModels()[0] as Model<"openai-completions">;
     expect(localModel.compat).toEqual({ supportsFinishReason: false });
   });
 
