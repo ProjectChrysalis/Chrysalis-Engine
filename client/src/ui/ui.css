@@ -315,3 +315,27 @@
 @keyframes text-shimmer {
   to { background-position: -200% 0; }
 }
+
+/* markdown */
+[data-component="markdown"] { font-size: 0.8125rem; line-height: 1.6; color: var(--c-ink); overflow-wrap: anywhere; }
+[data-component="markdown"] > :first-child { margin-top: 0; }
+[data-component="markdown"] > :last-child { margin-bottom: 0; }
+[data-component="markdown"] :is(p, ul, ol, pre, blockquote, hr, [data-slot="markdown-table"]) { margin: 0.5rem 0; }
+[data-component="markdown"] :is(h3, h4, h5, h6) { margin: 1rem 0 0.375rem; font-weight: 600; line-height: 1.35; }
+[data-component="markdown"] h3 { font-size: 0.9375rem; }
+[data-component="markdown"] h4 { font-size: 0.875rem; }
+[data-component="markdown"] :is(h5, h6) { font-size: 0.8125rem; }
+[data-component="markdown"] ul { list-style: disc; padding-left: 1.25rem; }
+[data-component="markdown"] ol { list-style: decimal; padding-left: 1.25rem; }
+[data-component="markdown"] li { margin: 0.125rem 0; }
+[data-component="markdown"] li > :is(ul, ol, p, pre) { margin: 0.25rem 0; }
+[data-component="markdown"] a { color: var(--c-accent); text-decoration: underline; text-underline-offset: 2px; }
+[data-component="markdown"] code { padding: 0.0625rem 0.3125rem; border-radius: 0.3125rem; background: var(--c-panel); border: 1px solid var(--c-line); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
+[data-component="markdown"] pre { padding: 0.625rem 0.75rem; border-radius: 0.5rem; background: var(--c-panel); border: 1px solid var(--c-line); overflow-x: auto; line-height: 1.5; }
+[data-component="markdown"] pre code { padding: 0; border: 0; background: none; font-size: 0.75rem; white-space: pre; }
+[data-component="markdown"] blockquote { padding-left: 0.75rem; border-left: 2px solid var(--c-line); color: var(--c-ink-muted); }
+[data-component="markdown"] hr { border: 0; border-top: 1px solid var(--c-line); }
+[data-component="markdown"] [data-slot="markdown-table"] { overflow-x: auto; }
+[data-component="markdown"] table { border-collapse: collapse; font-size: 0.75rem; }
+[data-component="markdown"] :is(th, td) { padding: 0.25rem 0.5rem; border: 1px solid var(--c-line); text-align: left; vertical-align: top; }
+[data-component="markdown"] th { font-weight: 600; background: var(--c-panel); }

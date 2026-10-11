@@ -24,9 +24,10 @@ import { initRepo, untrackBoundary, commitAll as gitCommitAll, commitPaths as gi
 import { renameAppDir } from "./apps/manager.js";
 import { gcRepoIfChunky } from "./apps/git.js";
 import { adoptFormerlyShipped } from "./apps/store.js";
-import { buildApp } from "./server/app.js";
+import { buildApp, SESSION_COOKIE, sessionUserOf } from "./server/app.js";
+import { ServiceManager } from "./apps/service.js";
 import { EventBus } from "./server/ws.js";
-import { engineUrls, Listener, selfUrl } from "./server/listen.js";
+import { engineUrls, Listener, readTls, selfUrl } from "./server/listen.js";
 import { ServerSettings } from "./server/settings.js";
 import { stopSchedules } from "./plugins/runtime.js";
 import { stopLookWatchers } from "./server/look-watch.js";
@@ -633,6 +634,12 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
   const bus = new EventBus();
   const sessions = new SessionService(dataDir);
   const sandbox = createSandbox(sandboxConfigOf(config), bus);
+  const services = new ServiceManager({
+    config,
+    tls: () => readTls(config, homeDir),
+    sessionUser: sessionUserOf(sessions, users),
+    sessionCookie: SESSION_COOKIE,
+  });
   let listener: Listener | null = null;
   const settings = new ServerSettings({
     homeDir,
@@ -640,6 +647,9 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
     loaded,
     applySocket: (next, previous) => {
       const moved = listener!.rebind(next, previous);
+      // their front ports sit beside the old socket: they come back on the
+      // new one the next time each app is opened
+      if (moved) void services.stopAll();
       if (moved) writeLock(dataDir, { pid: process.pid, instance, url: selfUrl(next), startedAt: Date.now() });
       return moved;
     },
@@ -652,6 +662,7 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
     // stop plugin schedules + look watchers so nothing fires mid-teardown
     stopSchedules();
     stopLookWatchers();
+    await services.stopAll();
     bus.dispose();
     releaseLock(dataDir, instance);
     await listener?.stop();
@@ -663,7 +674,7 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
     await stopServing();
     runReplacement({ dataDir });
   };
-  const app = buildApp({ users, sessions, config, dataDir, bus, sandbox, instance, setupToken, settings, restart });
+  const app = buildApp({ users, sessions, config, dataDir, bus, sandbox, instance, setupToken, settings, restart, services });
   bus.attach(users, sessions);
 
   listener = new Listener({ homeDir, bus, handle: (req, peerAddress) => app.fetch(req, { peerAddress }) });

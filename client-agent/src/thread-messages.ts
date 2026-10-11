@@ -17,6 +17,8 @@ function toThreadMessage(m: Msg): ThreadMessageLike {
     content: visibleParts(m).map((p) => {
       if (p.kind === "think") return { type: "reasoning" as const, text: p.text }
       if (p.kind === "text") return { type: "text" as const, text: p.text }
+      // a presented plan is read as part of the reply, not folded away with the steps
+      if (p.name === "present_plan" && typeof p.args.plan === "string" && p.args.plan) return { type: "text" as const, text: p.args.plan }
       // engine tool args arrive from JSON.parse — display-only cast at this boundary
       return {
         type: "tool-call" as const,

@@ -1,7 +1,7 @@
 // Engine run/turn records → the flat part list the UI renders. Both the
 // session history loader and the final POST response go through here, so a
 // stream and its authoritative record land on the same shapes.
-import type { AgentResponse, EngineRun, EngineTool, EngineTurn } from "./api.js"
+import type { AgentResponse, EngineRun, EngineTool, EngineTurn, EngineUsage } from "./api.js"
 import type { StreamEvent } from "./streaming.js"
 
 export type ToolState = "running" | "ok" | "error"
@@ -30,6 +30,15 @@ export interface TextPartData {
 }
 
 export type PartData = ToolPartData | ThinkPartData | TextPartData
+
+export function usageFromRuns(runs: EngineRun[]): EngineUsage | null {
+  for (let i = runs.length - 1; i >= 0; i--) {
+    const run = runs[i]
+    if (run?.type === "compact") return null
+    if (run?.type === "run" && run.usage) return run.usage
+  }
+  return null
+}
 
 export interface Msg {
   id: string

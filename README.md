@@ -89,7 +89,7 @@ Put a `config.yaml` next to the program to keep everything in that folder instea
 ```yaml
 port: 8788
 lan: false          # true: phones and other computers on your network can open it
-allowedHosts: []    # extra names, like chrysalis.home or a Tailscale name
+allowedHosts: []    # extra names, like chrysalis.home or *.trycloudflare.com
 ssl:
   enabled: false    # HTTPS: phones need it for the microphone and installing as an app
 ```

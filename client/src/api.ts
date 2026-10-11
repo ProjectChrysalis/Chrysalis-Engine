@@ -264,6 +264,8 @@ export async function installFromGit(gitUrl: string, ref?: string, id?: string):
 export interface AppImportPreview {
   manifest: { name: string; version: string; author: string | null }
   plugins: { id: string; name: string; version: string | null; description: string | null; permissions: string[]; networkHosts: string[] }[]
+  /** Set for an app that runs its own program instead of a sandboxed UI. */
+  service: { command: string[]; setup: string[] | null; cwd: string } | null
 }
 
 /** Upload a backup zip for review: the engine unpacks it and says what it
@@ -318,6 +320,16 @@ export interface ServerConfig {
   dataRoot: string
 }
 
+/** The firewall of the computer running the engine, and the rule for its ports. */
+export interface FirewallState {
+  kind: "ufw" | "firewalld" | "windows" | "macos" | null
+  allowed: boolean
+  oneClick: boolean
+  first: number
+  last: number
+  command: string
+}
+
 export interface ServerInfo {
   version: string
   installKind: "source" | "binary" | "npm" | "android"
@@ -356,6 +368,8 @@ export const serverApi = {
   installUpdate: () => api<EngineUpdateState>("POST", "/v1/admin/server/update"),
   updateState: () => api<EngineUpdateState>("GET", "/v1/admin/server/update"),
   update: (changes: Record<string, unknown>) => api<ServerInfo & { moved: boolean }>("PUT", "/v1/admin/server", { changes }),
+  firewall: () => api<FirewallState>("GET", "/v1/admin/server/firewall"),
+  allowFirewall: () => api<FirewallState>("POST", "/v1/admin/server/firewall"),
 }
 
 export const adminUsersApi = {

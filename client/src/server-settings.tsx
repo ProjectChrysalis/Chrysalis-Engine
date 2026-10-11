@@ -88,6 +88,7 @@ function TextSetting(props: {
   disabled: boolean
   inputMode?: "numeric" | "text"
   placeholder?: string
+  hint?: string
   onSave: (value: string) => void
 }) {
   const [draft, setDraft] = useState(props.value)
@@ -111,7 +112,63 @@ function TextSetting(props: {
           {tr("Save")}
         </Button>
       </div>
+      {props.hint ? <p className="pl-26 text-12 text-ink-faint">{props.hint}</p> : null}
       {props.locked ? <p className="pl-26 text-12 text-ink-faint">{tr("Set by {source} for this run", { source: props.locked })}</p> : null}
+    </div>
+  )
+}
+
+/** The firewall on the engine's computer, when one is on: one button asks
+ *  that computer to let the local network in. `port` re-reads it after the
+ *  ports moved. */
+function FirewallRow(props: { port: number }) {
+  const fw = useResource(() => serverApi.firewall().catch(() => undefined), [props.port])
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState("")
+  const s = fw.data
+  if (!s || !s.kind) return null
+  const allow = async () => {
+    setBusy(true)
+    setErr("")
+    try {
+      fw.mutate(await serverApi.allowFirewall())
+    } catch (e) {
+      setErr((e as Error).message ?? String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg border border-line px-3 py-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="min-w-0 flex-1 basis-56 text-13 text-ink">
+          {s.allowed
+            ? tr("The firewall on the computer running Chrysalis lets other devices in.")
+            : tr("The firewall on the computer running Chrysalis may be blocking other devices.")}
+        </span>
+        {s.oneClick ? (
+          <Button variant={s.allowed ? "neutral" : "primary"} size="small" disabled={busy} onClick={() => void allow()}>
+            {s.allowed ? tr("Allow again") : tr("Allow on this network")}
+          </Button>
+        ) : null}
+      </div>
+      <p className="text-12 leading-4 text-ink-muted">
+        {busy
+          ? tr("Waiting for the password on that computer…")
+          : s.kind === "macos"
+            ? tr("Lets Chrysalis accept connections from other devices. That computer asks for its password.")
+            : tr("Opens ports {first} to {last} to your local network only. That computer asks for its password.", { first: String(s.first), last: String(s.last) })}
+      </p>
+      {err ? <p className="text-12 text-danger">{err}</p> : null}
+      {!s.allowed && (!s.oneClick || err) ? (
+        <div className="flex flex-col gap-1">
+          <p className="text-12 text-ink-muted">{tr("Or run this on that computer:")}</p>
+          <div className="flex items-start gap-2">
+            <code className="min-w-0 flex-1 break-all rounded bg-panel px-2 py-1 font-mono text-12 text-ink">{s.command}</code>
+            <CopyButton text={s.command} />
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -340,12 +397,14 @@ export function ServerTab() {
             onChange={(lan) => void save({ lan })}
           />
           {e.lan ? <PhoneQr urls={d.urls.lan} /> : null}
+          {e.lan ? <FirewallRow port={e.port} /> : null}
           <TextSetting
             label={tr("Host names")}
+            hint={tr("Separate multiple host names with commas.")}
             value={f.allowedHosts.join(", ")}
             locked={locked.allowedHosts}
             disabled={busy}
-            placeholder={tr("e.g. chrysalis.home, mypc.tailnet.ts.net")}
+            placeholder={tr("e.g. chrysalis.home, *.trycloudflare.com")}
             onSave={(v) => void save({ allowedHosts: v.split(",").map((h) => h.trim()).filter(Boolean) })}
           />
         </Section>

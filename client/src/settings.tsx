@@ -33,6 +33,7 @@ import {
   type OAuthFlow,
 } from "./api"
 import type { Me } from "./types"
+import { AgentSkills } from "./agent-skills"
 import { ServerTab } from "./server-settings"
 import { LOCALES, setLocale, tr, useLocale, type Locale } from "./i18n/index"
 
@@ -75,7 +76,7 @@ const LOCAL_SERVERS: LocalPick[] = [
 type OAuthPick = { id: string; providerId: string; label: string; kind: "builtin"; baseUrl: null; apiKeyAuth: false; hasKey: false; authKind: "oauth" | "credentials"; needsGateway?: boolean }
 type ProviderPick = EngineProvider | CustomPick | OAuthPick | LocalPick
 
-export type TabValue = "general" | "api" | "speech" | "agent" | "mcp" | "developer" | "server" | "users"
+export type TabValue = "general" | "api" | "speech" | "agent" | "mcp" | "server" | "users"
 
 export function SettingsBody(props: { onClose: () => void; me: Me; initialTab?: TabValue | null; onLogout: () => void }) {
   const [tab, setTab] = useState<TabValue>(props.initialTab ?? "api")
@@ -85,7 +86,6 @@ export function SettingsBody(props: { onClose: () => void; me: Me; initialTab?: 
     { value: "speech", label: tr("Speech"), icon: <Icon name="speaker" /> },
     { value: "agent", label: tr("Agent"), icon: <Icon name="brain" /> },
     { value: "mcp", label: tr("MCP servers"), icon: <Icon name="terminal-active" /> },
-    { value: "developer", label: tr("Developer"), icon: <Icon name="code" /> },
     ...(props.me.role === "admin"
       ? [
           { value: "server" as const, label: tr("Server"), icon: <Icon name="server" /> },
@@ -112,7 +112,6 @@ export function SettingsBody(props: { onClose: () => void; me: Me; initialTab?: 
       {v === "speech" && <SpeechTab />}
       {v === "agent" && <AgentTab />}
       {v === "mcp" && <McpTab />}
-      {v === "developer" && <DeveloperTab />}
       {v === "server" && <ServerTab />}
       {v === "users" && <UsersTab me={props.me} />}
     </>
@@ -156,9 +155,6 @@ export function SettingsBody(props: { onClose: () => void; me: Me; initialTab?: 
           </Tabs.Content>
           <Tabs.Content value="mcp" className="no-scrollbar">
             <McpTab />
-          </Tabs.Content>
-          <Tabs.Content value="developer" className="no-scrollbar">
-            <DeveloperTab />
           </Tabs.Content>
           <Tabs.Content value="server" className="no-scrollbar">
             <ServerTab />
@@ -467,6 +463,7 @@ function AgentTab() {
       <div className="flex flex-col gap-6 pb-4">
         <InternetSection />
         <AutoCompactSection />
+        <AgentSkills />
         <div className="flex flex-col gap-2">
           <h3 className="text-13 font-medium text-ink">{tr("Agent instructions")}</h3>
           <p className="text-12 text-ink-muted">
@@ -1495,83 +1492,6 @@ function ModelsEditor(props: {
           </p>
         </div> : null}
     </div>
-  )
-}
-
-// ---------------------------------------------------------------- developer
-
-type AppBuildInfo = {
-  buildable: boolean
-  needsBuild: boolean
-  status: { ok: boolean; mode: "development" | "production"; errors: Array<{ text: string; file?: string; line?: number }>; at: number } | null
-}
-
-/** Live editing: apps are built in this browser, in a sandboxed builder
- *  frame, and edits land as hot updates with no page reload. Nothing to
- *  switch on; this pane reports each app's last build. */
-function DeveloperTab() {
-  const [apps, setApps] = useState<Array<{ id: string; name?: string }>>([])
-  const [state, setState] = useState<Record<string, AppBuildInfo>>({})
-  const [loaded, setLoaded] = useState(false)
-  const [err, setErr] = useState("")
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        const l = await api<{ apps?: Array<{ id: string; name?: string }> }>("GET", "/v1/launch")
-        const list = l.apps ?? []
-        const entries = await Promise.all(
-          list.map(async (a) => {
-            const s = await api<AppBuildInfo>("GET", `/v1/apps/${encodeURIComponent(a.id)}/build`)
-            return [a.id, s] as const
-          }),
-        )
-        setApps(list)
-        setState(Object.fromEntries(entries))
-      } catch (e) {
-        setErr((e as Error).message ?? String(e))
-      }
-      setLoaded(true)
-    })()
-  }, [])
-
-  const describe = (b: AppBuildInfo | undefined): { text: string; tone: "ok" | "bad" | "idle" } => {
-    if (!b || !b.buildable) return { text: tr("No page to build"), tone: "idle" }
-    if (!b.status) return { text: tr("Builds when you open it"), tone: "idle" }
-    if (!b.status.ok) {
-      const e = b.status.errors[0]
-      return { text: tr("Build failed") + (e ? `: ${e.file ?? ""}${e.line ? `:${e.line}` : ""} ${e.text}` : ""), tone: "bad" }
-    }
-    const when = b.needsBuild ? " " + tr("(changed since, rebuilds on open)") : ""
-    return { text: (b.status.mode === "development" ? tr("Live: edits apply in place") : tr("Production build")) + when, tone: "ok" }
-  }
-
-  return (
-    <Pane title={tr("Developer")} description={tr("Live hot reload. Always on for every app.")}>
-      <div className="flex flex-col gap-4 pb-4">
-        <section className="flex flex-col gap-2">
-          {loaded ? <>{apps.map((a) => {
-                const d = describe(state[a.id])
-                return (
-                  <div key={a.id} className="flex items-center gap-3 rounded-lg border border-line px-3 py-2 text-13">
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate font-medium">{a.name || a.id}</span>
-                      <span className={cn("block truncate text-11", d.tone === "bad" ? "text-danger" : "text-ink-faint")}>{d.text}</span>
-                    </span>
-                    <span className={cn("size-2 shrink-0 rounded-full", { "bg-success": d.tone === "ok", "bg-danger": d.tone === "bad", "bg-ink-faint": d.tone === "idle" })} />
-                  </div>
-                )
-              })}
-            {apps.length === 0 ? <div className="rounded-lg border border-dashed border-line px-3 py-4 text-center text-13 text-ink-faint">
-                {tr("No apps installed yet.")}
-              </div> : null}</>: <div className="text-13 text-ink-faint">{tr("Loading…")}</div>}
-        </section>
-        <p className="text-12 leading-4 text-ink-muted">
-          {tr("Apps are built inside this browser, in a sandbox that can only read the app being built. Edits to an app's source apply in place while it is open, with no page reload.")}
-        </p>
-        {err ? <div className="text-12 text-danger">{err}</div> : null}
-      </div>
-    </Pane>
   )
 }
 

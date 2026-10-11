@@ -108,6 +108,31 @@ describe("fitContext", () => {
     expect(fit.messages.length).toBe(messages.length);
   });
 
+  it("leaves a loaded skill whole while clipping the output around it", () => {
+    const big = "line of file content\n".repeat(3000);
+    const skill = "Step of the skill.\n".repeat(200);
+    const messages = [
+      user("fix the app"),
+      assistant([{ type: "toolCall", id: "s", name: "skill_load", arguments: { name: "editing" } }], { stopReason: "toolUse" }),
+      { ...result("s", skill), toolName: "skill_load" } as unknown as AgentMessage,
+      call("a", { path: "a.ts" }),
+      result("a", big),
+      call("b", { path: "b.ts" }),
+      result("b", big),
+      call("c", { path: "c.ts" }),
+      result("c", "short"),
+      call("d", { path: "d.ts" }),
+      result("d", "short"),
+      call("e", { path: "e.ts" }),
+      result("e", "short"),
+      assistant([{ type: "text", text: "done" }]),
+    ];
+    const fit = fitContext(model, { messages });
+    expect(fit.trimmed).toBe(true);
+    expect(fit.messages[2]).toBe(messages[2]);
+    expect((fit.messages[4] as unknown as { content: { text: string }[] }).content[0]!.text).toContain("chars trimmed to save context");
+  });
+
   it("drops the oldest history behind a notice, keeping the task and every result's call", () => {
     const messages: AgentMessage[] = [user("build a visual novel app")];
     for (let i = 0; i < 400; i++) {

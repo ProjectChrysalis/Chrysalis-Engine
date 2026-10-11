@@ -28,7 +28,7 @@
 import { consoleStyle as c } from "./console-style.js";
 
 const bar = (label: string): string =>
-  `${c.gray}│ ${c.dim}── ${label} ${"─".repeat(Math.max(3, 46 - label.length))}${c.reset}`;
+  `${c.bold}│ ── ${label} ${"─".repeat(Math.max(3, 46 - label.length))}${c.reset}`;
 const row = (line: string): string => `${c.gray}│${c.reset} ${line}`;
 
 export interface TracePayload {
@@ -52,22 +52,15 @@ export function llmLogRequest(source: string | undefined, p: TracePayload): void
     `${c.bold}${provider}/${c.cyan}${rest.join("/")}${c.reset}${via}` +
     `${c.gray} · ${p.prompt != null ? "prompt" : `${(p.messages?.length ?? 0)} msgs`}${c.reset}`;
 
-  // one message per line, role+content compact — readable AND valid JSON
-  const wire: { role: string; content: string }[] = [
+  const wire = [
     ...(p.systemPrompt ? [{ role: "system", content: p.systemPrompt }] : []),
-    ...(p.messages ?? []).filter((m) => m.role !== "system"),
+    ...(p.messages ?? []).filter((message) => !p.systemPrompt || message.role !== "system"),
   ];
-  const body: string[] = [`  "model": ${JSON.stringify(rest.join("/"))},`];
-  for (const [k, v] of Object.entries(p.params)) body.push(`  ${JSON.stringify(k)}: ${JSON.stringify(v)},`);
-  body.push(`  "stream": true,`);
-  if (p.prompt != null) body.push(`  "prompt": ${JSON.stringify(p.prompt)}`);
-  else {
-    body.push(`  "messages": [`);
-    wire.forEach((m, i) => { body.push(`    ${JSON.stringify(m)}${i < wire.length - 1 ? "," : ""}`); });
-    body.push(`  ]`);
-  }
-
-  console.log([head, bar("request"), row(c.gray + "{" + c.reset), ...body.map((l) => row(c.gray + l + c.reset)), row(c.gray + "}" + c.reset)].join("\n"));
+  const request = { model: rest.join("/"), ...p.params, stream: true,
+    ...(p.prompt != null ? { prompt: p.prompt } : { messages: wire }) };
+  const body = JSON.stringify(request, null, 2).split("\n").map((line) =>
+    row((line.trimStart().startsWith('"role":') ? c.magenta : line.trimStart().startsWith('"content":') || line.trimStart().startsWith('"prompt":') ? c.cyan : c.gray) + line + c.reset));
+  console.log([head, bar("request"), ...body].join("\n"));
 }
 
 export function llmLogTool(
@@ -76,7 +69,7 @@ export function llmLogTool(
   args: Record<string, unknown>,
   result: { text: string; isError?: boolean },
 ): void {
-  const outcome = result.isError ? `${c.red}✗ ${result.text}` : c.green + result.text.slice(0, 160);
+  const outcome = result.isError ? `${c.red}✗ ${result.text}` : c.green + result.text;
   console.log(
     row(`${c.magenta}⚙ tool round ${round}${c.reset} · ${c.bold}${name}${c.reset} ${JSON.stringify(args)} ${c.gray}→${c.reset} ${outcome}${c.reset}`),
   );
@@ -101,7 +94,7 @@ export function llmLogResult(
     ...(lines.length === 1 && lines[0] === "" ? [row(c.dim + "(empty response)" + c.reset)] : lines.map((l) => row(l))),
   ];
   if (res.reasoning) {
-    out.unshift(bar("thinking"), ...res.reasoning.split("\n").slice(0, 8).map((l) => row(c.dim + l + c.reset)));
+    out.unshift(bar("thinking"), ...res.reasoning.split("\n").map((l) => row(c.magenta + l + c.reset)));
   }
   console.log(
     [

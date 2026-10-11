@@ -1,5 +1,4 @@
 import type { ComponentPropsWithoutRef } from "react"
-import { HardDrives } from "@phosphor-icons/react"
 import anthropic from "@lobehub/icons-static-svg/icons/anthropic.svg"
 import bedrock from "@lobehub/icons-static-svg/icons/bedrock.svg"
 import antgroup from "@lobehub/icons-static-svg/icons/antgroup.svg"
@@ -17,6 +16,7 @@ import vercel from "@lobehub/icons-static-svg/icons/vercel.svg"
 import zai from "@lobehub/icons-static-svg/icons/zai.svg"
 import mistral from "@lobehub/icons-static-svg/icons/mistral.svg"
 import minimax from "@lobehub/icons-static-svg/icons/minimax.svg"
+import meta from "@lobehub/icons-static-svg/icons/meta.svg"
 import moonshot from "@lobehub/icons-static-svg/icons/moonshot.svg"
 import huggingface from "@lobehub/icons-static-svg/icons/huggingface.svg"
 import fireworks from "@lobehub/icons-static-svg/icons/fireworks.svg"
@@ -67,6 +67,7 @@ const logos: Record<string, string> = {
   "zai-coding-cn": zai,
   "mistral": mistral,
   "minimax": minimax,
+  "meta": meta,
   "minimax-cn": minimax,
   "moonshotai": moonshot,
   "moonshotai-cn": moonshot,
@@ -110,13 +111,10 @@ const logos: Record<string, string> = {
 
 export function ProviderIcon({ id, className, ...rest }: ComponentPropsWithoutRef<"span"> & { id: string }) {
   const logo = logos[id.replace(/^oauth_/, "")]
+  if (!logo) return null
   return (
     <span data-component="provider-icon" className={className} aria-hidden="true" {...rest}>
-      {logo ? (
-        <span className="provider-logo" style={{ maskImage: `url("${logo}")` }} />
-      ) : (
-        <HardDrives className="size-full" />
-      )}
+      <span className="provider-logo" style={{ maskImage: `url("${logo}")` }} />
     </span>
   )
 }

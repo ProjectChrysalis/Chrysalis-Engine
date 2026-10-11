@@ -1,6 +1,7 @@
 // Chrysalis shell: logo, tabs, theme toggle, auth, launch picker.
 import { Fragment, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react"
 import { createPortal } from "react-dom"
+import { Tabs } from "./ui/tabs"
 import { ModalDialog } from "./ui/dialog"
 import { cn } from "./ui/cn"
 import { useResource } from "./use-resource"
@@ -9,11 +10,12 @@ import { IconSmall } from "./ui/icon"
 import { Icon } from "./ui/icon"
 import { IconButton } from "./ui/button"
 import { Button } from "./ui/button"
-import { api, prefs, authApi, appPluginsApi, confirmAppFile, exportApp, previewAppFile, updatesApi, type AppImportPreview, type AuthUser } from "./api"
+import { api, prefs, authApi, appPluginsApi, connectionsApi, confirmAppFile, exportApp, previewAppFile, updatesApi, type AppImportPreview, type AuthUser } from "./api"
 import { SettingsBody, type TabValue } from "./settings"
 import { EngineUpdateButton } from "./server-settings"
 import type { LaunchInfo, Me, StoreApp } from "./types"
 import { StoreDialog, WelcomeApps, useStore } from "./store"
+import { SERVICE_PANE_EVENT, ServiceCanvas } from "./service-canvas"
 import { tr, useLocale } from "./i18n/index"
 
 type Tab = { id: string; kind: "agent" | "app" | "new"; name: string }
@@ -28,6 +30,17 @@ const isNewTabId = (id: string) => id.startsWith("__new")
 /** the open strip + active tab + pinned pane, so a refresh lands back where
  * you were instead of the picker (cleared by logout) */
 const SESSION_TABS_KEY = "chrysalis-session-tabs"
+
+const recentAppsKey = (username: string) => `chrysalis-app-recent:${username}`
+/** When each app was last opened in this browser, by app id. */
+function readRecentApps(username: string): Record<string, number> {
+  try {
+    const saved = JSON.parse(prefs.get(recentAppsKey(username)) ?? "{}") as unknown
+    return saved && typeof saved === "object" ? (saved as Record<string, number>) : {}
+  } catch {
+    return {}
+  }
+}
 
 function SunIcon() {
   return (
@@ -284,6 +297,7 @@ function Shell(props: { theme: "light" | "dark"; onTheme: () => void }) {
     return from?.apps.find((a) => a.id === id)?.name || id
   }
   function openApp(id: string) {
+    if (user) prefs.set(recentAppsKey(user.username), JSON.stringify({ ...readRecentApps(user.username), [id]: Date.now() }))
     placeTab({ id, kind: "app", name: appName(id) })
   }
   /** Clicking a tab in the strip only switches to it — it never rearranges or
@@ -426,7 +440,7 @@ function Shell(props: { theme: "light" | "dark"; onTheme: () => void }) {
                 theme={props.theme}
                 onTheme={props.onTheme}
                 onSettings={() => openSettings()}
-                app={active?.kind === "app" ? { id: active.id, name: active.name, onPlugins: () => openPlugins(active.id) } : null}
+                app={active?.kind === "app" ? { id: active.id, name: active.name, onPlugins: () => openPlugins(active.id), service: launch?.apps.find((a) => a.id === active.id)?.kind === "service" } : null}
               />
               <button
                 className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-hover hover:text-ink"
@@ -450,6 +464,8 @@ function Shell(props: { theme: "light" | "dark"; onTheme: () => void }) {
                 lands on); it renders INSIDE main so the shell never splits */}
             {active === null || active?.kind === "new" ? <LaunchPicker
                 launch={launch}
+                username={user.username}
+                onApiSetup={() => openSettings("api")}
                 onAgent={openAgent}
                 onAskAgent={askAgent}
                 onApp={openApp}
@@ -491,7 +507,12 @@ function Shell(props: { theme: "light" | "dark"; onTheme: () => void }) {
                     gridRow: 1,
                   }}
                 >
-                  <AppCanvas
+                  {launch?.apps.find((a) => a.id === t.id)?.kind === "service" ? <ServiceCanvas
+                    tab={t}
+                    onAskAgent={(prompt) => askAgent(prompt, t.id)}
+                    split={pinned?.id === t.id}
+                    onSplit={() => splitWith(t)}
+                  /> : <AppCanvas
                     username={user.username}
                     tab={t}
                     trusted={launch?.apps.find((a) => a.id === t.id)?.official === true}
@@ -499,7 +520,7 @@ function Shell(props: { theme: "light" | "dark"; onTheme: () => void }) {
                     split={pinned?.id === t.id}
                     onSplit={() => splitWith(t)}
                     onPlugins={() => openPlugins(t.id)}
-                  />
+                  />}
                 </div>
               ))}
           </main>
@@ -535,7 +556,7 @@ function UserMenu(props: {
   theme: "light" | "dark"
   onTheme: () => void
   onSettings: () => void
-  app: { id: string; name: string; onPlugins: () => void } | null
+  app: { id: string; name: string; onPlugins: () => void; service?: boolean } | null
 }) {
   const [open, setOpen] = useState(false)
   const [avatarOk, setAvatarOk] = useState(true)
@@ -584,6 +605,28 @@ function UserMenu(props: {
           >
             {app ? <div className="flex flex-col border-b border-line pb-1 mb-1 md:hidden">
                 <div className="truncate px-2 py-1.5 text-11 text-ink-muted">{app.name}</div>
+                {app.service ? ([
+                  ["fullscreen", "outline-square-arrow", tr("Fullscreen")],
+                  ["log", "terminal-active", tr("Program output")],
+                  ["restart", "rebuild", tr("Restart")],
+                  ["stop", "stop", tr("Stop")],
+                ] as const).map(([action, icon, label]) => (
+                  <button
+                    key={action}
+                    role="menuitem"
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-13 transition-colors hover:bg-hover"
+                    onClick={() => {
+                      setOpen(false)
+                      // the pane owns the program's state: it is asked, not reached into
+                      window.dispatchEvent(new CustomEvent(SERVICE_PANE_EVENT, { detail: { app: app.id, action } }))
+                    }}
+                  >
+                    <span className="flex size-4 shrink-0 items-center justify-center">
+                      <IconSmall name={icon} />
+                    </span>
+                    {label}
+                  </button>
+                )) : <>
                 <button
                   role="menuitem"
                   className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-13 transition-colors hover:bg-hover"
@@ -619,6 +662,7 @@ function UserMenu(props: {
                   <Icon name="rebuild" size="small" />
                   {tr("Rebuild")}
                 </button>
+                </>}
               </div> : null}
             <div className="truncate px-2 py-1.5 text-11 text-ink-muted">{tr("signed in as {username}", { username: props.username })}</div>
             <button
@@ -1128,8 +1172,48 @@ function useAppUpdates(launch: LaunchInfo | null) {
   return { has: (id: string) => ids.has(id), refresh }
 }
 
+/** The one thing a new account has to be told: where model access is set up.
+ * Gone for good once the tab was opened or the note closed, and never shown
+ * to an account that already has a connection. Remembered per account, since
+ * several people may share a browser. */
+function ApiSetupTip(props: { username: string; onOpen: () => void }) {
+  const key = `chrysalis-api-tip:${props.username}`
+  const [closed, setClosed] = useState(() => prefs.get(key) === "done")
+  const connections = useResource(() => connectionsApi.list(), [props.username])
+  const close = () => {
+    prefs.set(key, "done")
+    setClosed(true)
+  }
+  if (closed || !connections.data || connections.data.length) return null
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-line-focus px-4 py-3">
+      <div className="min-w-0 flex-1 basis-64">
+        <p className="text-14 font-medium text-ink">{tr("Set up an API connection")}</p>
+        <p className="mt-0.5 text-12 leading-4 text-ink-muted">{tr("Open Settings, then API connections. One connection works for every app.")}</p>
+      </div>
+      <div className="flex items-center gap-2">
+        <Button variant="ghost-muted" size="small" onClick={close}>
+          {tr("Got it")}
+        </Button>
+        <Button
+          variant="primary"
+          size="small"
+          onClick={() => {
+            close()
+            props.onOpen()
+          }}
+        >
+          {tr("Open API connections")}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 function LaunchPicker(props: {
   launch: LaunchInfo | null
+  username: string
+  onApiSetup: () => void
   onAgent: () => void
   onAskAgent: (prompt: string) => void
   onApp: (id: string) => void
@@ -1144,7 +1228,9 @@ function LaunchPicker(props: {
   const [welcomeSkipped, setWelcomeSkipped] = useState(false)
   const store = useStore()
   const updates = useAppUpdates(props.launch)
-  const apps = props.launch?.apps ?? []
+  // last opened first; apps never opened here keep the engine's order after them
+  const recent = readRecentApps(props.username)
+  const apps = [...(props.launch?.apps ?? [])].sort((a, b) => (recent[b.id] ?? 0) - (recent[a.id] ?? 0))
   const welcome = !!props.launch && apps.length === 0 && !welcomeSkipped
 
   const slugOf = (name: string) =>
@@ -1156,11 +1242,12 @@ function LaunchPicker(props: {
 
   return (
     <div className="row-start-1 m-2 flex min-h-0 flex-1 flex-col overflow-hidden rounded-[10px] bg-base shadow-[var(--s-raised)] max-md:m-1">
-      <div className="mx-auto flex w-full max-w-[960px] min-h-0 flex-1 flex-col px-6 py-8 max-md:px-4">
-        <div className="flex items-center gap-3 pb-4">
+      <div className="launcher-content mx-auto flex w-full max-w-[960px] min-h-0 flex-1 flex-col px-6 py-8 max-md:px-4">
+        <div className="launcher-heading flex items-center gap-3 pb-4">
           <Logo size={32} />
           <h1 className="text-20 font-medium text-ink">{welcome ? tr("Welcome to Chrysalis") : tr("Where to?")}</h1>
         </div>
+        <ApiSetupTip username={props.username} onOpen={props.onApiSetup} />
         {welcome ? <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             <WelcomeApps
               store={store}
@@ -1207,7 +1294,7 @@ function LaunchPicker(props: {
                     "border-line": selected !== a.id,
                   })}
                 >
-                  <IconSmall name="grid-plus" size="normal" className="text-icon" />
+                  <IconSmall name={a.kind === "service" ? "server" : "grid-plus"} size="normal" className="text-icon" />
                   <button
                     className="flex min-w-0 flex-1 cursor-pointer py-3 text-left"
                     // phones open the app straight away (the detail pane
@@ -1216,14 +1303,22 @@ function LaunchPicker(props: {
                     title={tr("About {name}", { name: a.name || a.id })}
                   >
                     <span className="min-w-0 flex-1">
-                      <span className="flex items-center gap-1.5">
-                        <span className="truncate text-14 font-medium text-ink">{a.name || a.id}</span>
+                      <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+                        <span className="min-w-0 truncate text-14 font-medium text-ink">{a.name || a.id}</span>
                         {a.official ? <span
                             className="shrink-0 rounded-full border border-line px-1.5 py-px text-9 font-medium tracking-wide text-ink-muted"
                             title={tr("Built and maintained by the Chrysalis maintainers")}
                           >
                             {tr("Official App")}
                           </span> : null}
+                        {a.kind === "service" ? <span
+                            className="shrink-0 rounded-full border border-warning/40 px-1.5 py-px text-9 font-medium tracking-wide text-ink-muted"
+                            title={tr("Runs its own program on this computer, outside the sandbox")}
+                          >
+                            {tr("Service App")}
+                          </span> : a.official ? null : <span className="shrink-0 rounded-full border border-line px-1.5 py-px text-9 font-medium tracking-wide text-ink-muted">
+                            {tr("App")}
+                          </span>}
                         {updates.has(a.id) ? <span
                             className="shrink-0 rounded-full bg-warning-soft/30 px-1.5 py-px text-9 font-medium tracking-wide text-ink"
                             title={tr("Update available")}
@@ -1297,6 +1392,7 @@ function LaunchPicker(props: {
                   appId={selApp.id}
                   repository={selApp.repository ?? null}
                   official={selApp.official === true}
+                  service={selApp.kind === "service"}
                   onBack={() => setSelected(null)}
                   onLaunch={() => props.onApp(selApp.id)}
                   onUpdated={() => {
@@ -1313,7 +1409,7 @@ function LaunchPicker(props: {
         </div>
       </div>
       {props.launch?.engine ? (
-          <div className="flex items-center gap-2 px-1 pb-1 pt-0.5 text-11 text-ink-faint">
+          <div className="launcher-footer flex flex-wrap items-center gap-x-3 gap-y-1 px-3 pb-2 pt-1 text-11 text-ink-faint">
             <span>{tr("Chrysalis engine v{version}", { version: props.launch.engine.version })}</span>
             {props.launch.engine.admin ? <EngineUpdateButton /> : null}
             {props.launch.engine.repository ? <a
@@ -1413,6 +1509,7 @@ function AppDetail(props: {
   appId: string
   repository: string | null
   official: boolean
+  service: boolean
   onBack: () => void
   onLaunch: () => void
   onUpdated: () => void
@@ -1426,6 +1523,8 @@ function AppDetail(props: {
       ),
     [props.appId],
   )
+  const [detailTab, setDetailTab] = useState('files')
+  useEffect(() => { setDetailTab('files') }, [props.appId])
   const [open, setOpen] = useState<Set<string>>(new Set())
   const [exporting, setExporting] = useState(false)
   const [exportErr, setExportErr] = useState("")
@@ -1568,8 +1667,8 @@ function AppDetail(props: {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-2 border-b border-line px-4 py-3">
+    <div className="app-detail-page min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <div className="app-detail-heading flex items-center gap-2 border-b border-line px-4 py-3">
         <button
           className="hidden size-7 cursor-pointer items-center justify-center rounded-md text-ink-muted hover:bg-hover @max-4xl:flex"
           onClick={props.onBack}
@@ -1578,21 +1677,30 @@ function AppDetail(props: {
           <IconSmall name="outline-chevron-down" className="rotate-90" />
         </button>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-14 font-medium text-ink">{props.appId}</p>
+          <p className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-14 font-medium text-ink">{props.appId}</span>
+            {props.service ? <span
+                className="shrink-0 rounded-full border border-warning/40 px-1.5 py-px text-9 font-medium tracking-wide text-ink-muted"
+                title={tr("Runs its own program on this computer, outside the sandbox")}
+              >
+                {tr("Service App")}
+              </span> : null}
+          </p>
           <p className="text-11 text-ink-faint">
             {detail.loading ? tr("reading files…") : `${stats().files} files · ~${stats().kb} KB`}
             {detail.data?.manifest?.version ? ` · v${detail.data.manifest.version}` : ""}
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="app-detail-actions flex shrink-0 items-center gap-1.5">
           {props.repository ? <a
               href={props.repository!}
               target="_blank"
               rel="noreferrer noopener"
               className="rounded-md px-2 py-1 text-12 text-ink-muted hover:bg-hover hover:text-ink"
               title={props.repository}
+              aria-label={tr("Repository ↗")}
             >
-              {tr("Repository ↗")}
+              <IconSmall name="outline-square-arrow" />
             </a> : null}
           <button
             className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md text-ink-faint hover:bg-hover hover:text-ink disabled:opacity-50"
@@ -1603,20 +1711,6 @@ function AppDetail(props: {
           >
             <IconSmall name="download" className={cn({ "animate-pulse": exporting })} />
           </button>
-          {canUpdate ? <Button
-              variant="ghost-muted"
-              size="small"
-              disabled={updates.state === "checking" || updates.state === "updating"}
-              onClick={() => void checkUpdates()}
-            >
-              {updates.state === "checking"
-                ? tr("Checking…")
-                : updates.state === "available"
-                  ? tr("Update available")
-                  : updates.state === "updating"
-                    ? tr("Updating…")
-                    : tr("Check for updates")}
-            </Button> : null}
           <Button variant="neutral" size="small" onClick={props.onLaunch}>
             <span className="flex items-center gap-1.5">
               <IconSmall name="outline-square-arrow" size="small" />
@@ -1626,25 +1720,48 @@ function AppDetail(props: {
         </div>
       </div>
       {exportErr ? <div className="border-b border-line px-4 py-1.5 text-11 text-danger">{tr("Export failed: {message}", { message: exportErr })}</div> : null}
-      {updates.state === "available" ? <div className="flex flex-col gap-1.5 border-b border-line bg-warning-soft/10 px-4 py-2 text-12">
-          <div className="flex items-center gap-2">
-            <span className="flex-1 text-ink">
-              {updates.version
-                ? tr("v{version} is available.", { version: updates.version })
-                : updates.remoteHead
-                  ? tr("The repository has new commits ({head}).", { head: updates.remoteHead.slice(0, 10) })
-                  : tr("The repository has new commits.")}
-              {updates.modified ? " " + tr("Your own edits are merged in.") : ""}{" "}
-              {tr("Your data is kept.")}
-            </span>
+      <Tabs value={detailTab} onValueChange={(value) => { if (value) setDetailTab(String(value)) }} className="app-detail-tabs">
+        <Tabs.List className="app-detail-tab-list">
+          <Tabs.Trigger value="files">{tr("Files")}</Tabs.Trigger>
+          {canUpdate && <Tabs.Trigger value="update"><span className="flex items-center gap-2">{tr("Update")}{updates.state === 'available' && <span className="size-1.5 rounded-full bg-warning" aria-label={tr("Update available")} />}</span></Tabs.Trigger>}
+        </Tabs.List>
+        <Tabs.Content value="update" className="app-detail-update">
+          <div className="flex flex-wrap items-center justify-end gap-2 px-4 py-2">
+          {canUpdate ? <Button
+              variant="ghost-muted"
+              size="small"
+              disabled={updates.state === "checking" || updates.state === "updating"}
+              onClick={() => void checkUpdates()}
+            >
+              {updates.state === "checking"
+                ? tr("Checking…")
+                : updates.state === "updating"
+                    ? tr("Updating…")
+                    : tr("Check for updates")}
+            </Button> : null}
+          </div>
+      {updates.state === "available" ? <section className="app-update-card" aria-live="polite">
+          <div className="app-update-card-heading">
+            <Icon name="download" size={20} />
+            <div className="min-w-0 flex-1">
+              <h3 className="text-13 font-medium text-ink">{updates.version === detail.data?.manifest?.version ? tr("Repository changes") : tr("Update available")}</h3>
+              <p className="mt-1 text-12 text-ink-muted">
+                {updates.version && updates.version !== detail.data?.manifest?.version
+                  ? (detail.data?.manifest?.version ? `v${detail.data.manifest.version} → v${updates.version}` : `v${updates.version}`)
+                  : updates.version ? `v${updates.version}` : tr("The repository has new commits.")}
+              </p>
+            </div>
             {!updates.engine ? <Button variant="neutral" size="small" onClick={() => void runUpdate()}>
                 {tr("Update")}
               </Button> : null}
           </div>
+          <p className="app-update-card-note">
+            {updates.modified ? tr("Local edits will be merged. App data stays safe.") : tr("Your data is kept.")}
+          </p>
           {updates.engine ? <p className="text-11 text-ink-muted">
               {tr("Needs Chrysalis engine {engine}. This engine is {current}.", { engine: updates.engine, current: "v" + updates.engineVersion })}
             </p> : null}
-        </div> : null}
+        </section> : null}
       {updates.state === "conflicts" ? <div className="flex flex-col gap-2 border-b border-line bg-warning-soft/10 px-4 py-2.5 text-12">
           <p className="text-12 text-ink">
             {tr("Your edits overlap with v{version} in {files}. Nothing has changed yet.", { version: updates.to, files: updates.conflicts.length === 1 ? tr("1 file") : tr("{n} files", { n: updates.conflicts.length }) })}
@@ -1676,8 +1793,8 @@ function AppDetail(props: {
           {updates.conflicts && updates.strategy === "agent" ? " " + tr("The agent is merging the overlaps.") : ""}
           {updates.problems.map((problem) => <p key={problem} className="mt-1 text-danger">{problem}</p>)}
         </div> : null}
-      {updates.state === "current" ? <div className="border-b border-line px-4 py-1.5 text-11 text-ink-faint">
-          {tr("Up to date.")}
+      {updates.state === "current" ? <div className="app-update-card app-update-current" aria-live="polite">
+          <Icon name="circle-check" size={20} /> {tr("Up to date.")}
         </div> : null}
       {updates.state === "dep-review" ? <div className="flex flex-col gap-2 border-b border-line bg-warning-soft/10 px-4 py-2.5 text-12">
           <p className="text-12 text-ink">
@@ -1728,9 +1845,13 @@ function AppDetail(props: {
       {updates.state === "error" ? <div className="border-b border-line px-4 py-1.5 text-11 text-danger">
           {updates.message}
         </div> : null}
-      {!detail.loading ? <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2 font-mono text-12">
+        </Tabs.Content>
+        <Tabs.Content value="files">
+      {!detail.loading ? <div className="p-2 font-mono text-12">
           <TreeRows nodes={detail.data?.tree?.children ?? []} depth={0} open={open} toggle={toggle} />
         </div> : <div className="p-4 text-13 text-ink-faint">{tr("Reading app files…")}</div>}
+        </Tabs.Content>
+      </Tabs>
     </div>
   )
 }
@@ -2008,7 +2129,16 @@ function ImportAppDialog(props: { from: StoreApp | null; onClose: () => void; on
                     {preview.updatesFrom ? tr("Keeps updating from {repository}.", { repository: preview.updatesFrom }) : tr("Does not get updates.")}
                   </li>
                 </ul> : null}
-              <div className="rounded-lg border border-line p-3">
+              {preview.service ? <div className="rounded-lg border border-warning/30 bg-warning-soft/10 p-3">
+                  <p className="text-12 font-medium text-ink">{tr("This app runs a program on this computer")}</p>
+                  <pre className="mt-1.5 overflow-auto rounded-md bg-pressed/50 p-2 text-11 leading-4 text-ink">{[preview.service.setup?.join(" "), preview.service.command.join(" ")].filter(Boolean).join("\n")}</pre>
+                  <p className="mt-1.5 text-12 leading-4 text-ink-muted">
+                    {tr("It is not sandboxed like other apps: it can read and change anything your account can. Allow it only if you trust where it came from.")}
+                    {" "}
+                    {tr("It will not start until an admin allows it in its tab.")}
+                  </p>
+                </div> : null}
+              {preview.service && preview.plugins.length === 0 ? null : <div className="rounded-lg border border-line p-3">
                 <p className="text-12 font-medium text-ink">
                   {tr("Bundled plugins ({n})", { n: preview.plugins.length })}
                 </p>
@@ -2037,7 +2167,7 @@ function ImportAppDialog(props: { from: StoreApp | null; onClose: () => void; on
                         </li>
                       ))}
                   </ul> : <p className="mt-1 text-12 text-ink-muted">{tr("No plugins, plain UI app.")}</p>}
-              </div>
+              </div>}
               {from?.official ? <p className="rounded-lg border border-line p-3 text-12 leading-4 text-ink-muted">
                   {tr("An official app, made by the Chrysalis maintainers. Its plugins get the permissions listed above. You can delete it any time.")}
                 </p> : preview.kind === "file" ? <p className="rounded-lg border border-warning/30 bg-warning-soft/10 p-3 text-12 leading-4 text-ink-muted">
@@ -2062,8 +2192,11 @@ function ImportAppDialog(props: { from: StoreApp | null; onClose: () => void; on
 function DeleteAppDialog(props: { app: { id: string; name: string }; onClose: () => void; onDeleted: () => void }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState("")
+  const [confirmation, setConfirmation] = useState("")
+  const confirmed = confirmation === props.app.name
 
   const del = async () => {
+    if (!confirmed || busy) return
     setBusy(true)
     setErr("")
     try {
@@ -2082,10 +2215,22 @@ function DeleteAppDialog(props: { app: { id: string; name: string }; onClose: ()
         <p className="text-13 leading-5 text-ink-muted">
           {tr("The entire app (code, plugins and its data) is removed permanently. This cannot be undone.")}
         </p>
+        <label className="flex flex-col gap-2 text-12 text-ink-muted">
+          <span>{tr("Type “{name}” to confirm.", { name: props.app.name })}</span>
+          <input
+            className="w-full min-w-0 rounded-lg border border-line bg-panel px-3 py-2 text-13 text-ink outline-none focus:border-line-focus"
+            value={confirmation}
+            onChange={(e) => setConfirmation(e.currentTarget.value)}
+            autoComplete="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            disabled={busy}
+          />
+        </label>
         {err ? <div className="text-12 text-danger">{err}</div> : null}
         <div className="flex justify-end gap-2">
           <Button variant="ghost-muted" size="small" onClick={props.onClose}>{tr("Cancel")}</Button>
-          <Button variant="danger" size="small" disabled={busy} onClick={() => void del()}>
+          <Button variant="danger" size="small" disabled={busy || !confirmed} onClick={() => void del()}>
             {busy ? tr("Deleting…") : tr("Delete app")}
           </Button>
         </div>

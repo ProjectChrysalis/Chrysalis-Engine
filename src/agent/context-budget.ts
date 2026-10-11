@@ -209,6 +209,9 @@ function slim(m: AgentMessage, hard: boolean): AgentMessage {
   const content = (m as { content?: unknown }).content;
   if (!Array.isArray(content)) return m;
   if (role === "toolResult") {
+    // instructions the model still works from: clipped, they would be gone
+    // while the conversation goes on as if they were there
+    if ((m as { toolName?: string }).toolName === "skill_load") return m;
     const blocks = (content as Block[]).map((b) =>
       b.type === "text" ? { ...b, text: hard ? clip(b.text ?? "", 200) : clip(b.text ?? "", 1200) } : b.type === "image" ? { type: "text", text: "[image removed to save context]" } : b,
     );

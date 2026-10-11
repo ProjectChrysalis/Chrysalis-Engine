@@ -288,6 +288,45 @@ describe("browser runner readiness", () => {
     runner.hello("alice", "host123456", false, true);
     expect(runner.status().reason).toMatch(/older sandbox/);
   });
+
+  it("sends a second command only when the first is done", async () => {
+    const { bus, emitted } = busStub();
+    const runner = new BrowserSandbox(cfg, bus, 50);
+    runner.hello("alice", "host123456", true);
+    const first = runner.run("alice", "/tmp", { command: "one" });
+    const second = runner.run("alice", "/tmp", { command: "two" });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(emitted.map(([, , payload]) => payload.command)).toEqual(["one"]);
+    runner.resolve("alice", emitted[0]![2].id, { exitCode: 0, stdout: "1" });
+    await first;
+    await new Promise((r) => setTimeout(r, 20));
+    expect(emitted.map(([, , payload]) => payload.command)).toEqual(["one", "two"]);
+    runner.resolve("alice", emitted[1]![2].id, { exitCode: 0, stdout: "2" });
+    const res = await second;
+    expect("stdout" in res && res.stdout).toBe("2");
+  });
+
+  it("gives up early on a command no page took, and asks that page to reconnect", async () => {
+    const { bus, emitted } = busStub();
+    const runner = new BrowserSandbox(cfg, bus, 50, 40);
+    runner.hello("alice", "host123456", true);
+    const lost = await runner.run("alice", "/tmp", { command: "ls" });
+    expect("error" in lost && lost.error).toMatch(/did not take the command/);
+    expect(emitted[1]![1]).toBe("sandbox_cancel");
+    // still heartbeating over a dead stream: not addressed, told to reconnect
+    expect(runner.hello("alice", "host123456", true)).toBe(true);
+    const meanwhile = await runner.run("alice", "/tmp", { command: "ls" });
+    expect("error" in meanwhile && meanwhile.error).toMatch(/reconnecting/);
+    // the stream is back
+    expect(runner.hello("alice", "host123456", true, false, null, true)).toBe(false);
+    const pending = runner.run("alice", "/tmp", { command: "ls" });
+    const id = emitted[2]![2].id;
+    expect(runner.taken("alice", id)).toBe(true);
+    await new Promise((r) => setTimeout(r, 80));
+    expect(runner.resolve("alice", id, { exitCode: 0, stdout: "ok" })).toBe(true);
+    const res = await pending;
+    expect("stdout" in res && res.stdout).toBe("ok");
+  });
 });
 
 /** The sandbox writes .git so its git works; a git program on this machine

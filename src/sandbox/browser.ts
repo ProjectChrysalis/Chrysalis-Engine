@@ -14,6 +14,7 @@ import type { EventBus } from "../server/ws.js";
 import type { SandboxConfig, SandboxRunInput, SandboxRunResult, SandboxRunner, SandboxStatus } from "./index.js";
 import { capOutput } from "./index.js";
 import { abortable } from "../cancellation.js";
+import { log } from "../logger.js";
 
 /** How long a host heartbeat stays valid. */
 const HOST_TTL = 45_000;
@@ -21,6 +22,8 @@ const HOST_TTL = 45_000;
 const RUN_GRACE = 15_000;
 /** How long a run waits for a connected host to finish mounting the workspace. */
 const READY_WAIT_MS = 10_000;
+/** How long the addressed page has to say it received a command. */
+const TAKE_WAIT_MS = 10_000;
 
 interface HostState {
   hostId: string;
@@ -35,16 +38,24 @@ interface HostState {
 interface PendingRun {
   resolve: (r: SandboxRunResult | { error: string }) => void;
   timer: NodeJS.Timeout;
+  /** The page said the command reached it. */
+  taken: () => void;
 }
 
 export class BrowserSandbox implements SandboxRunner {
   private hosts = new Map<string, HostState>();
   private pending = new Map<string, PendingRun>();
+  /** The last command of each user still waiting or running. */
+  private turns = new Map<string, Promise<void>>();
+  /** Pages (user:host) that kept heartbeating but missed a command: their
+   *  event stream is gone, and they are not addressed until it is back. */
+  private deaf = new Set<string>();
 
   constructor(
     private cfg: SandboxConfig,
     private bus: EventBus,
     private readyWaitMs = READY_WAIT_MS,
+    private takeWaitMs = TAKE_WAIT_MS,
   ) {}
 
   get config(): SandboxConfig {
@@ -60,8 +71,13 @@ export class BrowserSandbox implements SandboxRunner {
    *  recent heartbeating host is the one addressed by runs, so two open tabs
    *  never execute the same command. `stale` marks a page from an older load
    *  whose host bundle no longer matches this engine: it cannot run commands
-   *  and only a reload fixes it, so say so instead of waiting on it. */
-  hello(username: string, hostId: string, ready: boolean, stale = false, error: string | null = null): void {
+   *  and only a reload fixes it, so say so instead of waiting on it. `heard`
+   *  is a page whose event stream just (re)opened. Returns true when the page
+   *  must reopen its stream before it is addressed again. */
+  hello(username: string, hostId: string, ready: boolean, stale = false, error: string | null = null, heard = false): boolean {
+    const key = `${username}:${hostId}`;
+    if (heard) this.deaf.delete(key);
+    else if (this.deaf.has(key)) return true;
     const cur = this.hosts.get(username);
     const same = cur?.hostId === hostId;
     this.hosts.set(username, {
@@ -71,11 +87,20 @@ export class BrowserSandbox implements SandboxRunner {
       stale: same ? stale || cur!.stale : stale,
       error,
     });
+    return false;
   }
 
   /** A page that is going away says so, and runs stop being sent to it. */
   forget(username: string, hostId: string): void {
+    this.deaf.delete(`${username}:${hostId}`);
     if (this.hosts.get(username)?.hostId === hostId) this.hosts.delete(username);
+  }
+
+  private noHost(username: string): { error: string } {
+    for (const key of this.deaf) {
+      if (key.startsWith(`${username}:`)) return { error: "The browser tab lost its connection to the engine and is reconnecting. Try again in a few seconds; reload the tab if this keeps happening." };
+    }
+    return { error: "No sandbox is connected. Open Chrysalis in a browser tab; commands run there, never on the host." };
   }
 
   private host(username: string): HostState | null {
@@ -117,8 +142,25 @@ export class BrowserSandbox implements SandboxRunner {
   async run(username: string, _userRoot: string, input: SandboxRunInput): Promise<SandboxRunResult | { error: string }> {
     input.signal?.throwIfAborted();
     if (this.cfg.provider === "off") return { error: "the shell is off on this instance (agent.shell in config.yaml)" };
+    // The page runs one command at a time, so a command is sent when the one
+    // before it is done: its time limit covers its own run, not the wait.
+    const before = this.turns.get(username);
+    let done!: () => void;
+    const turn = new Promise<void>((r) => { done = r; });
+    const tail = before ? before.then(() => turn) : turn;
+    this.turns.set(username, tail);
+    try {
+      if (before) await abortable(before, input.signal);
+      return await this.send(username, input);
+    } finally {
+      done();
+      if (this.turns.get(username) === tail) this.turns.delete(username);
+    }
+  }
+
+  private async send(username: string, input: SandboxRunInput): Promise<SandboxRunResult | { error: string }> {
     let h = this.host(username);
-    if (!h) return { error: "No sandbox is connected. Open Chrysalis in a browser tab; commands run there, never on the host." };
+    if (!h) return this.noHost(username);
     if (!h.ready) {
       // A fresh page mounts the workspace before it can run anything, and a
       // heartbeat replaces the record, so re-read until ready or out of time.
@@ -128,7 +170,7 @@ export class BrowserSandbox implements SandboxRunner {
         h = this.host(username);
         if (!h) break;
       }
-      if (!h) return { error: "No sandbox is connected. Open Chrysalis in a browser tab; commands run there, never on the host." };
+      if (!h) return this.noHost(username);
       if (!h.ready) {
         return {
           error: h.stale
@@ -146,6 +188,7 @@ export class BrowserSandbox implements SandboxRunner {
       const finish = (result: SandboxRunResult | { error: string }) => {
         if (!this.pending.delete(key)) return;
         clearTimeout(timer);
+        clearTimeout(take);
         input.signal?.removeEventListener("abort", cancel);
         resolve(result);
       };
@@ -158,11 +201,29 @@ export class BrowserSandbox implements SandboxRunner {
         finish({ error: `The sandbox did not answer within ${timeout}ms (the browser tab may have been closed or the command stopped responding).` });
       }, timeout + RUN_GRACE);
       timer.unref?.();
-      this.pending.set(key, { resolve: finish, timer });
+      // A page can keep heartbeating over a dead event stream (a slept
+      // device, a dropped network): the command then reaches nobody, and
+      // waiting out its whole time limit would only look like a hang.
+      const take = setTimeout(() => {
+        log.warn(`[sandbox] ${username}: the browser tab did not take a command within ${this.takeWaitMs}ms`);
+        this.bus.emit(username, "sandbox_cancel", { id, host: h.hostId });
+        this.deaf.add(`${username}:${h.hostId}`);
+        if (this.hosts.get(username)?.hostId === h.hostId) this.hosts.delete(username);
+        finish({ error: "The browser tab did not take the command: its connection to the engine dropped and is being reopened. Try again in a few seconds; reload the tab if this keeps happening." });
+      }, this.takeWaitMs);
+      take.unref?.();
+      this.pending.set(key, { resolve: finish, timer, taken: () => clearTimeout(take) });
       input.signal?.addEventListener("abort", cancel, { once: true });
       if (input.signal?.aborted) { cancel(); return; }
       this.bus.emit(username, "sandbox_run", { id, host: h.hostId, command: input.command, timeoutMs: timeout });
     });
+  }
+
+  /** A host received a command and has it queued or running. */
+  taken(username: string, id: unknown): boolean {
+    const p = typeof id === "string" ? this.pending.get(`${username}:${id}`) : undefined;
+    p?.taken();
+    return !!p;
   }
 
   /** A host finished a command. */

@@ -32,6 +32,40 @@ import { createHash, randomUUID } from "node:crypto";
 import { unzipSync } from "fflate";
 import { inflateSync } from "node:zlib";
 
+function pngMetadata(bytes) {
+  if (!bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error("invalid PNG");
+  const metadata = Object.create(null);
+  let at = 8, total = 0;
+  while (at + 12 <= bytes.length) {
+    const length = bytes.readUInt32BE(at), end = at + length + 12;
+    if (end > bytes.length) throw new Error("invalid PNG chunk length");
+    const type = bytes.toString("ascii", at + 4, at + 8);
+    if (["tEXt", "iTXt", "zTXt"].includes(type)) {
+      const data = bytes.subarray(at + 8, end - 4), nul = data.indexOf(0);
+      if (nul > 0) {
+        const key = data.toString("latin1", 0, nul);
+        let payload = data.subarray(nul + 1);
+        if (type === "iTXt") {
+          const compressed = payload[0];
+          if (payload[1] !== 0) throw new Error("unsupported PNG text compression");
+          const languageEnd = payload.indexOf(0, 2), translatedEnd = payload.indexOf(0, languageEnd + 1);
+          if (languageEnd < 0 || translatedEnd < 0) throw new Error("invalid PNG text fields");
+          payload = payload.subarray(translatedEnd + 1);
+          if (compressed) payload = inflateSync(payload, { maxOutputLength: 32 * 1024 * 1024 });
+        } else if (type === "zTXt") {
+          if (payload[0] !== 0) throw new Error("unsupported PNG text compression");
+          payload = inflateSync(payload.subarray(1), { maxOutputLength: 32 * 1024 * 1024 });
+        }
+        total += payload.length;
+        if (total > 32 * 1024 * 1024) throw new Error("PNG metadata exceeds 32 MB");
+        metadata[key] = payload.toString(type === "iTXt" ? "utf8" : "latin1");
+      }
+    }
+    at = end;
+  }
+  return metadata;
+}
+
 const utf8 = new TextDecoder("utf-8");
 import variant from "@jitl/quickjs-ng-wasmfile-release-sync";
 // the wasm travels with the code: a compiled engine has no node_modules for
@@ -221,35 +255,7 @@ try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: f
           if (!entry?.__b64__ || typeof entry.base64 !== "string" || !/\.png$/i.test(String(name))) throw new Error("image entry not found");
           const bytes = Buffer.from(entry.base64, "base64");
           if (!bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error("invalid PNG");
-          const metadata = {};
-          let at = 8, total = 0;
-          while (at + 12 <= bytes.length) {
-            const length = bytes.readUInt32BE(at), end = at + length + 12;
-            if (end > bytes.length) throw new Error("invalid PNG chunk length");
-            const type = bytes.toString("ascii", at + 4, at + 8);
-            if (["tEXt", "iTXt", "zTXt"].includes(type)) {
-              const data = bytes.subarray(at + 8, end - 4), nul = data.indexOf(0);
-              if (nul > 0) {
-                const key = data.toString("latin1", 0, nul);
-                let payload = data.subarray(nul + 1);
-                if (type === "iTXt") {
-                  const compressed = payload[0];
-                  if (payload[1] !== 0) throw new Error("unsupported PNG text compression");
-                  const languageEnd = payload.indexOf(0, 2), translatedEnd = payload.indexOf(0, languageEnd + 1);
-                  if (languageEnd < 0 || translatedEnd < 0) throw new Error("invalid PNG text fields");
-                  payload = payload.subarray(translatedEnd + 1);
-                  if (compressed) payload = inflateSync(payload, { maxOutputLength: 32 * 1024 * 1024 });
-                } else if (type === "zTXt") {
-                  if (payload[0] !== 0) throw new Error("unsupported PNG text compression");
-                  payload = inflateSync(payload.subarray(1), { maxOutputLength: 32 * 1024 * 1024 });
-                }
-                total += payload.length;
-                if (total > 32 * 1024 * 1024) throw new Error("PNG metadata exceeds 32 MB");
-                metadata[key] = payload.toString(type === "iTXt" ? "utf8" : "latin1");
-              }
-            }
-            at = end;
-          }
+          const metadata = pngMetadata(bytes);
           return { url: host.fs.media("data:image/png;base64," + entry.base64), metadata };
         },
       };
@@ -415,6 +421,14 @@ try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: f
           beforeWrite(full);
           fs.writeFileSync(full, text);
           return value;
+        },
+        image: (uri) => {
+          const match = /^data:image\/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=]+)$/.exec(String(uri));
+          if (!match || match[2].length > 90 * 1024 * 1024) throw new Error("invalid image or image exceeds 64 MB");
+          const bytes = Buffer.from(match[2], "base64");
+          if (bytes.length > 64 * 1024 * 1024) throw new Error("image exceeds 64 MB");
+          const metadata = match[1] === "png" ? pngMetadata(bytes) : {};
+          return { url: host.fs.media(uri), metadata };
         },
         media: (uri) => {
           const match = /^data:image\/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=]+)$/.exec(String(uri));

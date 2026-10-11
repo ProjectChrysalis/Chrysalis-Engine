@@ -124,3 +124,58 @@ it("sends an attached item once and clears it when the agent changes apps", asyn
   const [exit, error] = await Promise.all([child.exited, new Response(child.stderr).text()]);
   expect(error).toBe(""); expect(exit).toBe(0);
 }, 5_000);
+
+it("keeps context usage during a run, updates it from events, and restores it after reconnect", async () => {
+  const script = `
+    import assert from "node:assert/strict";
+    import { useAgent, connectWs } from "./client-agent/src/store.ts";
+    globalThis.location = { protocol: "http:", host: "localhost" };
+    globalThis.window = { setTimeout, clearTimeout };
+    window.parent = window;
+    let socket;
+    globalThis.WebSocket = class { constructor() { socket = this; } };
+    const state = () => useAgent.getState();
+    const previous = { input: 100, output: 10, cacheRead: 50 };
+    const current = { input: 200, output: 20, cacheRead: 80, contextWindow: 10000 };
+    let saved = [{ type: "run", at: 1, usage: previous }];
+    let live = null;
+    let request;
+    const json = value => new Response(JSON.stringify(value));
+    globalThis.fetch = async (url, init) => {
+      if (url === "/v1/agent") return new Promise(resolve => { request = { resolve, body: JSON.parse(init.body) }; });
+      if (String(url).includes("/state?")) return json({ running: !!live, queue: [], live });
+      if (String(url).includes("/sessions/")) return json({ appId: null, runs: saved });
+      return json([]);
+    };
+    await state().open("one");
+    assert.deepEqual(state().usage, previous);
+    const run = state().send("continue");
+    assert.equal(state().running, true);
+    assert.deepEqual(state().usage, previous);
+    connectWs();
+    const event = (sid, seq, ev) => socket.onmessage({ data: JSON.stringify({ type: "agent_event", payload: { sessionId: sid, runId: "run", seq, ev } }) });
+    event("other", 1, { type: "usage", usage: current });
+    assert.deepEqual(state().usage, previous);
+    event("one", 1, { type: "usage", usage: current });
+    assert.equal(state().running, true);
+    assert.deepEqual(state().usage, current);
+    event("one", 1, { type: "usage", usage: previous });
+    assert.deepEqual(state().usage, current);
+    saved = [{ type: "run", at: 2, usage: current }];
+    request.resolve(json({ sessionId: "one", finalText: "done", turns: [], toolTrace: [], usage: current, contextWindow: 10000 }));
+    await run;
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.deepEqual(state().usage, current);
+    state().newChat();
+    assert.equal(state().usage, null);
+    live = { id: "restored", seq: 3, user: "working", events: [{ type: "usage", usage: current }] };
+    await state().open("one");
+    assert.equal(state().running, true);
+    assert.deepEqual(state().usage, current);
+    event("one", 4, { type: "autocompact" });
+    assert.equal(state().usage, null);
+  `;
+  const child = Bun.spawn([process.execPath, "--eval", script], { cwd: `${import.meta.dir}/..`, stdout: "pipe", stderr: "pipe" });
+  const [exit, error] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  expect(error).toBe(""); expect(exit).toBe(0);
+}, 5_000);

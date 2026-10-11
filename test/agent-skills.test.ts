@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import { discoverSkills, readAppContext, writeAppContext, skillContext } from "../src/agent/skills.js";
+import { addAppSkill, updateAppSkill, removeAppSkill, discoverSkills, readAppContext, writeAppContext, skillContext } from "../src/agent/skills.js";
 import { UserAgent, instructionDocsStamp } from "../src/agent/agent.js";
 import { bootstrapUserDir } from "../src/paths.js";
 import { UserService } from "../src/users.js";
@@ -68,10 +68,12 @@ it("agent selects an app, loads its skill, and keeps current instructions after 
   const faux = fauxProvider({ models: [{ id: "skills-model" }] });
   svc.models.setProvider(faux.provider);
   const prompts: string[] = [];
+  const systems: string[] = [];
+  const seen = (context: { messages: { role: string }[] }) => { prompts.push(JSON.stringify(context)); systems.push(JSON.stringify(context.messages.filter((m) => m.role === "system"))); };
   faux.setResponses([
-    (context) => { prompts.push(JSON.stringify(context)); return fauxAssistantMessage([{ type: "toolCall", id: "t1", name: "app_target", arguments: { appId: "first" } }], { stopReason: "toolUse" }); },
-    (context) => { prompts.push(JSON.stringify(context)); return fauxAssistantMessage([{ type: "toolCall", id: "t2", name: "skill_load", arguments: { name: "preset-editing" } }], { stopReason: "toolUse" }); },
-    (context) => { prompts.push(JSON.stringify(context)); return fauxAssistantMessage("Read only."); },
+    (context) => { seen(context); return fauxAssistantMessage([{ type: "toolCall", id: "t1", name: "app_target", arguments: { appId: "first" } }], { stopReason: "toolUse" }); },
+    (context) => { seen(context); return fauxAssistantMessage([{ type: "toolCall", id: "t2", name: "skill_load", arguments: { name: "preset-editing" } }], { stopReason: "toolUse" }); },
+    (context) => { seen(context); return fauxAssistantMessage("Read only."); },
   ]);
   const agent = await UserAgent.create("alice", svc, p, users, defaultInstanceConfig(), { sessionId: "one", mode: "plan" });
   const result = await agent.run("Read the section in first app");
@@ -80,10 +82,16 @@ it("agent selects an app, loads its skill, and keeps current instructions after 
   expect(prompts[1]).toContain("first contract");
   expect(prompts[1]).not.toContain("FIRST BODY");
   expect(prompts[2]).toContain("FIRST BODY");
+  // the load is answered in the conversation: the system prompt before it and
+  // after it is the same text, and the instructions are sent once
+  expect(systems[1]).toContain("first contract");
+  expect(systems[2]).toBe(systems[1]!);
+  expect(prompts[2]!.split("FIRST BODY").length).toBe(2);
   expect(prompts.join(" ")).not.toContain("SECOND BODY");
   expect(readAppContext(p, "one")).toEqual({ appId: "first", loaded: ["preset-editing"] });
   fs.appendFileSync(path.join(p.root, "agent/sessions/one.jsonl"), JSON.stringify({ type: "compact", at: Date.now(), summary: "Read the selected preset." }) + "\n");
-  faux.setResponses([(context) => { expect(JSON.stringify(context)).toContain("FIRST BODY"); return fauxAssistantMessage("Still available."); }]);
+  // compacted away, the instructions come back through the system prompt
+  faux.setResponses([(context) => { expect(JSON.stringify(context.messages.filter((m) => m.role === "system"))).toContain("FIRST BODY"); expect(JSON.stringify(context).split("FIRST BODY").length).toBe(2); return fauxAssistantMessage("Still available."); }]);
   const resumed = await UserAgent.create("alice", svc, p, users, defaultInstanceConfig(), { sessionId: "one" });
   expect((await resumed.run("continue")).finalText).toBe("Still available.");
 }, 20_000);
@@ -123,3 +131,101 @@ it("switches an existing conversation to another app during a task and refreshes
   expect(readAppContext(p, "switch")).toEqual({ appId: "second", loaded: [] });
   expect(notifications).toEqual([{ sessionId: "switch", appId: "second" }]);
 }, 20_000);
+
+it("adds discoverable instructions without overwriting skills or escaping app paths", () => {
+  const p = bootstrapUserDir(root, "alice"); app(p, "first", "BODY");
+  const value = { name: "my-skill", description: "A description: with YAML punctuation", body: "Keep instructions visible.\nSecond line." };
+  const skill = addAppSkill(p, "first", value);
+  expect(discoverSkills(p, "first").skills.find(item => item.name === value.name)?.body).toBe(value.body);
+  expect(() => addAppSkill(p, "first", value)).toThrow();
+  expect(() => addAppSkill(p, "first", { ...value, name: "../escape" })).toThrow();
+  expect(() => addAppSkill(p, "missing", value)).toThrow();
+  expect(() => addAppSkill(p, "first", { ...value, name: "large", body: "x".repeat(32768) })).toThrow();
+  expect(fs.readFileSync(path.join(p.root, skill.file), "utf8")).toContain("Second line.");
+});
+
+it("rejects skill installation through an escaping directory", () => {
+  const p = bootstrapUserDir(root, "alice");
+  const dir = app(p, "first", "BODY");
+  fs.rmSync(path.dirname(dir), { recursive: true });
+  fs.symlinkSync(root, path.dirname(dir));
+  expect(() => addAppSkill(p, "first", { name: "custom", description: "Custom", body: "Body" })).toThrow("escapes");
+  expect(fs.existsSync(path.join(root, "custom"))).toBe(false);
+});
+
+it("exposes skill instructions and adds skills through authenticated agent routes", async () => {
+  const users = new UserService(root);
+  const token = users.create("alice", "admin", { password: "test-password-1" }).token;
+  const p = bootstrapUserDir(root, "alice"); app(p, "first", "BODY");
+  const server = buildApp({ users, sessions: new SessionService(root), config: defaultInstanceConfig(), dataDir: root, bus: new EventBus() });
+  const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+  const detail = await (await server.request("/v1/agent/apps/first/skills/preset-editing", { headers })).json() as { body: string };
+  expect(detail.body).toBe("BODY");
+  const response = await server.request("/v1/agent/apps/first/skills", { method: "POST", headers, body: JSON.stringify({ name: "custom", description: "Custom", body: "Use these instructions" }) });
+  expect(response.status).toBe(201);
+  expect(discoverSkills(p, "first").skills.some(skill => skill.name === "custom")).toBe(true);
+  expect((await server.request("/v1/agent/apps/first/skills/custom")).status).toBe(401);
+});
+
+it("edits a skill in place, keeping its name and the rest of its header, and removes one with its files", () => {
+  const p = bootstrapUserDir(root, "alice");
+  const dir = app(p, "first", "BODY");
+  fs.writeFileSync(path.join(dir, "SKILL.md"), "---\nname: preset-editing\ndescription: Old\nlicense: MIT\nmetadata:\n  tags: [a, b]\n---\nBODY");
+  fs.writeFileSync(path.join(dir, "inspect.js"), "export default 1");
+  const { skill, before, after } = updateAppSkill(p, "first", "preset-editing", { description: " New: with punctuation ", body: "# Title\n\nNew body" });
+  expect(before).toContain("description: Old");
+  expect(after).toContain("license: MIT");
+  expect(skill.description).toBe("New: with punctuation");
+  const found = discoverSkills(p, "first");
+  expect(found.errors).toEqual([]);
+  expect(found.skills).toEqual([{ name: "preset-editing", description: "New: with punctuation", body: "# Title\n\nNew body", file: skill.file }]);
+  expect(() => updateAppSkill(p, "first", "preset-editing", { description: "", body: "x" })).toThrow();
+  expect(() => updateAppSkill(p, "first", "preset-editing", { description: "x", body: "y".repeat(32768) })).toThrow("32 KB");
+  expect(() => updateAppSkill(p, "first", "missing", { description: "x", body: "y" })).toThrow("not found");
+  expect(discoverSkills(p, "first").skills[0]!.body).toBe("# Title\n\nNew body");
+
+  expect(() => removeAppSkill(p, "first", "../..")).toThrow();
+  expect(() => removeAppSkill(p, "missing", "preset-editing")).toThrow();
+  expect(removeAppSkill(p, "first", "preset-editing").sort()).toEqual(["apps/first/.agents/skills/preset-editing/SKILL.md", "apps/first/.agents/skills/preset-editing/inspect.js"]);
+  expect(fs.existsSync(dir)).toBe(false);
+  expect(fs.existsSync(path.join(p.apps, "first", "manifest.json"))).toBe(true);
+});
+
+it("removes a skill whose file cannot be read, and never follows a linked folder", () => {
+  const p = bootstrapUserDir(root, "alice");
+  const dir = app(p, "first", "BODY");
+  const skillsRoot = path.dirname(dir);
+  fs.mkdirSync(path.join(skillsRoot, "broken"));
+  fs.writeFileSync(path.join(skillsRoot, "broken", "SKILL.md"), "no header");
+  expect(() => updateAppSkill(p, "first", "broken", { description: "x", body: "y" })).toThrow("cannot be read");
+  expect(removeAppSkill(p, "first", "broken")).toEqual(["apps/first/.agents/skills/broken/SKILL.md"]);
+  fs.mkdirSync(path.join(root, "outside"));
+  fs.writeFileSync(path.join(root, "outside", "keep.txt"), "keep");
+  fs.symlinkSync(path.join(root, "outside"), path.join(skillsRoot, "linked"));
+  expect(() => removeAppSkill(p, "first", "linked")).toThrow();
+  expect(fs.existsSync(path.join(root, "outside", "keep.txt"))).toBe(true);
+});
+
+it("lists every app's skills, and edits and deletes them through authenticated agent routes", async () => {
+  const users = new UserService(root);
+  const token = users.create("alice", "admin", { password: "test-password-1" }).token;
+  const p = bootstrapUserDir(root, "alice"); app(p, "first", "BODY");
+  fs.mkdirSync(path.join(p.apps, "bare"));
+  fs.writeFileSync(path.join(p.apps, "bare", "manifest.json"), JSON.stringify({ name: "Bare", kind: "web", version: "1.0.0" }));
+  const server = buildApp({ users, sessions: new SessionService(root), config: defaultInstanceConfig(), dataDir: root, bus: new EventBus() });
+  const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+  const all = await (await server.request("/v1/agent/skills", { headers })).json() as { apps: Array<{ id: string; name: string; skills: Array<{ name: string }> }> };
+  expect(all.apps.map(a => [a.id, a.skills.map(s => s.name)])).toEqual([["bare", []], ["first", ["preset-editing"]]]);
+  expect((await server.request("/v1/agent/skills")).status).toBe(401);
+  const url = "/v1/agent/apps/first/skills/preset-editing";
+  const edited = await server.request(url, { method: "PUT", headers, body: JSON.stringify({ description: "Changed", body: "CHANGED BODY" }) });
+  expect(edited.status).toBe(200);
+  expect(((await edited.json()) as { changeId: string }).changeId).toMatch(/^[a-f0-9-]{36}$/);
+  const detail = await (await server.request(url, { headers })).json() as { description: string; body: string; files: string[] };
+  expect(detail).toMatchObject({ description: "Changed", body: "CHANGED BODY", files: [] });
+  expect((await server.request(url, { method: "PUT", headers, body: JSON.stringify({ description: "x" }) })).status).toBe(400);
+  expect((await server.request(url, { method: "DELETE" })).status).toBe(401);
+  expect((await server.request(url, { method: "DELETE", headers })).status).toBe(200);
+  expect((await server.request(url, { headers })).status).toBe(404);
+  expect((await server.request(url, { method: "DELETE", headers })).status).toBe(400);
+});

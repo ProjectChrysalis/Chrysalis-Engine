@@ -16,6 +16,7 @@ import { readSandboxSettings } from "../sandbox/network.js";
 import { makePathGuard } from "../sandbox/workspace.js";
 import * as git from "../git.js";
 import { createAppSkeleton, readApp } from "../apps/manager.js";
+import type { ServiceCall } from "../apps/service.js";
 import { hasPackages, installApp, uninstallApp } from "../apps/packages.js";
 import { builderVersion } from "../builder/assets.js";
 import { abortable } from "../cancellation.js";
@@ -40,6 +41,12 @@ export interface AgentToolOptions {
   packageDownloads?: () => boolean;
   /** Plan mode tools keep their read paths only (git refuses commit/restore). */
   mode?: "normal" | "accept" | "plan";
+  /** Reach of app_request: one request to a service app's running program,
+   *  and telling its open pages to load again. Absent = the tool refuses. */
+  service?: {
+    request: (appId: string, call: ServiceCall, signal?: AbortSignal) => Promise<Response>;
+    reload: (appId: string) => void;
+  };
 }
 
 /** Tools that mutate state — stripped in plan mode (read-only investigation). */
@@ -54,6 +61,22 @@ export const WRITE_TOOLS = new Set([
 ]);
 
 const MAX_READ_BYTES = 256 * 1024;
+/** How much of a program's answer app_request hands back. */
+const MAX_REPLY_CHARS = 48_000;
+const MAX_UPLOAD_BYTES = 32 * 1024 * 1024;
+
+/** Text has no zero byte in it; nearly every other kind of file has one
+ *  early on. Read as text, such a file costs its whole size in tokens and
+ *  tells the model nothing. */
+function looksBinary(abs: string): boolean {
+  const fd = fs.openSync(abs, "r");
+  try {
+    const head = Buffer.alloc(8192);
+    return head.subarray(0, fs.readSync(fd, head, 0, head.length, 0)).includes(0);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 
 function textResult(text: string, details: unknown = {}): { content: { type: "text"; text: string }[]; details: unknown } {
   return { content: [{ type: "text", text }], details };
@@ -134,6 +157,9 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
           .filter((e) => !agentReadDenied(rel === "." || rel === "" ? e.name : `${rel.replace(/\\/g, "/").replace(/\/+$/, "")}/${e.name}`))
           .map((e) => (e.isDirectory() ? `${e.name}/` : e.name));
         return textResult(entries.sort().join("\n") || "(empty)", { path: rel, entries: entries.length });
+      }
+      if (looksBinary(abs)) {
+        throw new Error(`Not a text file: ${rel} (${stat.size} bytes). read_file reads text only, and the bytes of a picture, archive or database say nothing as text.`);
       }
       if (stat.size > MAX_READ_BYTES && offset === undefined && limit === undefined) {
         const total = fs.readFileSync(abs, "utf8").split("\n").length;
@@ -533,12 +559,101 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
     },
   };
 
+  const appRequest: AgentTool = {
+    name: "app_request",
+    label: "Call an app's program",
+    description:
+      "Send one HTTP request to a service app's own running program (manifest kind \"service\") and read its answer: the way to do in such an app what its own pages do, like reading what it holds or adding and changing things through its API. The request is made on the engine's machine, straight to the program; cookies the program sets are kept for your next call. Which routes exist is the app's business: read its AGENTS.md and skills first. Give at most one of json, body, body_file, or form/files. Set reload when open pages of the app would not notice the change themselves. Works only while the program runs (the user starts it in the app's tab).",
+    parameters: Type.Object({
+      id: Type.String({ description: "App id" }),
+      route: Type.String({ description: "Path and query on the program, starting with / (for example /api/items?limit=5)" }),
+      method: Type.Optional(Type.String({ description: "HTTP method. Default GET, or POST when something is sent" })),
+      headers: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Extra request headers" })),
+      json: Type.Optional(Type.Unknown({ description: "A value sent as a JSON body" })),
+      body: Type.Optional(Type.String({ description: "A raw text body (set content-type in headers)" })),
+      body_file: Type.Optional(Type.String({ description: "A file in the user's directory sent whole as the body: for a body too long to write out in a call. A .json file goes as JSON unless headers say otherwise" })),
+      form: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Text fields of a multipart form" })),
+      files: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Files of a multipart form: field name to a path in the user's directory" })),
+      reload: Type.Optional(Type.Boolean({ description: "Load the app's open pages again after a successful request" })),
+    }),
+    async execute(_id, params, signal) {
+      if (!opts.service) throw new Error("Service apps are not available on this instance.");
+      const { id, route } = params as { id: string; route: string };
+      const { headers = {}, json, body, body_file, form, files, reload } = params as {
+        headers?: Record<string, string>; json?: unknown; body?: string; body_file?: string; form?: Record<string, string>; files?: Record<string, string>; reload?: boolean;
+      };
+      const info = readApp(p.apps, id);
+      if (!info) throw new Error(`App not found: ${id}`);
+      if (!info.manifest.service) throw new Error(`apps/${id} is not a service app: its backend is its plugins, reached through its own pages.`);
+      const multipart = !!(form || files);
+      if ([json !== undefined, body !== undefined, body_file !== undefined, multipart].filter(Boolean).length > 1) throw new Error("Give only one of json, body, body_file, or form/files.");
+      const sends = json !== undefined || body !== undefined || body_file !== undefined || multipart;
+      const method = ((params as { method?: string }).method ?? (sends ? "POST" : "GET")).toUpperCase();
+      if (!/^[A-Z]{1,16}$/.test(method)) throw new Error(`Not an HTTP method: ${method}`);
+      if (opts.mode === "plan" && method !== "GET" && method !== "HEAD") throw new Error("Plan mode only reads: GET and HEAD.");
+      const call: ServiceCall = { method, path: route, headers: { ...headers } };
+      const sendable = (rel: string): string => {
+        const denied = agentReadDenied(rel);
+        if (denied || /(^|\/)auth\.json$/i.test(rel.replace(/\\/g, "/"))) throw new Error(`File not found: ${rel}`);
+        const abs = safeResolve(p.root, rel);
+        guard.assertReadable(abs, rel);
+        if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) throw new Error(`File not found: ${rel}`);
+        if (fs.statSync(abs).size > MAX_UPLOAD_BYTES) throw new Error(`${rel} is too large to send (32 MB at most).`);
+        return abs;
+      };
+      if (body_file !== undefined) {
+        const abs = sendable(body_file);
+        call.body = new Uint8Array(fs.readFileSync(abs));
+        if (/\.json$/i.test(abs) && !Object.keys(headers).some((h) => h.toLowerCase() === "content-type")) call.headers = { ...headers, "content-type": "application/json" };
+      } else if (json !== undefined) {
+        call.body = JSON.stringify(json);
+        if (!Object.keys(headers).some((h) => h.toLowerCase() === "content-type")) call.headers = { ...headers, "content-type": "application/json" };
+      } else if (body !== undefined) {
+        call.body = body;
+      } else if (multipart) {
+        const data = new FormData();
+        for (const [k, v] of Object.entries(form ?? {})) data.set(k, v);
+        for (const [field, rel] of Object.entries(files ?? {})) {
+          const abs = sendable(rel);
+          data.set(field, new File([fs.readFileSync(abs)], path.basename(abs)));
+        }
+        call.body = data;
+      }
+      let res: Response;
+      try {
+        res = await opts.service.request(id, call, signal);
+      } catch (e) {
+        signal?.throwIfAborted();
+        const message = (e as Error).message;
+        throw new Error(message === "the program is not running"
+          ? `apps/${id} is not running. Its program is started by the user in the app's tab (an admin allows it there first): ask them to open it.`
+          : `The request did not get an answer: ${message}`);
+      }
+      const type = res.headers.get("content-type") ?? "";
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      const textual = !type || /^text\/|json|xml|javascript|x-www-form-urlencoded|yaml/i.test(type);
+      let text = `HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ""}`;
+      if (type) text += `\ncontent-type: ${type}`;
+      const location = res.headers.get("location");
+      if (location) text += `\nlocation: ${location}`;
+      if (!bytes.length) text += "\n(empty body)";
+      else if (!textual) text += `\n(${bytes.length} bytes, not text)`;
+      else {
+        const all = new TextDecoder().decode(bytes);
+        text += `\n\n${all.length > MAX_REPLY_CHARS ? `${all.slice(0, MAX_REPLY_CHARS)}\n… (${all.length - MAX_REPLY_CHARS} more characters cut; ask for less at a time)` : all}`;
+      }
+      const reloaded = reload === true && res.ok;
+      if (reloaded) opts.service.reload(id);
+      return { ...textResult(text, { id, method, route, status: res.status, bytes: bytes.length, reloaded }), isError: res.status >= 400 };
+    },
+  };
+
   // ---------- shell (trusted-agent direct host execution, SPEC-v2 §6.1) ----------
   const bash: AgentTool = {
     name: "bash",
     label: "Run shell command",
     description:
-      "Run a shell command in the sandbox in the user's browser (busybox ash, coreutils, git, python3, node, jq, rg, curl; the workspace at /workspace), never on this machine. Files the command changes are saved to the user's files when it finishes; commit them with git in the shell. Use it for scripts, data work, edits across many files and checking your work, not for reading or editing one file (read_file/edit_file). Output is capped (~64KB per stream, head and tail kept). Process substitution <(...) and >(...) and background processes are unavailable. Use temporary files for diff, and timeout_ms for limits rather than the timeout command.",
+      "Run a shell command in the sandbox in the user's browser (busybox ash, coreutils, git, python3, node, jq, rg, curl; the workspace at /workspace), never on this machine. Files the command changes are saved to the user's files when it finishes; commit them with git in the shell. A file is fetched the first time a command reads it: what anything else writes to it while that command runs is not seen, so watching a file means one command per look, not a loop in one. Use it for scripts, data work, edits across many files and checking your work, not for reading or editing one file (read_file/edit_file). Output is capped (~64KB per stream, head and tail kept). Process substitution <(...) and >(...) and background processes are unavailable. Use temporary files for diff, and timeout_ms for limits rather than the timeout command.",
     parameters: Type.Object({
       command: Type.String({ description: "The shell command line. Runs with cwd = the user's workspace" }),
       timeout_ms: Type.Optional(
@@ -595,5 +710,5 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
       return textResult(`Undone: ${paths.join(", ")}`, { paths });
     },
   };
-  return [readFile, writeFile, editFile, undo, grepFiles, appCreate, appDeps, appCheck, appRebuild, appConsole, shell, askUser];
+  return [readFile, writeFile, editFile, undo, grepFiles, appCreate, appDeps, appCheck, appRebuild, appConsole, appRequest, shell, askUser];
 }

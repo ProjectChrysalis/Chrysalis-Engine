@@ -24,7 +24,8 @@ export interface InstanceConfig {
   /** Interface to bind when lan is on; "auto" = every IPv4 interface. */
   listenAddress: string;
   /** Extra Host-header names to accept (a household DNS name, a tailnet
-   *  name). IP addresses and the machine's own name are always accepted. */
+   *  name). "*.example.com" accepts every name under example.com. IP
+   *  addresses and the machine's own name are always accepted. */
   allowedHosts: string[];
   ssl: { enabled: boolean; certPath: string; keyPath: string };
   /** Open the browser when the engine starts on a desktop. */
@@ -132,7 +133,7 @@ function setPath(obj: Record<string, unknown>, key: string, value: unknown): voi
   cur[segs[segs.length - 1]!] = value;
 }
 
-const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i;
+const HOST_RE = /^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i;
 const MODEL_RE = /^[^\s/]+\/\S+$/;
 
 /** Coerce one raw value (from YAML, an env var or a flag) to its kind.
@@ -258,7 +259,9 @@ lan: ${c.lan}
 listenAddress: ${yamlString(c.listenAddress)}
 
 # Extra host names that may open Chrysalis, such as a local DNS name or a
-# Tailscale machine name. IP addresses and this computer's own name always work.
+# Tailscale machine name. "*.example.com" allows every name under example.com,
+# for a tunnel that gets a new name on each start. IP addresses and this
+# computer's own name always work.
 allowedHosts:${hosts}
 
 # Serve over HTTPS. Phones only allow the microphone, installing as an app

@@ -179,6 +179,22 @@ export interface GenerateRequest {
   source?: string;
 }
 
+/** A turn whose context the caller builds itself (see UserModelService.turn). */
+export interface TurnRequest {
+  model?: string | null;
+  /** Called once the model is known: assistant turns in a context name the
+   *  model they are replayed to, and a forced tool choice is spelled per API. */
+  build: (model: Model<Api>) => { context: Context; toolChoice?: unknown };
+  temperature?: number;
+  maxTokens?: number;
+  /** Sampler keys passed through as they are (see presetParams.params). */
+  params?: Record<string, unknown>;
+  reasoning?: GenerateRequest["reasoning"];
+  signal?: AbortSignal;
+  sessionId?: string;
+  source?: string;
+}
+
 export interface GenerateResult {
   text: string;
   replay?: GenerationReplay;
@@ -1233,6 +1249,55 @@ export class UserModelService {
       stream.result().then(cleanup, cleanup);
     }
     return stream;
+  }
+
+  /**
+   * One provider turn over a context the caller built whole: images in user
+   * turns, earlier tool calls with their results, tools the model may ask
+   * for. Nothing is run here: a tool call comes back to the caller, who
+   * answers it in its next turn. Null for a text-completion connection,
+   * which has no such turn (callers fall back to generate()).
+   */
+  async turn(req: TurnRequest): Promise<{ model: Model<Api>; stream: AsyncIterable<AssistantMessageEvent> & { result(): Promise<AssistantMessage> } } | null> {
+    const model = await this.resolveModel(req.model ?? null);
+    if (this.textCompletions.has(model.provider)) return null;
+    const { context, toolChoice } = req.build(model);
+    const level = req.reasoning === "med" ? "medium" : req.reasoning;
+    const options: Record<string, unknown> = {
+      ...(level && level !== "off" ? { reasoning: level } : {}),
+      ...(req.temperature != null ? { temperature: req.temperature } : {}),
+      ...(req.maxTokens != null ? { maxTokens: req.maxTokens } : {}),
+      ...(req.params && Object.keys(req.params).length > 0 ? { samplingParams: req.params } : {}),
+      ...(toolChoice !== undefined ? { toolChoice } : {}),
+    };
+    const ref = `${model.provider}/${model.id}`;
+    const traceText = (m: Message): string => {
+      if (typeof m.content === "string") return m.content;
+      return m.content.map((b) => b.type === "text" ? b.text
+        : b.type === "image" ? `[image ${b.mimeType}]`
+        : b.type === "toolCall" ? `[tool call ${b.name} ${JSON.stringify(b.arguments)}]`
+        : "").filter(Boolean).join("\n");
+    };
+    llmLogRequest(req.source, {
+      model: ref,
+      connection: this.connectionNames.get(model.provider) ?? null,
+      params: { ...options, ...(context.tools?.length ? { tools: context.tools.map((t) => t.name) } : {}) },
+      systemPrompt: context.systemPrompt,
+      messages: context.messages.map((m) => ({ role: m.role, content: traceText(m) })),
+    });
+    const t0 = Date.now();
+    const stream = this.streamFn(model, context, { ...options, ...(req.signal ? { signal: req.signal } : {}) } as never, req.sessionId);
+    void stream.result().then((final) => {
+      if (final.stopReason === "error") {
+        llmLogError(req.source, ref, Date.now() - t0, new Error(final.errorMessage ?? "the provider returned an error"));
+        return;
+      }
+      llmLogResult(req.source, ref, Date.now() - t0, {
+        text: traceText(final),
+        usage: { input: final.usage.input, output: final.usage.output, cacheRead: final.usage.cacheRead, cacheWrite: final.usage.cacheWrite, costTotal: final.usage.cost.total },
+      });
+    }, (e) => llmLogError(req.source, ref, Date.now() - t0, e));
+    return { model, stream };
   }
 
   // ---------- image generation (pi-ai images API; creds never leave) ----------

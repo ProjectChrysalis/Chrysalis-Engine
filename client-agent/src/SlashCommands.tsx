@@ -30,8 +30,12 @@ export function SlashCommands(): ReactNode {
   useEffect(() => {
     let current = true
     setSkills([])
-    if (appId) void appSkills(appId).then((result) => { if (current) setSkills(result.skills) }).catch(() => undefined)
-    return () => { current = false }
+    const refresh = () => { if (appId) void appSkills(appId).then((result) => { if (current) setSkills(result.skills) }).catch(() => undefined) }
+    refresh()
+    const channel = new BroadcastChannel("chrysalis-skills")
+    channel.onmessage = event => { if (event.data?.appId === appId) refresh() }
+    window.addEventListener("focus", refresh)
+    return () => { current = false; channel.close(); window.removeEventListener("focus", refresh) }
   }, [appId])
   const [mine, setMine] = useState<UserCommand[]>([])
   useEffect(() => {

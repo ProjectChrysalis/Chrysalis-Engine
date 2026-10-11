@@ -178,6 +178,17 @@ export async function gitRemoteHead(url: string, ref = "HEAD"): Promise<string |
   return sha && /^[0-9a-f]{7,40}$/.test(sha) ? sha : null;
 }
 
+/** The commit a folder that is its own checkout stands on, null when it is
+ *  not one. Read from its files, so nothing its git settings name is run. */
+export async function checkoutHead(dir: string): Promise<string | null> {
+  try {
+    if (!fs.statSync(path.join(dir, ".git")).isDirectory()) return null;
+    return await git.resolveRef({ fs, dir, ref: "HEAD" });
+  } catch {
+    return null;
+  }
+}
+
 /** The version and engine range the manifest at `commit` of a GitHub
  *  repository names, read without cloning, so an update can be described
  *  before it is fetched. Null for other hosts or when it cannot be read; the

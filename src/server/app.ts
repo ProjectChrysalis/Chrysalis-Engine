@@ -1,6 +1,7 @@
+import { recordChange, withMutation } from '../agent/changes.js';
 import { recoverRun } from "../agent/journal.js";
 import type { AppInspection } from "../agent/inspection.js";
-import { readAppContext, writeAppContext, discoverSkills, contextFile } from "../agent/skills.js";
+import { readAppContext, writeAppContext, discoverSkills, skillResources, addAppSkill, updateAppSkill, removeAppSkill, contextFile } from "../agent/skills.js";
 /**
  * Hono app + routes (SPEC §6). Thin handlers over services.
  */
@@ -16,28 +17,30 @@ import path from "node:path";
 import nodeCrypto from "node:crypto";
 import { PluginStoreService } from "../plugins/store.js";
 import { discoverPlugins, discoverAppPlugins, runPluginHook, runPluginHookOutcome, runPluginRoute, runPluginTool, readPluginExport, syncSchedules, stopSchedules, invalidatePluginCache, collectSiblingTools, collectSiblingLlmHooks, mergeToolBridges, type LoadedPlugin, type PluginRuntimeDeps, type PluginToolBridge } from "../plugins/runtime.js";
+import { ServiceManager, serviceApproved, servicePorts, writeServiceApproval, type ServiceTarget } from "../apps/service.js";
 import { McpRegistry, WEB_SEARCH_PRESET, readStdioApprovals, stdioFingerprint, writeStdioApproval, type CredentialMap, type McpServerConfig } from "../mcp/registry.js";
 import { listApps, readApp, createAppSkeleton, renameAppDir, appTree, validateAppManifest, hashAppTree, type AppInfo } from "../apps/manager.js";
 import { UPDATE_STRATEGIES, applyWrites, mergeBrief, restoreWrites, forgetInstall, mergeTrees, moveInstall, readBaseline, readCodeTree, readInstallSource, readPendingUpgrade, recoverBaseline, satisfiesRange, seedDataTemplates, writeBaseline, writeInstallSource, writePendingUpgrade, type InstallSource } from "../apps/update.js";
 import { OFFICIAL_SOURCES, createCatalog, isOfficialSource, normalizeGitUrl } from "../apps/store.js";
-import { gitClone, gitRemoteHead, isValidGitRef, isValidGitUrl, remoteManifest, stripVcs } from "../apps/git.js";
+import { checkoutHead, gitClone, gitRemoteHead, isValidGitRef, isValidGitUrl, remoteManifest, stripVcs } from "../apps/git.js";
 import { BACKUP_MAX_BYTES, BACKUP_META_DIR, BackupError, buildBackup, extractBackup, locateBackup, type BackupMeta } from "../apps/backup.js";
 import { bootstrapUserDir } from "../paths.js";
 import type { UserService, UserRecord } from "../users.js";
 import type { SessionService } from "../sessions.js";
 import type { InstanceConfig } from "../config.js";
-import { ENGINE_REPOSITORY, ENGINE_VERSION, resourcesDir } from "../install.js";
+import { ENGINE_REPOSITORY, ENGINE_VERSION, IN_CONTAINER, resourcesDir } from "../install.js";
 import type { ServerSettings } from "./settings.js";
 import { latestRelease } from "../updates.js";
 import { SELF_UPDATE, startUpdate, updateState } from "../self-update.js";
 import { agentReadDenied, userPaths, safeResolve, type UserPaths } from "../paths.js";
 import * as git from "../git.js";
 import { UserModelService, ModelNotConfiguredError, type ModelPricing } from "../models.js";
+import { chatCompletions, errorOf, modelList, type ChatCompletionBody } from "../openai-compat.js";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { radiusProvider } from "@earendil-works/pi-ai/providers/radius";
 import type { AuthPrompt, Credential, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { curatedProviders, loadCustomProviders, reservedProviderIds } from "../providers/custom.js";
-import { UserAgent, instructionDocsStamp, listSessions, renameSession, archiveSession, sessionDir, isReasoningLevel, type ReasoningLevel } from "../agent/agent.js";
+import { UserAgent, instructionDocsStamp, listSessions, renameSession, archiveSession, sessionDir, isReasoningLevel, type AgentStreamEvent, type ReasoningLevel } from "../agent/agent.js";
 import { lastSessionModel, summarizeSession } from "../agent/compact.js";
 import { listConnections, createConnection, updateConnection, deleteConnection, validateConnectionInput, validatePromptFormatInput, readConnections, connectionKeyUsable, type ConnectionInfo } from "../connections.js";
 import { PROMPT_FORMATS, type PromptFormat } from "../providers/prompt-formats.js";
@@ -49,6 +52,7 @@ import type { EdgeFormat } from "../speech.js";
 import * as assets from "../assets/store.js";
 import { createSandbox, type SandboxRunner } from "../sandbox/index.js";
 import { sandboxConfigOf } from "../config.js";
+import { allowFirewall, firewallState, systemHost, type FirewallHost } from "../firewall.js";
 import { BrowserSandbox } from "../sandbox/browser.js";
 import { sandboxAsset, sandboxFrameCsp, sandboxVersion } from "../sandbox/assets.js";
 import { MAX_SANDBOX_FILE, SANDBOX_HIDDEN, readWorkspaceFile, workspaceFs, writeWorkspaceFile, type FsOp as WorkspaceFsOp } from "../sandbox/workspace.js";
@@ -95,9 +99,13 @@ export interface AppDeps {
   storeFetch?: typeof fetch;
   /** Stop serving and run the newly installed program in this one's place. */
   restart?: () => Promise<void>;
+  /** The computer whose firewall is asked (tests hand in a made-up one). */
+  firewall?: { host: FirewallHost; spawn?: (argv: string[]) => Promise<{ code: number; err: string }> };
+  /** Programs run for service apps (constructed here when absent). */
+  services?: ServiceManager;
 }
 
-const SESSION_COOKIE = "chrysalis_session";
+export const SESSION_COOKIE = "chrysalis_session";
 const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
 
 /** CSP connect-src for pages that only ever need this engine: self, plus the
@@ -106,6 +114,25 @@ const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
 export function pageConnectSrc(host: string | undefined): string {
   const safe = host && (/^[A-Za-z0-9.-]+(:\d+)?$/.test(host) || /^\[[0-9a-fA-F:]+\](:\d+)?$/.test(host)) ? host : null;
   return safe ? `'self' ws://${safe} wss://${safe}` : "'self'";
+}
+
+/** CSP frame-src for the shell: itself, plus the ports service apps are
+ *  framed on, on the name the page was opened by. */
+export function pageFrameSrc(host: string | undefined, https: boolean, cfg: InstanceConfig): string {
+  const name = host && (/^[A-Za-z0-9.-]+(:\d+)?$/.test(host) || /^\[[0-9a-fA-F:]+\](:\d+)?$/.test(host)) ? host.replace(/:\d+$/, "") : null;
+  if (!name) return "'self'";
+  return ["'self'", ...servicePorts(cfg).map((p) => `${https ? "https" : "http"}://${name}:${p}`)].join(" ");
+}
+
+/** The account a request's session cookie belongs to (service front ports
+ *  check it themselves: they are not behind this app's middleware). */
+export function sessionUserOf(sessions: SessionService, users: UserService): (req: Request) => string | null {
+  return (req) => {
+    const cookie = parseCookies(req.headers.get("cookie") ?? "")[SESSION_COOKIE] ?? "";
+    const sess = cookie ? sessions.verify(cookie) : null;
+    const user = sess ? users.get(sess.username) : null;
+    return user && user.enabled !== false ? user.username : null;
+  };
 }
 
 /** Blocks WebRTC in a sandboxed frame. WebRTC does not go through fetch, so
@@ -140,15 +167,19 @@ class HttpError extends Error {
  *  page is served. A change to what a build reads becomes build_needed: the
  *  shell's builder (src/builder, in the browser) picks it up and the open
  *  app updates in place. The engine itself never builds. */
-export const armLookWatch = (username: string, appsDir: string, bus: EventBus): void => {
+export const armLookWatch = (username: string, appsDir: string, bus: EventBus, services?: ServiceManager): void => {
   ensureLookWatcher(username, appsDir, bus, {
-    onBuild: (appId, paths) => bus.emit(username, "build_needed", { app: appId, paths }),
+    onBuild: (appId, paths) => {
+      bus.emit(username, "build_needed", { app: appId, paths });
+      // the same paths are what a running service app reloads or restarts on
+      services?.filesChanged(username, appId, paths);
+    },
   });
 };
 
 /** Engine routes under /v1/apps/<id>/ that manage the app rather than
  *  being its API. */
-const APP_MANAGEMENT_HEADS = new Set(["tree", "plugins", "rev", "updates", "update", "install", "dev", "build", "activate", "rename", "export", "exports"]);
+const APP_MANAGEMENT_HEADS = new Set(["tree", "plugins", "rev", "updates", "update", "install", "dev", "build", "activate", "rename", "export", "exports", "service"]);
 
 /** Providers whose sign-in asks more than a single key (project/location/ADC
  *  file, AWS profile, Cloudflare account ids); the settings panel runs the
@@ -196,6 +227,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   const { users, sessions, config, dataDir, bus } = deps;
   initNetTokens(dataDir);
   const sandbox = deps.sandbox ?? createSandbox(sandboxConfigOf(config), bus);
+  const services = deps.services ?? new ServiceManager({ config, sessionUser: sessionUserOf(sessions, users), sessionCookie: SESSION_COOKIE });
   const officialSources = deps.officialSources ?? OFFICIAL_SOURCES;
   /** Official = this engine installed the app from a maintainers' repository.
    *  Read from the install record outside the workspace: a manifest can say
@@ -213,7 +245,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   // cookie. Rebinding always arrives with the attacker's domain as the Host,
   // so only host NAMES are checked: localhost, this machine's hostname, and
   // the names the admin allowed in config.yaml (read live, so a change in
-  // Settings applies at once). An IP address as the Host cannot come from
+  // Settings applies at once). "*.example.com" there allows every name under
+  // example.com, never example.com itself or a name that merely ends alike. An IP address as the Host cannot come from
   // rebinding and always passes, which is what a phone on the LAN, a
   // container's published port or a VPN address needs.
   const IP_LITERAL = /^(\d{1,3}(\.\d{1,3}){3}|[0-9a-f:]+)$/i;
@@ -229,7 +262,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     hostName === "localhost" ||
     hostName === machineName ||
     IP_LITERAL.test(hostName) ||
-    config.allowedHosts.includes(hostName);
+    config.allowedHosts.some((h) => (h.startsWith("*.") ? hostName.endsWith(h.slice(1)) : h === hostName));
   // CSRF guard for cookie sessions: browsers always send Origin on
   // cross-origin writes; same-origin pages match the request Host, and
   // non-browser bearer clients send no Origin at all — anything else is a
@@ -614,6 +647,10 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         ...(deps.settings && u.role === "admin" ? { settings: deps.settings } : {}),
         ...(u.role === "admin" ? { provisionAccount } : {}),
         ...(sandbox.enabled ? { sandbox } : {}),
+        service: {
+          request: (appId, call, signal) => services.request(u.username, appId, call, signal),
+          reload: (appId) => services.reloadPages(u.username, appId),
+        },
         ...(model ? { model } : {}),
         ...(reasoning ? { reasoning } : {}),
         ...(mode !== "normal" ? { mode } : {}),
@@ -641,7 +678,12 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       signal?.throwIfAborted();
       resolvedSessionId = a.sessionId;
       a.docsStamp = docsNow;
-      if (key) agentInstances.set(key, a);
+      if (key) {
+        // one agent per conversation: an instance kept from another mode or
+        // model would not have the turns run since it was made
+        for (const other of agentInstances.keys()) if (other.startsWith(`${u.username}:${sessionId}:`)) agentInstances.delete(other);
+        agentInstances.set(key, a);
+      }
     }
     return a;
   };
@@ -670,7 +712,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     if (full !== path.resolve(clientDir) && !full.startsWith(path.resolve(clientDir) + path.sep)) return c.body("bad path", 400);
     if (!fs.existsSync(full) || fs.statSync(full).isDirectory()) return c.body("not found", 404);
     const mime = extMimes[path.extname(full)] ?? "application/octet-stream";
-    c.header("content-security-policy", `default-src 'self'; connect-src ${pageConnectSrc(c.req.header("host"))}; img-src 'self' blob: data:; media-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; frame-ancestors 'none'`);
+    c.header("content-security-policy", `default-src 'self'; connect-src ${pageConnectSrc(c.req.header("host"))}; frame-src ${pageFrameSrc(c.req.header("host"), requestIsHttps(c), config)}; img-src 'self' blob: data:; media-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; frame-ancestors 'none'`);
     // the bundle, its CSS and every font are content-named, so they cache
     // forever; index.html and the unhashed public/ files revalidate. Serving
     // the whole tree no-store re-downloaded the entire client on every load.
@@ -1098,7 +1140,12 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
     // bucket the unknown-token bcrypt budget per caller, so one peer spraying
     // garbage tokens cannot lock out a genuine headless client
-    let user = token ? users.verify(token, clientIp(c)) : null;
+    // A program the engine runs signs in with the key it was handed. That
+    // key opens the model routes and nothing else of the account's.
+    const serviceOwner = token && c.req.path.startsWith("/v1/openai/") ? services.keyOwner(token) : null;
+    const byService = serviceOwner ? (users.get(serviceOwner) ?? null) : null;
+    let user = byService && byService.enabled !== false ? byService : null;
+    if (!user && !serviceOwner && token) user = users.verify(token, clientIp(c));
     if (!user) {
       const cookie = parseCookies(c.req.header("cookie") ?? "")[SESSION_COOKIE] ?? "";
       const sess = cookie ? sessions.verify(cookie) : null;
@@ -1413,8 +1460,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   app.post("/v1/sandbox/host", async (c) => {
     if (!(sandbox instanceof BrowserSandbox)) return c.json({ error: "this instance does not use the browser sandbox" }, 409);
     const body = await c.req
-      .json<{ host?: unknown; ready?: unknown; version?: unknown; error?: unknown; gone?: unknown }>()
-      .catch(() => ({}) as { host?: unknown; ready?: unknown; version?: unknown; error?: unknown; gone?: unknown });
+      .json<{ host?: unknown; ready?: unknown; version?: unknown; error?: unknown; gone?: unknown; heard?: unknown }>()
+      .catch(() => ({}) as { host?: unknown; ready?: unknown; version?: unknown; error?: unknown; gone?: unknown; heard?: unknown });
     if (typeof body.host !== "string" || !/^[a-z0-9]{8,64}$/.test(body.host)) return c.json({ error: "host required" }, 400);
     if (body.gone === true) {
       sandbox.forget(c.get("user").username, body.host);
@@ -1427,8 +1474,14 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const current = await sandboxVersion();
     const stale = hostVersion !== null && hostVersion !== current;
     const error = typeof body.error === "string" ? body.error.slice(0, 300) : null;
-    sandbox.hello(c.get("user").username, body.host, body.ready === true, stale, error);
-    return c.json(stale ? { ok: true, stale: true, version: current } : { ok: true });
+    const reconnect = sandbox.hello(c.get("user").username, body.host, body.ready === true, stale, error, body.heard === true);
+    return c.json({ ok: true, ...(stale ? { stale: true, version: current } : {}), ...(reconnect ? { reconnect: true } : {}) });
+  });
+
+  app.post("/v1/sandbox/taken", async (c) => {
+    if (!(sandbox instanceof BrowserSandbox)) return c.json({ error: "this instance does not use the browser sandbox" }, 409);
+    const body = await c.req.json<{ id?: unknown }>().catch(() => ({}) as { id?: unknown });
+    return c.json({ ok: sandbox.taken(c.get("user").username, body.id) });
   });
 
   app.post("/v1/sandbox/result", async (c) => {
@@ -2110,6 +2163,15 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     }
   });
 
+  // The same models in the shapes most chat programs already speak, for
+  // programs that cannot be taught the route above (see openai-compat.ts).
+  app.get("/v1/openai/models", async (c) => c.json(modelList(await c.get("models").available())));
+  app.post("/v1/openai/chat/completions", async (c) => {
+    const body = await c.req.json<ChatCompletionBody>().catch(() => null);
+    if (!body || typeof body !== "object" || Array.isArray(body)) return c.json(errorOf("a JSON object is required"), 400);
+    return chatCompletions(getModels(c.get("user")), body, c.req.raw.signal, "api:/v1/openai/chat/completions");
+  });
+
   // ---------- git ----------
   app.get("/v1/git/log", async (c) => c.json({ commits: await git.log(c.get("paths").root, 50) }));
   app.post("/v1/git/commit", async (c) => {
@@ -2253,9 +2315,69 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     return c.json({ apps: listApps(c.get("paths").apps).map((a) => ({ id: a.id, name: a.manifest.name })) });
   });
 
+  // every app with the skills it carries, for a page that shows them side by side
+  app.get("/v1/agent/skills", (c) => {
+    const p = c.get("paths");
+    return c.json({ apps: listApps(p.apps).map((a) => {
+      const result = discoverSkills(p, a.id);
+      return { id: a.id, name: a.manifest.name, skills: result.skills.map(({ name, description }) => ({ name, description })), errors: result.errors };
+    }) });
+  });
+
   app.get("/v1/agent/apps/:id/skills", (c) => {
     const result = discoverSkills(c.get("paths"), c.req.param("id"));
     return c.json({ skills: result.skills.map(({ name, description }) => ({ name, description })), errors: result.errors });
+  });
+
+  app.get("/v1/agent/apps/:id/skills/:name", (c) => {
+    const skill = discoverSkills(c.get("paths"), c.req.param("id")).skills.find(skill => skill.name === c.req.param("name"));
+    return skill ? c.json({ name: skill.name, description: skill.description, body: skill.body, files: skillResources(c.get("paths"), skill) }) : c.json({ error: "Skill not found" }, 404);
+  });
+
+  app.put("/v1/agent/apps/:id/skills/:name", async (c) => {
+    const body = await c.req.json<{ description?: unknown; body?: unknown }>().catch(() => null);
+    if (!body || typeof body.description !== "string" || typeof body.body !== "string") return c.json({ error: "Description and instructions are required" }, 400);
+    const p = c.get("paths");
+    try {
+      return await withMutation(p.root, async () => {
+        const { skill, before, after } = updateAppSkill(p, c.req.param("id"), c.req.param("name"), { description: body.description as string, body: body.body as string });
+        const changeId = recordChange(p.root, [{ path: skill.file, before, after }]);
+        let warning: string | undefined;
+        try { await git.commitWrittenPaths(p.root, c.get("user").username, `skill: edit ${skill.name}`, [skill.file]); }
+        catch (error) { warning = `Skill saved. History failed: ${(error as Error).message}`; }
+        return c.json({ name: skill.name, description: skill.description, body: skill.body, changeId, ...(warning ? { warning } : {}) });
+      });
+    } catch (error) { return c.json({ error: (error as Error).message }, 400); }
+  });
+
+  app.delete("/v1/agent/apps/:id/skills/:name", async (c) => {
+    const p = c.get("paths");
+    try {
+      return await withMutation(p.root, async () => {
+        const files = removeAppSkill(p, c.req.param("id"), c.req.param("name"));
+        let warning: string | undefined;
+        try { await git.commitWrittenPaths(p.root, c.get("user").username, `skill: remove ${c.req.param("name")}`, files); }
+        catch (error) { warning = `Skill deleted. History failed: ${(error as Error).message}`; }
+        return c.json({ ok: true, ...(warning ? { warning } : {}) });
+      });
+    } catch (error) { return c.json({ error: (error as Error).message }, 400); }
+  });
+
+  app.post("/v1/agent/apps/:id/skills", async (c) => {
+    const body = await c.req.json<{ name?: unknown; description?: unknown; body?: unknown }>().catch(() => null);
+    if (!body || typeof body.name !== "string" || typeof body.description !== "string" || typeof body.body !== "string") return c.json({ error: "Name, description and instructions are required" }, 400);
+    const p = c.get("paths");
+    try {
+      return await withMutation(p.root, async () => {
+        const skill = addAppSkill(p, c.req.param("id"), { name: body.name as string, description: body.description as string, body: body.body as string });
+        const text = fs.readFileSync(path.join(p.root, skill.file), "utf8");
+        const changeId = recordChange(p.root, [{ path: skill.file, before: null, after: text }]);
+        let warning: string | undefined;
+        try { await git.commitWrittenPaths(p.root, c.get("user").username, `skill: add ${skill.name}`, [skill.file]); }
+        catch (error) { warning = `Skill saved. History failed: ${(error as Error).message}`; }
+        return c.json({ name: skill.name, description: skill.description, body: skill.body, changeId, ...(warning ? { warning } : {}) }, 201);
+      });
+    } catch (error) { return c.json({ error: (error as Error).message }, 400); }
   });
 
   app.get("/v1/agent/sessions/:id/skills", (c) => {
@@ -2346,6 +2468,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       model?: string;
       reasoning?: string;
       mode?: string;
+      /** The mode an accepted plan is carried out in. */
+      planExit?: string;
       images?: Array<{ data: string; mimeType: string }>;
     }>().catch(() => null));
     // null/array/scalar bodies AND non-string message values are 400s, not 500s
@@ -2415,15 +2539,39 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     bus.emit(u.username, "agent_session", { sessionId: agent.sessionId });
     activeRuns.set(runKey, agent);
     try {
-      const result = await agent.run(body.message, {
-        onDelta: (d) => bus.emit(u.username, "agent_delta", { sessionId: agent.sessionId, runId: agent.liveSnapshot()?.id, seq: agent.liveSnapshot()?.seq, delta: d }),
-        onEvent: (ev) => bus.emit(u.username, "agent_event", { sessionId: agent.sessionId, runId: agent.liveSnapshot()?.id, seq: agent.liveSnapshot()?.seq, ev }),
+      const stream = {
+        onDelta: (d: string) => bus.emit(u.username, "agent_delta", { sessionId: agent.sessionId, runId: agent.liveSnapshot()?.id, seq: agent.liveSnapshot()?.seq, delta: d }),
+        onEvent: (ev: AgentStreamEvent) => bus.emit(u.username, "agent_event", { sessionId: agent.sessionId, runId: agent.liveSnapshot()?.id, seq: agent.liveSnapshot()?.seq, ev }),
+        signal: controller.signal,
+      };
+      let result = await agent.run(body.message, {
+        ...stream,
         selection: body.selection,
         images,
-        signal: controller.signal,
         ...(imageUrls.length ? { imageUrls } : {}),
         ...(contextFiles.length ? { contextFiles } : {}),
       });
+      // An accepted plan is carried out in the same request, by an agent in
+      // the mode the user works in outside Plan.
+      if (result.planAccepted && !result.stopped) {
+        const mode = body.planExit === "accept" ? "accept" : "normal";
+        const next = await abortable(getAgent(
+          u,
+          agent.sessionId,
+          typeof body.model === "string" ? body.model.slice(0, 200) : undefined,
+          isReasoningLevel(body.reasoning) ? body.reasoning : undefined,
+          mode,
+          controller.signal,
+        ), controller.signal).catch((e) => { if (controller.signal.aborted) return null; throw e; });
+        if (next) {
+          agent = next;
+          activeRuns.set(runKey, agent);
+          const go = "The plan is accepted. Carry it out.";
+          bus.emit(u.username, "agent_mode", { sessionId: agent.sessionId, mode });
+          bus.emit(u.username, "agent_event", { sessionId: agent.sessionId, ev: { type: "queue_sent", id: nodeCrypto.randomUUID(), text: go } });
+          result = { ...(await agent.run(go, stream)), planAccepted: true };
+        } else result = { ...result, stopped: true };
+      }
       // auto-compact: when the next call's context is over the limit, fold
       // the session into a summary (marker keeps history for the UI). The
       // automatic limit needs the model's real window; a model whose size is
@@ -3148,6 +3296,9 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const id = c.req.param("id");
     if (!readApp(p.apps, id)) return c.json({ error: "app not found" }, 404);
     const appDir = safeResolve(p.apps, id);
+    // its program stops first: it holds files open in the folder going away
+    await services.remove(u.username, id);
+    writeServiceApproval(serviceApprovalsFile(p), id, null);
     fs.rmSync(appDir, { recursive: true, force: true });
     forgetInstall(p.appUpstream, id);
     invalidatePluginCache();
@@ -3174,6 +3325,69 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     await git.commitAll(p.root, u.username, `app(${id}): deleted via API`);
     bus.emit(u.username, "app_changed", { app: id, deleted: true });
     return c.json({ ok: true });
+  });
+
+  // ---------- service apps: a program the engine runs and frames ----------
+  // The approval lives beside the credentials, outside the workspace: the
+  // manifest is a file the agent and the app itself can write, so it cannot
+  // be where "this program may run" is recorded.
+  const serviceApprovalsFile = (p: UserPaths): string => path.join(path.dirname(p.auth), "services-approved.json");
+  const serviceTarget = (c: Context<AppEnv>): { target: ServiceTarget; approved: boolean } | null => {
+    const p = c.get("paths");
+    const info = readApp(p.apps, c.req.param("id") ?? "");
+    if (!info?.manifest.service) return null;
+    const approvalsFile = serviceApprovalsFile(p);
+    const target = { username: c.get("user").username, appId: info.id, appDir: info.dir, spec: info.manifest.service, approvalsFile };
+    // like any program started on this computer, only an admin's account runs one
+    const approved = c.get("user").role === "admin" && serviceApproved(approvalsFile, info.id, info.manifest.service);
+    return { target, approved };
+  };
+  /** What the shell's pane shows: every reply of these routes has all of it. */
+  const serviceView = (c: Context<AppEnv>, target: ServiceTarget, approved: boolean) => ({
+    // the pane asks for all that is kept only while its output view is open
+    ...services.status(target.username, target.appId, c.req.query("log") === "full" ? 300 : 60),
+    approved,
+    canApprove: c.get("user").role === "admin",
+    command: target.spec.command,
+    setup: target.spec.setup ?? null,
+    cwd: target.spec.cwd ?? ".",
+  });
+  app.get("/v1/apps/:id/service", async (c) => {
+    const s = serviceTarget(c);
+    if (!s) return c.json({ error: "not a service app" }, 404);
+    // an approval covers one exact program: a manifest edited since then
+    // takes the running one down with it
+    if (!s.approved) await services.remove(s.target.username, s.target.appId);
+    return c.json(serviceView(c, s.target, s.approved));
+  });
+  app.post("/v1/apps/:id/service/:action", async (c) => {
+    const s = serviceTarget(c);
+    if (!s) return c.json({ error: "not a service app" }, 404);
+    const { target } = s;
+    const action = c.req.param("action");
+    if ((action === "approve" || action === "revoke") && c.get("user").role !== "admin") {
+      return c.json({ error: "admin only" }, 403);
+    }
+    if (action === "approve") {
+      // "always": the admin will not be asked again when this app's program changes
+      const body = await c.req.json<{ always?: unknown }>().catch(() => null);
+      writeServiceApproval(target.approvalsFile, target.appId, target.spec, body?.always === true);
+      armLookWatch(target.username, c.get("paths").apps, bus, services);
+      services.start(target);
+    } else if (action === "revoke") {
+      writeServiceApproval(target.approvalsFile, target.appId, null);
+      await services.remove(target.username, target.appId);
+    } else if (action === "stop") {
+      await services.stop(target.username, target.appId);
+    } else if (action === "start" || action === "restart") {
+      if (!s.approved) return c.json({ error: "an admin has to allow this program first" }, 403);
+      armLookWatch(target.username, c.get("paths").apps, bus, services);
+      if (action === "start") services.start(target);
+      else services.restart(target);
+    } else {
+      return c.json({ error: "unknown action" }, 404);
+    }
+    return c.json(serviceView(c, target, serviceTarget(c)?.approved ?? false));
   });
 
   app.post("/v1/apps/:id/activate", async (c) => {
@@ -3246,7 +3460,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       exportedAt: new Date().toISOString(),
       engine: ENGINE_VERSION,
       ...(source && baseline
-        ? { source: { git: source.git, ref: source.ref, baselineVersion: baseline.version, ...(info.manifest.source?.head ? { head: info.manifest.source.head } : {}) } }
+        ? { source: { git: source.git, ref: source.ref, baselineVersion: baseline.version, ...((source.head ?? info.manifest.source?.head) ? { head: source.head ?? info.manifest.source?.head } : {}) } }
         : {}),
     };
     let zip: Uint8Array;
@@ -3367,6 +3581,9 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   };
 
   /** What the import preview shows for each bundled plugin. */
+  /** The program a service app would run, for the import preview. */
+  const previewService = (manifest: { service?: ServiceTarget["spec"] }) =>
+    manifest.service ? { command: manifest.service.command, setup: manifest.service.setup ?? null, cwd: manifest.service.cwd ?? "." } : null;
   const previewPlugins = (dir: string, plugins: string[]) =>
     plugins.map((pid) => {
       try {
@@ -3440,6 +3657,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       id: fileImportId(p, unpacked.meta, staged.manifest.name),
       manifest: { name: staged.manifest.name, version: staged.manifest.version, author: staged.manifest.author ?? null },
       plugins: previewPlugins(unpacked.root, staged.plugins),
+      service: previewService(staged.manifest),
       data: fs.existsSync(path.join(unpacked.root, "data")),
       updatesFrom: unpacked.meta?.source && isValidGitUrl(unpacked.meta.source.git) ? unpacked.meta.source.git : null,
     });
@@ -3551,6 +3769,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
           staged: true, slug, head,
           manifest: { name: staged.manifest.name, version: staged.manifest.version, author: staged.manifest.author ?? null },
           plugins: previewPlugins(staging, staged.plugins),
+          service: previewService(staged.manifest),
         });
       } catch (e) {
         fs.rmSync(staging, { recursive: true, force: true });
@@ -3619,7 +3838,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
     // the version the next update merges against, and where it comes from
     writeBaseline(p.appUpstream, id, manifest.version, readCodeTree(dest));
-    writeInstallSource(p.appUpstream, id, { git: gitUrl, ref });
+    writeInstallSource(p.appUpstream, id, { git: gitUrl, ref, head });
     invalidatePluginCache();
     await git.commitAll(p.root, u.username, `app(${id}): imported from ${gitUrl}`);
     bus.emit(u.username, "app_changed", { app: id });
@@ -3653,6 +3872,42 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     return false;
   };
 
+  const checkedTrees = new Map<string, { tree: Promise<{ files: Map<string, Buffer>; version: string | undefined }> }>();
+  const appHeadIsCurrent = async (p: UserPaths, info: AppInfo, source: InstallSource, remoteHead: string | null): Promise<boolean> => {
+    const installedHead = source.head ?? info.manifest.source?.head;
+    if (!remoteHead || remoteHead === installedHead) return true;
+    // An app folder kept as a checkout is pulled by hand, so no record follows
+    // it. Standing on the remote's commit is current, edits on top or not.
+    if (await checkoutHead(info.dir) === remoteHead) return true;
+    if (installedHead) return false;
+    const key = `${source.git}:${remoteHead}`;
+    let cached = checkedTrees.get(key);
+    if (!cached) {
+      const tree = (async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chrysalis-update-check-"));
+        try {
+          const head = await gitClone(source.git, dir, source.ref);
+          if (head !== remoteHead) throw new Error("the repository changed during the check; check again");
+          stampPluginSources(dir, source.git, head);
+          return { files: readCodeTree(dir), version: readStaged(dir)?.manifest.version };
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      })();
+      cached = { tree };
+      if (checkedTrees.size >= 8) {
+        const oldest = checkedTrees.keys().next().value;
+        if (oldest !== undefined) checkedTrees.delete(oldest);
+      }
+      checkedTrees.set(key, cached);
+      void tree.catch(() => { if (checkedTrees.get(key)?.tree === tree) checkedTrees.delete(key); });
+    }
+    const incoming = await cached.tree;
+    const baseline = readBaseline(p.appUpstream, info.id);
+    return (info.manifest.version === incoming.version && sameTree(readCodeTree(info.dir), incoming.files))
+      || (!!baseline && baseline.version === incoming.version && sameTree(baseline.files, incoming.files));
+  };
+
   // Update check for the launcher: one ls-remote per app, in parallel, for
   // the badge on every row. Results are reused for a minute so reopening the
   // launcher does not repeat the round trips; `fresh=1` after an update.
@@ -3663,17 +3918,16 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const entries = listApps(p.apps)
       .map((app) => ({ app, source: installSourceOf(p, app) }))
       .filter((e): e is { app: AppInfo; source: InstallSource } => e.source !== null);
-    const signature = entries.map((e) => `${e.app.id}:${e.source.git}:${e.source.ref}:${e.app.manifest.source?.head ?? ""}`).join("|");
+    const signature = entries.map((e) => `${e.app.id}:${e.source.git}:${e.source.ref}:${e.source.head ?? e.app.manifest.source?.head ?? ""}`).join("|");
     const cached = updateChecks.get(u.username);
     if (c.req.query("fresh") !== "1" && cached?.signature === signature && Date.now() - cached.at < 60_000) {
       return c.json({ apps: cached.apps });
     }
     const slow = (ms: number) => new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the repository did not answer in time")), ms));
     const apps = await Promise.all(entries.map(async ({ app, source }) => {
-      const localHead = app.manifest.source?.head ?? null;
       try {
         const remoteHead = await Promise.race([gitRemoteHead(source.git, source.ref), slow(15_000)]);
-        return { id: app.id, available: !!remoteHead && remoteHead !== localHead, remoteHead };
+        return { id: app.id, available: !await appHeadIsCurrent(p, app, source, remoteHead), remoteHead };
       } catch (e) {
         return { id: app.id, available: false, error: (e as Error).message };
       }
@@ -3682,8 +3936,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     return c.json({ apps });
   });
 
-  // Update check: asks the app's repository for its head (ls-remote only).
-  // Nothing local moves.
+  // A missing install commit requires a code comparison; immutable remote
+  // trees are shared with launcher checks.
   app.get("/v1/apps/:id/updates", async (c) => {
     const p = c.get("paths");
     const info = readApp(p.apps, c.req.param("id"));
@@ -3691,10 +3945,10 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const source = installSourceOf(p, info);
     if (!source) return c.json({ supported: false });
     const modified = codeModified(p, info);
-    const localHead = info.manifest.source?.head ?? null;
+    const localHead = source.head ?? info.manifest.source?.head ?? null;
     try {
       const remoteHead = await gitRemoteHead(source.git, source.ref);
-      const upToDate = !remoteHead || remoteHead === localHead;
+      const upToDate = await appHeadIsCurrent(p, info, source, remoteHead);
       // what the new version is and whether this engine can run it, named
       // before the Update button rather than after it fails
       const incoming = !upToDate && remoteHead ? await remoteManifest(source.git, remoteHead) : null;
@@ -3924,6 +4178,17 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     // holds) puts every file this update touched back the way it was
     const manifestPath = path.join(info.dir, "manifest.json");
     const manifestBefore = fs.readFileSync(manifestPath);
+    // a service app's program runs from the files being replaced: it stops
+    // for the swap and comes back on what the update left, when that is
+    // still the program an admin allowed
+    const wasUp = !!info.manifest.service && ["running", "starting", "installing"].includes(services.status(u.username, id).state);
+    if (wasUp) await services.stop(u.username, id);
+    const resume = (): void => {
+      const now = wasUp ? readApp(p.apps, id) : null;
+      const approvalsFile = serviceApprovalsFile(p);
+      if (!now?.manifest.service || u.role !== "admin" || !serviceApproved(approvalsFile, id, now.manifest.service)) return;
+      services.start({ username: u.username, appId: id, appDir: now.dir, spec: now.manifest.service, approvalsFile });
+    };
     try {
       applyWrites(info.dir, result.writes);
       // the incoming manifest wins for content fields; provenance stays ours
@@ -3939,6 +4204,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         restored = false;
       }
       dropStaging();
+      if (restored) resume();
       const why = (e as Error).message;
       log.warn(`[apps] ${u.username}/${id}: update to v${to} could not be written: ${why}`);
       return c.json({
@@ -3961,7 +4227,10 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       const installed = await installApp(info.dir);
       if (!installed.ok) warnings.push(`Its packages did not install (${installed.log.split("\n").filter(Boolean).slice(-2).join(" ")}). Open the app to try again.`);
     }
-    if (source.restored && sameTree(readCodeTree(info.dir), theirs)) writeInstallSource(p.appUpstream, id, { git: source.git, ref: source.ref });
+    writeInstallSource(p.appUpstream, id, {
+      git: source.git, ref: source.ref, head,
+      ...(source.restored && !sameTree(readCodeTree(info.dir), theirs) ? { restored: true as const } : {}),
+    });
     invalidatePluginCache();
     evictAgents(u.username);
     const upgradeFailed = await runAppUpdateHooks(u, p, id, from, to);
@@ -3970,6 +4239,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const note = !result.conflicts.length ? "" : strategy === "agent" ? `, ${result.conflicts.length} conflicts left for the agent` : strategy === "mine" ? `, your side kept in ${result.conflicts.length} conflicts` : "";
     await git.commitAll(p.root, u.username, `app(${id}): updated v${from} → v${to}${strategy === "theirs" ? ", your edits replaced" : ""}${note}`);
     bus.emit(u.username, "app_changed", { app: id, updated: true });
+    resume();
     const link = `${source.git} (commit ${head.slice(0, 10)})`;
     return c.json({
       status: "applied",
@@ -4210,7 +4480,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         c.header("cache-control", "no-store");
         c.header("access-control-allow-origin", "*");
         c.header("cross-origin-resource-policy", "cross-origin");
-        armLookWatch(username, p.apps, bus);
+        armLookWatch(username, p.apps, bus, services);
         // the builder records a failed build here; show why, not just "missing"
         const status = readBuildStatus(path.join(p.apps, id));
         const why = status && !status.ok && status.errors.length
@@ -4218,7 +4488,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
           : `<div style="text-align:center;max-width:460px">This app has not been built yet. It builds when you open it in Chrysalis.</div>`;
         return c.html(withBridge(`<!doctype html><meta charset="utf-8"><title>${escapeHtml(app.manifest.name ?? id)}</title><body style="font-family:system-ui;background:#111217;color:#888;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;padding:16px;box-sizing:border-box">${why}</body>`));
       }
-      armLookWatch(username, p.apps, bus);
+      armLookWatch(username, p.apps, bus, services);
       return serveFrameFile(c, index, p, id);
     }
     // dot-files in dist are the builder's bookkeeping, not the app
@@ -4321,7 +4591,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const a = buildableApp(c);
     if (!a) return c.json({ error: "app not found" }, 404);
     // whoever asks is about to build or show it: source edits must reach them
-    armLookWatch(c.get("user").username, c.get("paths").apps, bus);
+    armLookWatch(c.get("user").username, c.get("paths").apps, bus, services);
     const buildable = fs.existsSync(path.join(a.dir, "index.html"));
     const rev = sourceRev(a.dir);
     const status = readBuildStatus(a.dir);
@@ -4998,6 +5268,32 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
     if ("error" in r) return c.json({ error: r.error }, 400);
     log.info(`[settings] ${c.get("user").username} changed ${Object.keys(body.changes).join(", ")}`);
     return c.json({ ...r.info, moved: r.moved });
+  });
+
+  // ---------- the computer's firewall ----------
+  const firewallHost = deps.firewall?.host ?? systemHost(IN_CONTAINER);
+  app.get("/v1/admin/server/firewall", (c) => {
+    try {
+      requireAdmin(c);
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 403);
+    }
+    return c.json(firewallState(config, dataDir, firewallHost));
+  });
+  // The answer waits for the password prompt on the computer itself.
+  app.post("/v1/admin/server/firewall", async (c) => {
+    try {
+      requireAdmin(c);
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 403);
+    }
+    try {
+      const state = await allowFirewall(config, dataDir, firewallHost, deps.firewall?.spawn);
+      log.info(`[settings] ${c.get("user").username} allowed ports ${state.first}-${state.last} in the firewall`);
+      return c.json(state);
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 400);
+    }
   });
 
   app.onError((err, c) => {

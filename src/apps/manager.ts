@@ -7,21 +7,95 @@
  *   plugins/<id>/  bundled backend behavior (namespaced <app>__<plugin>)
  *   data/          app-owned data (git-tracked; plugins get scoped fs here)
  *   node_modules/, dist/  derived, engine-managed, outside git
+ *
+ * A "service" app has no UI of its own to build: its manifest names a
+ * program the engine runs beside itself and shows in a tab (src/apps/
+ * service.ts).
  */
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 
 /** App shape: "web" is a UI the builder builds, "app"/"skin" are backend
- *  only. Older manifests carry "vite" for a UI; it reads as "web". */
-export type AppKind = "skin" | "app" | "web";
+ *  only, "service" is a program the engine runs and frames. Older manifests
+ *  carry "vite" for a UI; it reads as "web". */
+export type AppKind = "skin" | "app" | "web" | "service";
+
+/** The program behind a "service" app. Words in `command`, `setup` and `env`
+ *  values may carry {port} (the loopback port it must listen on), {port2}
+ *  (a second free port, for a helper it runs beside itself), {data}
+ *  (the app's data folder) and {app} (the app folder). */
+export interface ServiceSpec {
+  /** The program and its arguments. "bun" as the program means the runtime
+   *  this engine itself runs on, so nothing else has to be installed. */
+  command: string[];
+  /** Folder it runs in, relative to the app folder. */
+  cwd?: string;
+  /** Run in `cwd` before the first start, and again before a later one when
+   *  a `setupOn` file changed or the packages it installed are gone. */
+  setup?: string[];
+  env?: Record<string, string>;
+  /** Path asked until the program answers. */
+  ready?: string;
+  /** Path prefixes under `cwd`: a change there reloads the open page. */
+  reloadOn?: string[];
+  /** Path prefixes under `cwd` holding the script files pages load as they
+   *  are: a changed function there is swapped in the open page. */
+  patchOn?: string[];
+  /** Path prefixes under `cwd`: a change there restarts the program. */
+  restartOn?: string[];
+  /** Files under `cwd` that `setup` works from: it runs again before the
+   *  next start when one of them differs from what it last ran against. */
+  setupOn?: string[];
+}
+
+const isWords = (v: unknown, max: number): v is string[] =>
+  Array.isArray(v) && v.length > 0 && v.length <= max && v.every((w) => typeof w === "string" && w.length > 0 && w.length <= 1024 && !w.includes("\0"));
+
+/** A relative path that stays inside the folder it is resolved against. */
+const isInsidePath = (v: unknown): v is string =>
+  typeof v === "string" && v.length <= 256 && !path.isAbsolute(v) && !/^[A-Za-z]:/.test(v) && !v.split(/[\\/]/).includes("..");
+
+export function validateServiceSpec(raw: unknown): ServiceSpec | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const s = raw as Record<string, unknown>;
+  if (!isWords(s.command, 64)) return null;
+  if (s.cwd !== undefined && !isInsidePath(s.cwd)) return null;
+  if (s.setup !== undefined && !isWords(s.setup, 64)) return null;
+  if (s.ready !== undefined && !(typeof s.ready === "string" && /^\/[^\s]{0,255}$/.test(s.ready))) return null;
+  let env: Record<string, string> | undefined;
+  if (s.env !== undefined) {
+    if (!s.env || typeof s.env !== "object" || Array.isArray(s.env)) return null;
+    const entries = Object.entries(s.env as Record<string, unknown>);
+    if (entries.length > 64 || entries.some(([k, v]) => !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(k) || typeof v !== "string" || v.length > 4096)) return null;
+    env = Object.fromEntries(entries) as Record<string, string>;
+  }
+  const prefixes = (v: unknown): string[] | null | undefined =>
+    v === undefined ? undefined : Array.isArray(v) && v.length <= 32 && v.every(isInsidePath) ? (v as string[]) : null;
+  const reloadOn = prefixes(s.reloadOn);
+  const patchOn = prefixes(s.patchOn);
+  const restartOn = prefixes(s.restartOn);
+  const setupOn = prefixes(s.setupOn);
+  if (reloadOn === null || patchOn === null || restartOn === null || setupOn === null) return null;
+  return {
+    command: s.command,
+    ...(s.cwd ? { cwd: s.cwd as string } : {}),
+    ...(s.setup ? { setup: s.setup as string[] } : {}),
+    ...(env ? { env } : {}),
+    ...(s.ready ? { ready: s.ready as string } : {}),
+    ...(reloadOn ? { reloadOn } : {}),
+    ...(patchOn ? { patchOn } : {}),
+    ...(restartOn ? { restartOn } : {}),
+    ...(setupOn ? { setupOn } : {}),
+  };
+}
 
 /** Manifest kind values written before the shape was renamed. */
 const LEGACY_KINDS: Record<string, AppKind | undefined> = { vite: "web" };
 
 /** A manifest kind, legacy spellings included, or null when unrecognised. */
 export function asAppKind(raw: unknown): AppKind | null {
-  if (raw === "skin" || raw === "app" || raw === "web") return raw;
+  if (raw === "skin" || raw === "app" || raw === "web" || raw === "service") return raw;
   return typeof raw === "string" ? LEGACY_KINDS[raw] ?? null : null;
 }
 
@@ -43,6 +117,8 @@ export interface AppManifest {
   /** Engine versions the app runs on (">=1.2.0", "^1.0.0"). An update
    *  that needs a newer engine is not offered. */
   engine?: string;
+  /** The program a "service" app runs. Always present on that kind. */
+  service?: ServiceSpec;
 }
 
 export interface AppInfo {
@@ -60,6 +136,8 @@ export function validateAppManifest(raw: unknown): AppManifest | null {
   if (typeof m.version !== "string") return null;
   const kind = asAppKind(m.kind);
   if (!kind) return null;
+  const service = kind === "service" ? validateServiceSpec(m.service) : null;
+  if (kind === "service" && !service) return null;
   const source =
     m.source && typeof m.source === "object" && typeof (m.source as { git?: unknown }).git === "string" &&
       /^https?:\/\/[^\s]+\/[^\s]+$|^git@[^\s]+\/[^\s]+$/.test((m.source as { git: string }).git)
@@ -80,6 +158,7 @@ export function validateAppManifest(raw: unknown): AppManifest | null {
     ...(source ? { source } : {}),
     ...(typeof m.repository === "string" && /^https:\/\/[^\s]+$/.test(m.repository) ? { repository: m.repository } : {}),
     ...(typeof m.engine === "string" && m.engine.trim() && m.engine.length <= 64 ? { engine: m.engine.trim() } : {}),
+    ...(service ? { service } : {}),
   };
 }
 

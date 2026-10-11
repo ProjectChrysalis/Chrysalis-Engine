@@ -68,7 +68,34 @@ export function discoverSkills(p: UserPaths, appId: string | null): { skills: Ap
   return { skills, errors };
 }
 
-export function skillContext(p: UserPaths, context: AppContext): string {
+/** What a load answers with. It holds the instructions whole, which is how
+ *  `skillsHeld` recognises a result that still carries them. */
+export function skillLoadText(p: UserPaths, skill: AppSkill): string {
+  return `Loaded skill: ${skill.name}\nDirectory: ${path.dirname(skill.file)}\n${skill.body}\nSupporting files (up to 50): ${JSON.stringify(skillResources(p, skill))}`;
+}
+
+/** The loaded skills whose instructions, as they are on disk now, are still
+ *  in one of these messages as the answer to their load. */
+export function skillsHeld(p: UserPaths, context: AppContext, messages: readonly unknown[]): Set<string> {
+  const held = new Set<string>();
+  if (!context.loaded.length) return held;
+  const texts: string[] = [];
+  for (const m of messages as { role?: string; toolName?: string; isError?: boolean; content?: unknown }[]) {
+    if (m.role !== "toolResult" || m.toolName !== "skill_load" || m.isError || !Array.isArray(m.content)) continue;
+    for (const b of m.content as { type?: string; text?: string }[]) if (b.type === "text" && b.text) texts.push(b.text);
+  }
+  if (!texts.length) return held;
+  for (const skill of discoverSkills(p, context.appId).skills) {
+    if (context.loaded.includes(skill.name) && texts.some((t) => t.includes(skill.body))) held.add(skill.name);
+  }
+  return held;
+}
+
+/** `held` names the loaded skills the conversation already carries (see
+ *  `skillsHeld`). Their instructions are left out here: text that enters the
+ *  system prompt on a load changes the start of every later request, and a
+ *  provider that caches by prefix then reads the whole conversation again. */
+export function skillContext(p: UserPaths, context: AppContext, held: ReadonlySet<string> = new Set()): string {
   const { skills, errors } = discoverSkills(p, context.appId);
   const out = [context.appId ? `Conversation app: ${context.appId}. Other apps mentioned in history are not the current target.` : "No conversation app selected. General questions need no app. Before app-specific work, select the app with app_target. If the request does not identify an app unambiguously, ask the user to choose."];
   if (skills.length) {
@@ -78,6 +105,7 @@ export function skillContext(p: UserPaths, context: AppContext): string {
   if (errors.length) out.push(`Skill diagnostics: ${JSON.stringify(errors)}`);
   let loadedBytes = 0;
   for (const name of context.loaded) {
+    if (held.has(name)) continue;
     const skill = skills.find((s) => s.name === name);
     if (skill && (loadedBytes += Buffer.byteLength(skill.body)) > 65_536) { out.push(`Skill ${name} omitted: loaded instructions exceed 64 KB.`); continue; }
     if (skill) out.push(`Loaded skill: ${name}\nDirectory: ${path.dirname(skill.file)}\n${skill.body}`);
@@ -98,4 +126,80 @@ export function skillResources(p: UserPaths, skill: AppSkill): string[] {
   };
   walk(base, 0);
   return names;
+}
+
+export function addAppSkill(p: UserPaths, appId: string, value: { name: string; description: string; body: string }): AppSkill {
+  if (!ID.test(appId) || !readApp(p.apps, appId)) throw new Error("App is not installed");
+  const { name, description, body } = value;
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) || name.length > 64) throw new Error("Use a short lowercase name with hyphens");
+  if (!description.trim() || description.length > 1024 || !body.trim()) throw new Error("Description and instructions are required");
+  const text = `---\nname: ${JSON.stringify(name)}\ndescription: ${JSON.stringify(description.trim())}\n---\n\n${body.trim()}\n`;
+  if (Buffer.byteLength(text) > 32768) throw new Error("Skill exceeds 32 KB");
+  const appRoot = fs.realpathSync(path.join(p.apps, appId));
+  if (!appRoot.startsWith(fs.realpathSync(p.root) + path.sep)) throw new Error("App path escapes the workspace");
+  const catalog = discoverSkills(p, appId);
+  if (catalog.skills.some(skill => skill.name === name)) throw new Error("A skill with this name already exists");
+  if (catalog.skills.length >= 100 || catalog.skills.reduce((size, skill) => size + skill.name.length + skill.description.length, 0) + name.length + description.trim().length > 32768) throw new Error("Skill catalog is full");
+  let directory = appRoot;
+  for (const part of [".agents", "skills"]) {
+    directory = path.join(directory, part);
+    if (!fs.existsSync(directory)) fs.mkdirSync(directory);
+    if (!fs.statSync(directory).isDirectory() || !fs.realpathSync(directory).startsWith(appRoot + path.sep)) throw new Error("Skill path escapes its app");
+  }
+  if (fs.readdirSync(directory).length >= 100) throw new Error("Skill catalog is full");
+  directory = path.join(directory, name);
+  fs.mkdirSync(directory);
+  const file = path.join(directory, "SKILL.md");
+  try { fs.writeFileSync(file, text, { flag: "wx" }); }
+  catch (error) { fs.rmdirSync(directory); throw error; }
+  return { name, description: description.trim(), body: body.trim(), file: path.relative(p.root, file) };
+}
+
+/** The folder of one skill, by its folder name, once it is known to sit inside its app. */
+function skillFolder(p: UserPaths, appId: string, name: string): string {
+  if (!ID.test(appId) || !readApp(p.apps, appId)) throw new Error("App is not installed");
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(name)) throw new Error("Invalid skill name");
+  const appRoot = fs.realpathSync(path.join(p.apps, appId));
+  if (!appRoot.startsWith(fs.realpathSync(p.root) + path.sep)) throw new Error("App path escapes the workspace");
+  const directory = path.join(appRoot, ".agents", "skills", name);
+  if (!fs.existsSync(directory) || !fs.lstatSync(directory).isDirectory()) throw new Error("Skill not found");
+  if (fs.realpathSync(directory) !== directory) throw new Error("Skill path escapes its app");
+  return directory;
+}
+
+/** New description and instructions for a skill. Its name is its folder and stays; whatever else its header holds is kept. */
+export function updateAppSkill(p: UserPaths, appId: string, name: string, value: { description: string; body: string }): { skill: AppSkill; before: string; after: string } {
+  const directory = skillFolder(p, appId, name);
+  const catalog = discoverSkills(p, appId);
+  const current = catalog.skills.find(skill => skill.name === name);
+  if (!current) throw new Error("This skill cannot be read. Fix or delete its SKILL.md.");
+  const description = value.description.trim(), body = value.body.trim();
+  if (!description || description.length > 1024 || !body) throw new Error("Description and instructions are required");
+  if (catalog.skills.reduce((size, skill) => size + skill.name.length + (skill.name === name ? description : skill.description).length, 0) > 32768) throw new Error("Skill catalog is full");
+  const file = path.join(directory, "SKILL.md");
+  const before = fs.readFileSync(file, "utf8");
+  const { name: _name, description: _description, ...rest } = YAML.parse(/^---\r?\n([\s\S]*?)\r?\n---/.exec(before)![1]!) as Record<string, unknown>;
+  const kept = Object.keys(rest).length ? `${YAML.stringify(rest, null, 2).trimEnd()}\n` : "";
+  const after = `---\nname: ${JSON.stringify(name)}\ndescription: ${JSON.stringify(description)}\n${kept}---\n\n${body}\n`;
+  if (Buffer.byteLength(after) > 32768) throw new Error("Skill exceeds 32 KB");
+  const temp = `${file}.tmp`;
+  fs.writeFileSync(temp, after);
+  fs.renameSync(temp, file);
+  return { skill: { name, description, body, file: path.relative(p.root, file) }, before, after };
+}
+
+/** Takes a skill away with everything in its folder. Returns the files that went, as workspace paths. */
+export function removeAppSkill(p: UserPaths, appId: string, name: string): string[] {
+  const directory = skillFolder(p, appId, name);
+  const root = fs.realpathSync(p.root);
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) walk(path.join(dir, entry.name));
+      else files.push(path.relative(root, path.join(dir, entry.name)).replaceAll(path.sep, "/"));
+    }
+  };
+  walk(directory);
+  fs.rmSync(directory, { recursive: true });
+  return files;
 }

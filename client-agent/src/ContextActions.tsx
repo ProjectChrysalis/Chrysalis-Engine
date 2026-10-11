@@ -14,7 +14,7 @@ export function ContextActions() {
   const models = useAgent((s) => s.models)
   const [pending, setPending] = useState(false)
   const [open, setOpen] = useState(false)
-  const contextWindow = models.find((item) => `${item.provider}/${item.modelId}` === model)?.contextWindow
+  const contextWindow = usage?.contextWindow ?? models.find((item) => `${item.provider}/${item.modelId}` === model)?.contextWindow
   const tokens = usage ? usage.input + usage.cacheRead : null
   const percent = tokens != null && contextWindow && contextWindow > 0 ? tokens / contextWindow * 100 : null
   const severity = percent != null && percent >= 85 ? "high" : percent != null && percent >= 65 ? "moderate" : "normal"
@@ -51,7 +51,7 @@ export function ContextActions() {
               <dt>{tr("Cached input")}</dt><dd>{usage.cacheRead.toLocaleString()}</dd>
               <dt>{tr("Output")}</dt><dd>{usage.output.toLocaleString()}</dd>
             </dl>
-          </> : <p className="text-muted-foreground text-xs">{tr("Usage available after a run.")}</p>}
+          </> : <p className="text-muted-foreground text-xs">{tr("Waiting for usage.")}</p>}
           <div className="agent-context-compact">
             <p className="text-muted-foreground text-xs">{tr("Summarize older messages to free space.")}</p>
             <Button variant="outline" size="sm" disabled={!sessionId || running || pending} onClick={compactConversation}>

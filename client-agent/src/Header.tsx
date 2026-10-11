@@ -2,7 +2,7 @@ import { tr } from "@/i18n"
 import { AgentModelPicker } from "./AgentModelPicker"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { SidebarSimple, SlidersHorizontal, WifiSlash } from "@phosphor-icons/react"
+import { Paperclip, SidebarSimple, SlidersHorizontal, WifiSlash, X } from "@phosphor-icons/react"
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "@/components/ui/popover"
 import { useEffect, type ReactNode } from "react"
 import { useAgent } from "./store"
@@ -19,6 +19,7 @@ function ComposerSettings(): ReactNode {
   const queueMode = useAgent(s => s.queueMode)
   const label = (value: unknown): string => typeof (value as { label?: unknown } | null)?.label === "string" ? (value as { label: string }).label : "";
   const item = available?.appId === appId ? label(available.selection) : "";
+  const attached = selection ? label(selection.selection) : "";
   useEffect(() => {
     useAgent.setState({ availableSelection: null });
     if (!appId || window.parent === window) return;
@@ -36,13 +37,19 @@ function ComposerSettings(): ReactNode {
           <SelectTrigger className="agent-composer-app" aria-label={tr("Working app")}><SelectValue /></SelectTrigger>
           <SelectContent><SelectItem value="">{tr("Choose app")}</SelectItem>{apps.map((app) => <SelectItem key={app.id} value={app.id}>{app.name}</SelectItem>)}</SelectContent>
         </Select>
-        <p className="text-xs text-muted-foreground">{tr("Ask the agent to switch apps anytime.")}</p>
-      </div>
-      <div className="agent-setting">
-        <Button variant="outline" size="sm" disabled={!item || running} title={item} onClick={() => { if (available) useAgent.setState({ selection: available }); }}><span className="truncate">{item ? tr("Attach {item}", { item }) : tr("No item selected in this app")}</span></Button>
-        <p className="text-xs text-muted-foreground">{tr("Adds this item to your next message.")}</p>
-        {selection ? <p className="text-xs text-muted-foreground break-words">{tr("Attached: {item}", { item: label(selection.selection) })}</p> : null}
-        {selection ? <Button variant="ghost" size="sm" onClick={() => useAgent.setState({ selection: null })}>{tr("Remove attachment")}</Button> : null}
+        {attached ? (
+          <div className="agent-attachment">
+            <Paperclip size={14} aria-hidden />
+            <span className="truncate" title={attached}>{tr("Attached: {item}", { item: attached })}</span>
+            <Button variant="ghost" size="icon" className="size-7 shrink-0" aria-label={tr("Remove attachment")} title={tr("Remove attachment")} onClick={() => useAgent.setState({ selection: null })}><X size={14} aria-hidden /></Button>
+          </div>
+        ) : null}
+        {item && item !== attached ? (
+          <Button variant="ghost" size="sm" className="agent-attach" disabled={running} title={item} onClick={() => { if (available) useAgent.setState({ selection: available }); }}>
+            <Paperclip size={14} aria-hidden />
+            <span className="truncate">{tr("Attach {item}", { item })}</span>
+          </Button>
+        ) : null}
       </div>
       <div className="agent-setting">
         <span className="agent-setting-label">{tr("Current model")}</span>

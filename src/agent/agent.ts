@@ -4,7 +4,7 @@
  * Sessions persist as JSONL run records (agent can read its own history);
  * resume reconstructs dialogue from past runs.
  */
-import { readAppContext, writeAppContext, discoverSkills, skillContext, skillResources } from "./skills.js";
+import { readAppContext, writeAppContext, discoverSkills, skillContext, skillLoadText, skillsHeld } from "./skills.js";
 import { inspectionTool, type AppInspection } from "./inspection.js";
 import { AgentPolicy } from "./policy.js";
 import { buildSkillTools } from "./skill-tools.js";
@@ -17,12 +17,13 @@ import { Agent, type AgentTool, type AgentMessage } from "@earendil-works/pi-age
 import type { UserModelService } from "../models.js";
 import { buildUserTools, type AgentToolOptions, WRITE_TOOLS } from "./tools.js";
 import type { UserPaths } from "../paths.js";
-import { listApps } from "../apps/manager.js";
+import { listApps, readApp } from "../apps/manager.js";
 import type { InstanceConfig } from "../config.js";
 import type { ServerSettings } from "../server/settings.js";
 import type { UserService } from "../users.js";
 import type { McpRegistry, McpToolInfo } from "../mcp/registry.js";
 import { Type } from "typebox";
+import { abortable } from "../cancellation.js";
 import { log } from "../logger.js";
 import { clampThinkingLevel, isContextOverflow, type AssistantMessage } from "@earendil-works/pi-ai";
 import { clampMaxTokens, fitContext, newTrimState } from "./context-budget.js";
@@ -53,7 +54,7 @@ export interface AgentRunResult {
   /** Wall-clock duration of the reasoning phase, ms. */
   thinkingMs?: number;
   /** Token usage of the final assistant message (for context display). */
-  usage?: { input: number; output: number; cacheRead: number };
+  usage?: { input: number; output: number; cacheRead: number; contextWindow?: number };
   /** Context window of the resolved model (auto-compact thresholding). */
   contextWindow?: number;
   /** Set when the run was aborted mid-flight (partial output is persisted). */
@@ -64,10 +65,14 @@ export interface AgentRunResult {
   /** The provider refused the request as too long for the model's window
    *  (even after the in-run retry): the session needs compacting. */
   contextOverflow?: boolean;
+  /** The user accepted the plan this run presented: the work is theirs to
+   *  start outside plan mode. */
+  planAccepted?: boolean;
 }
 
 /** Live agent progress (WS): reasoning deltas + sequential tool execution. */
 export type AgentStreamEvent =
+  | { type: "usage"; usage: { input: number; output: number; cacheRead: number; contextWindow?: number } }
   | { type: "queue_sent"; id: string; text: string }
   | { type: "thinking"; delta: string }
   | { type: "thinking_end"; ms: number }
@@ -102,7 +107,7 @@ interface SessionRunRecord {
   turns?: { user?: string; userId?: string; thinking?: string; thinkingMs?: number; text?: string; tools: { name: string; ok: boolean; summary?: string; output?: string; diff?: string; args?: Record<string, unknown> }[] }[];
   thinking?: string;
   thinkingMs?: number;
-  usage?: { input: number; output: number; cacheRead: number };
+  usage?: { input: number; output: number; cacheRead: number; contextWindow?: number };
 }
 
 /**
@@ -269,7 +274,7 @@ export class UserAgent {
     private agent: Agent,
     readonly sessionId: string,
     private sFile: string,
-    private budget: { force: boolean; halt?: string },
+    private budget: { force: boolean; halt?: string; planAccepted?: boolean },
     private startRun: () => void,
   ) {}
 
@@ -291,6 +296,7 @@ export class UserAgent {
       inspect?: (id: string, signal?: AbortSignal) => Promise<AppInspection>
       ask?: AgentToolOptions["ask"]
       sandbox?: AgentToolOptions["sandbox"]
+      service?: AgentToolOptions["service"]
       /** config.yaml access for the admin's server_settings tool */
       settings?: ServerSettings
       /** Set up a new account's workspace (admin_create_user) */
@@ -312,7 +318,7 @@ export class UserAgent {
         packageDownloads: () => cfg.apps.packageDownloads,
         ...(opts.ask ? { ask: opts.ask } : {}),
         ...(opts.sandbox ? { sandbox: opts.sandbox } : {}),
-
+        ...(opts.service ? { service: opts.service } : {}),
         ...(opts.mode === "plan" ? { mode: "plan" as const } : {}),
       }),
     ];
@@ -331,8 +337,8 @@ export class UserAgent {
       tools = tools.filter((t) => !WRITE_TOOLS.has(t.name) || t.name === "ask_user");
     }
 
-    tools.push(...buildSkillTools(paths, username, appContext, opts.mode === "plan", (tool, args, signal) => policy.check(tool, args, signal)), outputTool(paths.root), inspectionTool(() => appContext.appId, opts.inspect));
-    const appPrompt = () => systemPromptFor(username, isAdmin, paths, opts.sandbox, appContext.appId) + "\n\n" + skillContext(paths, appContext) + (opts.mode === "plan" ? PLAN_MODE_PROMPT : "");
+    tools.push(...buildSkillTools(paths, username, appContext, opts.mode === "plan", (tool, args, signal) => policy.check(tool, args, signal)), outputTool(paths.root), inspectionTool(() => appContext.appId, opts.inspect, serviceUnseen(paths)));
+    const appPrompt = (held?: ReadonlySet<string>) => systemPromptFor(username, isAdmin, paths, opts.sandbox, appContext.appId) + "\n\n" + skillContext(paths, appContext, held) + (opts.mode === "plan" ? PLAN_MODE_PROMPT : "");
     tools.push({
       name: "app_target", label: "Choose app", executionMode: "sequential",
       description: "Switch the working app in this conversation, including during a task. When the user asks to work on another installed app, call this tool before inspecting or editing it. Installed app IDs are listed in the system prompt. If the app is ambiguous, ask_user first. This changes instructions, skills, and the user's app picker. Permissions remain checked separately. Null clears the target.",
@@ -344,7 +350,7 @@ export class UserAgent {
           appContext.appId = appId; appContext.loaded = [];
         }
         opts.notify?.("agent_target", { sessionId, appId });
-        return { content: [{ type: "text", text: skillContext(paths, appContext) }], details: { appId } };
+        return { content: [{ type: "text", text: skillContext(paths, appContext, new Set(appContext.loaded)) }], details: { appId } };
       },
     }, {
       name: "skill_load", label: "Load app skill", executionMode: "sequential",
@@ -354,12 +360,13 @@ export class UserAgent {
         const { name } = params as { name: string };
         const skill = discoverSkills(paths, appContext.appId).skills.find((s) => s.name === name);
         if (!skill) throw new Error("Skill is not available for the selected app");
+        if (appContext.loaded.includes(name)) return { content: [{ type: "text", text: `Skill ${name} is already loaded. Its instructions are in the earlier skill_load result or in the system prompt.` }], details: { name, appId: appContext.appId } };
         const loaded = discoverSkills(paths, appContext.appId).skills.filter((s) => appContext.loaded.includes(s.name) || s.name === name);
         if (loaded.reduce((bytes, s) => bytes + Buffer.byteLength(s.body), 0) > 65_536) throw new Error("Loaded skills exceed 64 KB. Start a focused conversation or shorten the skills.");
         const next = { ...appContext, loaded: [...new Set([...appContext.loaded, name])] };
         writeAppContext(paths, sessionId, next);
         appContext.loaded = next.loaded;
-        return { content: [{ type: "text", text: `Loaded skill: ${name}\nDirectory: ${path.dirname(skill.file)}\n${skill.body}\nSupporting files (up to 50): ${JSON.stringify(skillResources(paths, skill))}` }], details: { name, appId: appContext.appId } };
+        return { content: [{ type: "text", text: skillLoadText(paths, skill) }], details: { name, appId: appContext.appId } };
       },
     });
 
@@ -388,8 +395,22 @@ export class UserAgent {
     );
     // context budget: trim what is sent when it outgrows the window, and never
     // ask for more output than the window has left (see context-budget.ts)
-    const budget: { force: boolean; halt?: string } = { force: false };
+    const budget: { force: boolean; halt?: string; planAccepted?: boolean } = { force: false };
     const trim = newTrimState();
+    if (opts.mode === "plan") tools.push({
+      name: "present_plan", label: "Present plan", executionMode: "sequential",
+      description: "Hand the finished plan to the user for approval. Call it once the plan is complete, with the whole plan in markdown. The user sees the plan and either accepts it or says what to change. An accepted plan ends plan mode and the work starts from it.",
+      parameters: Type.Object({ plan: Type.String({ description: "The complete plan, in markdown" }) }),
+      async execute(_id, params, signal) {
+        if (!opts.ask) throw new Error("Approval is unavailable. Write the plan in your reply instead.");
+        if (!(params as { plan: string }).plan.trim()) throw new Error("The plan is empty.");
+        const answer = await abortable(opts.ask({ question: "Accept this plan?", options: ["Accept plan", "Keep planning"] }), signal);
+        signal?.throwIfAborted();
+        if (answer !== "Accept plan") return { content: [{ type: "text", text: `The plan was not accepted. The user answered: ${answer}\nRevise the plan and present it again, or ask what to change.` }], details: {} };
+        budget.planAccepted = true;
+        return { content: [{ type: "text", text: "The user accepted the plan. Stop here: plan mode is ending and the work starts from this plan." }], details: { accepted: true }, terminate: true };
+      },
+    });
     const failures = new Map<string, number>();
     const toolCount = { value: 0 };
     const modelSteps = { value: 0 };
@@ -409,20 +430,36 @@ export class UserAgent {
       afterToolCall: async ({ toolCall, args, result, isError }) => {
         const key = JSON.stringify([toolCall.name, args]);
         failures.set(key, isError ? (failures.get(key) ?? 0) + 1 : 0);
+        // a skill is read whole or not at all: its size is capped where it loads
+        if (toolCall.name === "skill_load") return undefined;
         return { content: result.content.map(block => block.type === "text" ? { ...block, text: spillOutput(paths.root, block.text) } : block) };
       },
       transformContext: async (msgs) => {
         // pi-agent-core's contract: this hook must never throw
         try {
           const st = agent.state;
-          const current = msgs.map((message, index) => {
-            if (index === 0 && message.role === "system") return { ...message, content: appPrompt(), sections: undefined };
-            if (message.role === "toolResult" && message.toolName === "skill_load" && !message.isError) return { ...message, content: [{ type: "text" as const, text: "Historical skill load. Currently active skill instructions are in the system prompt." }] };
-            return message;
-          });
-          const fit = fitContext(st.model, { messages: current }, { force: budget.force, state: trim });
-          if (fit.advanced) log.info(`[agent:${sessionId}] context trimmed ~${fit.before} → ~${fit.after} tokens (window ${st.model.contextWindow})`);
-          return fit.messages;
+          // A loaded skill is sent once: in the answer to its load while that
+          // answer is in what goes out, in the system prompt once it is not
+          // (trimmed away, compacted, or the skill changed on disk).
+          const live = new Set(discoverSkills(paths, appContext.appId).skills.filter((s) => appContext.loaded.includes(s.name)).map((s) => s.body));
+          const stale = (message: AgentMessage) => message.role === "toolResult" && message.toolName === "skill_load" && !message.isError
+            && !message.content.some((b) => b.type === "text" && [...live].some((body) => b.text.includes(body)));
+          const base = msgs.map((message) => stale(message) ? { ...message, content: [{ type: "text" as const, text: "Historical skill load. These instructions are no longer in effect." }] } : message);
+          let held = skillsHeld(paths, appContext, base);
+          let advanced = false;
+          for (let pass = 0; ; pass++) {
+            const prompt = appPrompt(held);
+            const current = base.map((message, index) => index === 0 && message.role === "system" ? { ...message, content: prompt, sections: undefined } : message);
+            const fit = fitContext(st.model, { messages: current }, { force: pass === 0 && budget.force, state: trim });
+            advanced ||= fit.advanced;
+            // trimming took a skill's answer out: it moves to the system prompt
+            const kept = skillsHeld(paths, appContext, fit.messages);
+            if (kept.size === held.size) {
+              if (advanced) log.info(`[agent:${sessionId}] context trimmed ~${fit.before} → ~${fit.after} tokens (window ${st.model.contextWindow})`);
+              return fit.messages;
+            }
+            held = kept;
+          }
         } catch (e) {
           log.warn(`[agent:${sessionId}] context trim failed, sending as is: ${(e as Error).message}`);
           return msgs;
@@ -430,7 +467,7 @@ export class UserAgent {
       },
       initialState: {
         model,
-        systemPrompt: appPrompt(),
+        systemPrompt: appPrompt(skillsHeld(paths, appContext, messages)),
         tools,
         messages,
         // pi-agent-core reads the level from state; undefined = "off"
@@ -442,7 +479,7 @@ export class UserAgent {
         return svc.streamFn(m, c, maxTokens !== undefined ? { ...o, maxTokens } : o, sessionId);
       },
     });
-    return new UserAgent(agent, sessionId, sFile, budget, () => { failures.clear(); toolCount.value = 0; modelSteps.value = 0; delete budget.halt; });
+    return new UserAgent(agent, sessionId, sFile, budget, () => { failures.clear(); toolCount.value = 0; modelSteps.value = 0; delete budget.halt; delete budget.planAccepted; });
   }
 
   /** The model this session runs on, for one-shot calls made on its behalf. */
@@ -539,6 +576,13 @@ export class UserAgent {
     };
     const unsub = this.agent.subscribe((ev) => {
       if (ev.type === "message_end") this.journal?.message(ev.message);
+      if (ev.type === "message_end" && ev.message.role === "assistant") {
+        const { input, output, cacheRead } = ev.message.usage;
+        if (input + output + cacheRead > 0) {
+          const contextWindow = this.agent.state.model.contextWindow;
+          event({ type: "usage", usage: { input, output, cacheRead, ...(contextWindow > 0 ? { contextWindow } : {}) } });
+        }
+      }
       if (ev.type === "message_start" && ev.message.role === "user") {
         const id = (ev.message as unknown as { queueId?: string }).queueId;
         if (id && this.queued.delete(id)) {
@@ -692,7 +736,8 @@ export class UserAgent {
     }
     const toolTrace = turns.flatMap((t) => t.tools);
     const usageRaw = (finalAssistant as { usage?: { input: number; output: number; cacheRead: number } } | undefined)?.usage;
-    const usage = usageRaw ? { input: usageRaw.input, output: usageRaw.output, cacheRead: usageRaw.cacheRead } : undefined;
+    const contextWindow = this.agent.state.model.contextWindow;
+    const usage = usageRaw ? { input: usageRaw.input, output: usageRaw.output, cacheRead: usageRaw.cacheRead, ...(contextWindow > 0 ? { contextWindow } : {}) } : undefined;
     const thinkingMs = thinkingStart ? (thinkingEnd || Date.now()) - thinkingStart : undefined;
     const stop = (finalAssistant as { stopReason?: string } | undefined)?.stopReason;
     const errorMessage = (finalAssistant as { errorMessage?: string } | undefined)?.errorMessage;
@@ -701,13 +746,13 @@ export class UserAgent {
     // A reasoning model can stop after thinking with no text and no tool
     // call; without this the turn would end in silence. Display only: the
     // session keeps the empty reply so the note never enters model context.
-    const emptyNote = !text && !this.stopRequested && stop !== "aborted" && !error
+    const emptyNote = !text && !this.stopRequested && stop !== "aborted" && !error && !this.budget.planAccepted
       ? this.budget.halt ?? "The model returned an empty response. Send it again, or check the model connection in Settings."
       : undefined;
     if (error) log.warn(`[agent:${this.sessionId}] model call failed: ${error}`);
     // visible failures only need the reason; this makes an empty settle
     // (stop/length/aborted) diagnosable from the engine log
-    if (!text) log.warn(`[agent:${this.sessionId}] run settled with no reply: stop=${stop ?? "none"} out=${(finalAssistant as { usage?: { output?: number } } | undefined)?.usage?.output ?? "?"}`);
+    if (!text && !this.budget.planAccepted) log.warn(`[agent:${this.sessionId}] run settled with no reply: stop=${stop ?? "none"} out=${(finalAssistant as { usage?: { output?: number } } | undefined)?.usage?.output ?? "?"}`);
     const saved = this.persistRun(userMessage, text, toolTrace, usage, thinkingText, thinkingMs, turns, opts.imageUrls, fresh);
     if (saved) this.journal?.finish();
     this.journal = undefined;
@@ -725,6 +770,7 @@ export class UserAgent {
       ...(stop ? { stopReason: stop } : {}),
       ...(error ? { error } : {}),
       ...(contextOverflow ? { contextOverflow: true } : {}),
+      ...(this.budget.planAccepted ? { planAccepted: true } : {}),
     };
   }
 
@@ -746,7 +792,7 @@ export class UserAgent {
     userMessage: string,
     finalText: string,
     toolTrace: AgentRunResult["toolTrace"],
-    usage: { input: number; output: number; cacheRead: number } | undefined,
+    usage: { input: number; output: number; cacheRead: number; contextWindow?: number } | undefined,
     thinking: string,
     thinkingMs: number | undefined,
     turns: AgentRunTurn[],
@@ -1099,8 +1145,10 @@ const PLAN_MODE_PROMPT = `
 [PLAN MODE ACTIVE]
 You are in plan mode. You may read, search, and call read-only tools (including MCP) to investigate, but you MUST NOT modify anything — no file writes or edits, no commits, no app changes.
 - Explore freely, ask the user questions when requirements are unclear (ask_user).
-- Then present a concise, actionable plan: goals, steps, files you would touch, risks.
-- Do not attempt to execute the plan. When the user approves it, they will switch you out of plan mode and ask you to carry it out.`;
+- Then write a concise, actionable plan: goals, steps, files you would touch, risks.
+- Hand the finished plan over with present_plan (the whole plan, in markdown) instead of writing it in your reply. The user reads it there and accepts it or says what to change.
+- A question that needs no plan just gets its answer.
+- Do not attempt to execute the plan. Once the user accepts it, plan mode ends and you are asked to carry it out.`;
 
 /** A documentation file, capped. Past the cap the model is told which file to
  *  read for the rest rather than handed a silently truncated contract. */
@@ -1203,6 +1251,15 @@ function installedAppsSection(paths: UserPaths, active: string | null): string {
   return `${lines.join("\n")}\n`;
 }
 
+/** A service app's page comes from its own program, at an address of its
+ *  own: the shell shows it and cannot look inside it. Asked anyway, the
+ *  inspection would wait out its whole time limit for an answer nothing sends. */
+function serviceUnseen(paths: UserPaths): (appId: string) => string | null {
+  return (appId) => readApp(paths.apps, appId)?.manifest.kind === "service"
+    ? `${appId} serves its own page, which cannot be inspected from here. Check the result through its API with app_request, or in its files.`
+    : null;
+}
+
 function systemPromptFor(username: string, isAdmin: boolean, paths: UserPaths, sandbox?: AgentToolOptions["sandbox"], appId: string | null = null): string {
   const base = `You are the personal agent of "${username}" on their Chrysalis instance — a local engine where EVERYTHING is files you can edit (like code): apps, characters, chats, plugins, looks.
 
@@ -1213,6 +1270,7 @@ function systemPromptFor(username: string, isAdmin: boolean, paths: UserPaths, s
   - plugins/<id>/           bundled backend behavior: manifest.json {permissions} + plugin.js
   - data/                   app-owned data files (git-tracked): whatever that app stores, in its own layout
   - node_modules/, dist/    — derived (installed / browser-built, outside git). dist/.chrysalis-build.json holds the last build's errors.
+  - kind "service" is different: no UI to build. manifest.json carries service { command, cwd, setup?, setupOn?, env?, reloadOn?, patchOn?, restartOn? } and the engine runs that program and shows it in the tab. Its files live under cwd: saving a stylesheet under a reloadOn path updates the open page in place, any other file there reloads it (typed text and scroll positions are put back), and one under a restartOn path restarts the program. patchOn is reloadOn for folders of script files the page loads exactly as they are on disk (no build step): a save that only changes the inside of functions is swapped into the open page, nothing reloads and nothing the page holds is lost; a change outside every function (imports, top-level code) reloads as usual, and code that already ran once at start shows its change only after a reload. An app that builds its pages from source gets nothing from these lists: run its own development server as the command instead, so its own hot updates reach the page. In command and env words, {port} is the port it must listen on (also given as PORT unless env sets PORT itself), {port2} a second free port for a helper it runs beside itself (a development server in front of an API, say), {data} its data folder, {models} the address of this engine's models in the common chat-completions shape and {models_key} the key for it (the model id "default" is the account's default model). setup runs before the first start; setupOn names the files it works from (package.json, say), and it runs again before the next start when one of them changed. To do inside a running service app what its own pages do (read what it holds, add or change things), call its program with app_request: the app's AGENTS.md and skills say which routes it has, and nothing else about its API should be guessed. It only runs once an admin has allowed it in its tab, and a change to command, cwd, setup or env needs that again unless the admin chose not to be asked again for the app (so do not edit those to "fix" something without saying so).
 - plugins/<id>/             — top-level always-on plugins (same format as bundled)
 (User-managed config is NOT here: MCP servers, model connections, speech endpoints and settings all live outside this workspace with the credentials; the Settings UI owns them and you do not read or edit them. Asking the user to change one there is the right move when something is missing.)
 - providers.json            — custom model providers { providers: { id: { api: openai-completions|anthropic-messages, baseUrl, models: [...] | "auto" } } }

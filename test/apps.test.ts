@@ -139,7 +139,7 @@ describe("curated providers", () => {
     const prov = buildProvider("nanogpt", { ...CURATED_PROVIDERS["nanogpt"]!, models: [{ id: "anthropic/claude-x", reasoning: true }, { id: "zai/glm-x" }] }, { codeDefined: true });
     const models = prov.getModels() as readonly { id: string; compat?: { cacheControlFormat?: string; thinkingFormat?: string } }[];
     // the endpoint places cache breakpoints itself, so no inline markers
-    expect(models[0]?.compat).toEqual({ thinkingFormat: "openrouter" });
+    expect(models[0]?.compat).toEqual({ supportsFinishReason: false, thinkingFormat: "openrouter" });
 
     const bodies: Record<string, unknown>[] = [];
     const fakeFetch = async (_url: unknown, init?: { body?: unknown }) => {
@@ -182,7 +182,7 @@ describe("curated providers", () => {
       models: [{ id: "claude-ish-merge" }],
     });
     const localModel = local.getModels()[0] as { compat?: { cacheControlFormat?: string } };
-    expect(localModel.compat).toBeUndefined();
+    expect(localModel.compat).toEqual({ supportsFinishReason: false });
   });
 
   it("sizes bare-id models from the catalog entry at the same endpoint, and leaves the rest unknown", async () => {

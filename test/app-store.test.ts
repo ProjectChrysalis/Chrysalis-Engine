@@ -210,7 +210,7 @@ describe("installing from the store", () => {
     const id = await importApp(officialUrl);
     expect(id).toBe("studio");
     const p = userPaths(dataDir, "alice");
-    expect(readInstallSource(p.appUpstream, id)).toEqual({ git: officialUrl, ref: "HEAD" });
+    expect(readInstallSource(p.appUpstream, id)).toEqual({ git: officialUrl, ref: "HEAD", head: expect.any(String) });
     expect((await launchApps()).find((a) => a.id === id)).toMatchObject({ official: true, repository: officialUrl });
 
     // the bridge treats it as official: it may write the model pricing catalog
@@ -313,7 +313,7 @@ describe("installing from the store", () => {
     await republish("studio", (work) => fs.writeFileSync(path.join(work, "README.md"), "new\n"));
     const updated = (await (await call("/v1/apps/studio-2/update", { method: "POST", body: "{}" })).json()) as { status: string };
     expect(updated.status).toBe("applied");
-    expect(readInstallSource(p.appUpstream, "studio-2")).toEqual({ git: url, ref: "HEAD" });
+    expect(readInstallSource(p.appUpstream, "studio-2")).toEqual({ git: url, ref: "HEAD", head: expect.any(String) });
     expect((await launchApps()).find((a) => a.id === "studio-2")?.official).toBe(true);
   }, 60_000);
 
@@ -322,10 +322,15 @@ describe("installing from the store", () => {
     const p = userPaths(dataDir, "alice");
 
     const wrapped = (await (await uploadZip(zipSync({ "hand-made/manifest.json": manifest, "hand-made/src/main.tsx": strToU8("export {}\n"), "__MACOSX/hand-made/._main.tsx": strToU8("x") }))).json()) as { file: string; id: string; updatesFrom: string | null };
-    expect(wrapped).toMatchObject({ id: "hand-made", updatesFrom: null });
+    expect(wrapped).toMatchObject({ id: "hand-made", updatesFrom: null, service: null });
     const done = (await (await call("/v1/apps/import", { method: "POST", body: JSON.stringify({ file: wrapped.file, name: "hand.zip" }) })).json()) as { id: string };
     expect(fs.readFileSync(path.join(p.apps, done.id, "src", "main.tsx"), "utf8")).toBe("export {}\n");
     expect(readInstallSource(p.appUpstream, done.id)).toBeNull();
+
+    // an app that runs a program says which one before anything is installed
+    const program = strToU8(JSON.stringify({ name: "Side", version: "1.0.0", kind: "service", service: { command: ["bun", "main.js", "{port}"], cwd: "server", setup: ["bun", "install"] } }));
+    const side = (await (await uploadZip(zipSync({ "manifest.json": program, "server/main.js": strToU8("") }))).json()) as { service: unknown };
+    expect(side.service).toEqual({ command: ["bun", "main.js", "{port}"], setup: ["bun", "install"], cwd: "server" });
 
     const escaping = await uploadZip(zipSync({ "manifest.json": manifest, "../../escaped.txt": strToU8("no") }));
     expect(escaping.status).toBe(422);
@@ -471,12 +476,33 @@ describe("installing from the store", () => {
       ((await (await call("/v1/apps/updates?fresh=1")).json()) as { apps: { id: string; available: boolean; remoteHead?: string | null }[] }).apps;
     // freshly installed: the stamped head is the remote's
     expect(await check()).toEqual([{ id, available: false, remoteHead: expect.any(String) }]);
-    // an install with no stamped head (an adopted one) counts as behind
+    // Missing provenance in the workspace still has a matching saved baseline.
     const manifestPath = path.join(p.apps, id, "manifest.json");
     const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { source: { head?: string } };
     delete manifest.source.head;
     fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    expect(await check()).toEqual([{ id, available: false, remoteHead: expect.any(String) }]);
+    expect(await (await call(`/v1/apps/${id}/updates`)).json()).toMatchObject({ upToDate: true });
+    writeInstallSource(p.appUpstream, id, { git: url, ref: "HEAD" });
+    expect(await check()).toEqual([{ id, available: false, remoteHead: expect.any(String) }]);
+    fs.writeFileSync(path.join(p.apps, id, "local.txt"), "local edit");
+    expect(await check()).toEqual([{ id, available: false, remoteHead: expect.any(String) }]);
+    expect(await (await call(`/v1/apps/${id}/updates`)).json()).toMatchObject({ upToDate: true, modified: true });
+    const work = path.join(repoDir, "studio-work");
+    fs.writeFileSync(path.join(work, "new.txt"), "upstream change within the same version");
+    await git(["add", "-A"], work);
+    await git(["commit", "-m", "code change"], work);
+    await git(["push", path.join(repoDir, "owner", "studio.git"), "HEAD"], work);
+    await git(["update-server-info"], path.join(repoDir, "owner", "studio.git"));
     expect(await check()).toEqual([{ id, available: true, remoteHead: expect.any(String) }]);
+    expect(await (await call(`/v1/apps/${id}/updates`)).json()).toMatchObject({ upToDate: false });
+    // a folder kept as a checkout and pulled by hand stands on the new commit,
+    // with work in progress on top: nothing newer exists for it
+    const pulled = path.join(repoDir, "studio-pulled");
+    await git(["clone", path.join(repoDir, "owner", "studio.git"), pulled], repoDir);
+    fs.cpSync(path.join(pulled, ".git"), path.join(p.apps, id, ".git"), { recursive: true });
+    expect(await check()).toEqual([{ id, available: false, remoteHead: expect.any(String) }]);
+    expect(await (await call(`/v1/apps/${id}/updates`)).json()).toMatchObject({ upToDate: true });
   }, 60_000);
 
   it("adopts an install an earlier engine shipped, and only that", async () => {

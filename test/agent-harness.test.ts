@@ -124,6 +124,13 @@ it("Accept permissions apply to file, package and remote tools, with scoped pers
   await plan.check("grep", {});
   await expect(plan.check("skill_edit", {})).rejects.toThrow("Plan");
   await expect(plan.check("mcp_unknown", {})).rejects.toThrow("Plan");
+  const full = new AgentPolicy(p.root, "four", "normal", () => "studio", ask);
+  await full.check("bash", { command: "ls" });
+  await full.check("write_file", { path: "notes/outside.md" });
+  await full.check("app_deps", { id: "other" });
+  expect(prompts).toBe(4);
+  await full.check("mcp_server_write", { item: "one" });
+  expect(prompts).toBe(5);
 });
 
 it("Plan exposes only remote tools explicitly declaring read-only behavior and preserves remote errors", async () => {
@@ -177,6 +184,10 @@ it("stores large tool output for bounded retrieval and keeps inspection images s
   const inspection = await inspectionTool(() => "studio", async () => ({ text: "Hello", screenshot: { data: "abcd", mimeType: "image/png" } })).execute("inspect", {});
   expect(inspection.content.map(block => block.type)).toEqual(["text", "image"]);
   await expect(inspectionTool(() => null).execute("inspect", {})).rejects.toThrow("Open");
+  // refused before the page is asked, not after waiting for an answer
+  let asked = false;
+  await expect(inspectionTool(() => "tavern", async () => { asked = true; return {}; }, () => "tavern serves its own page").execute("inspect", {})).rejects.toThrow("serves its own page");
+  expect(asked).toBe(false);
 });
 
 it("stops repeating an identical failing action after three attempts", async () => {

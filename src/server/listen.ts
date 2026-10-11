@@ -24,7 +24,7 @@ function socketKey(cfg: InstanceConfig): string {
   return JSON.stringify([listenHost(cfg), cfg.port, cfg.ssl.enabled, cfg.ssl.enabled ? [cfg.ssl.certPath, cfg.ssl.keyPath] : null]);
 }
 
-function readTls(cfg: InstanceConfig, homeDir: string): { cert: string; key: string } | undefined {
+export function readTls(cfg: InstanceConfig, homeDir: string): { cert: string; key: string } | undefined {
   if (!cfg.ssl.enabled) return undefined;
   const cert = path.resolve(homeDir, cfg.ssl.certPath);
   const key = path.resolve(homeDir, cfg.ssl.keyPath);
@@ -75,6 +75,10 @@ export class Listener {
         // attempts, which get a plain 404 instead of a dangling handshake in
         // the browser's per-host socket pool).
         if (url.pathname === "/v1/ws") return bus.upgrade(req, srv, url);
+        // a model can take longer to answer than an idle socket is kept
+        if (url.pathname.startsWith("/v1/openai/")) srv.timeout(req, 0);
+        // and a person longer to type the computer's password
+        if (url.pathname === "/v1/admin/server/firewall") srv.timeout(req, 0);
         // The peer address reaches handlers as `peerAddress` (the router has
         // no socket of its own to read); rate-limit buckets key off it.
         return handle(req, srv.requestIP(req)?.address ?? "");

@@ -25,6 +25,22 @@ boundaries matter. Reports about any of them are welcome.
   Package install scripts never run, and apps build in a browser sandbox.
 - **The agent's shell runs in the browser**, in WebAssembly, not on the
   host. Server settings changes and new accounts need the user's approval.
+- **Service apps are the one exception.** An app of the `service` kind runs
+  a program on the host, outside every sandbox, with the rights of the
+  account the engine runs under. Nothing starts until an admin has been
+  shown the command and allowed it. That approval is kept outside the
+  workspace and a change to the command, its folder or its environment
+  voids it, unless the admin ticked "don't ask again" for that app: then
+  whatever its manifest names later runs unasked. The approval does not
+  cover the program's own files: an update to the app, or the agent editing
+  those files, changes what runs. The page is
+  reached through a port only the owner's session passes, and the program
+  never sees the engine's session cookie. A program whose manifest asks for
+  it is handed a key to the account's models: it can spend on them, and the
+  key opens nothing else. Each service app listens on its own port next to
+  the engine's (the 16 after it); other devices reach an app only if a
+  firewall lets that port through. Install one only from a source you would
+  trust with any program.
 
 `test/malicious-plugin.test.ts` and `test/security.test.ts` try to break each
 of these on every push.

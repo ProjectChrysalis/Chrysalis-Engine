@@ -78,6 +78,18 @@ function ensureBus(): void {
   };
   open();
 }
+/** Drop a stream that stopped delivering and open a new one. A dead socket
+ *  may never report its own close, so it is not waited for. */
+function reopenBus(): void {
+  const old = bus;
+  bus = null;
+  if (old) {
+    old.onclose = null;
+    old.onmessage = null;
+    try { old.close(); } catch { /* already gone */ }
+  }
+  ensureBus();
+}
 
 // ---------- the frame ----------
 class SandboxFrame {
@@ -191,10 +203,21 @@ let executingId: string | null = null;
  *  land. */
 const refused = new Set<string>();
 
+/** The event stream opened since the last heartbeat: proof it delivers. */
+let heard = false;
+
 function beat(): void {
-  void api("/v1/sandbox/host", { method: "POST", body: JSON.stringify({ host: HOST_ID, ready, version: VERSION, ...(bootError ? { error: bootError } : {}) }) }).catch(() => {
-    /* logged out or engine restarting — the next beat retries */
-  });
+  const said = heard;
+  heard = false;
+  void api("/v1/sandbox/host", { method: "POST", body: JSON.stringify({ host: HOST_ID, ready, version: VERSION, ...(said ? { heard: true } : {}), ...(bootError ? { error: bootError } : {}) }) })
+    .then((r) => {
+      // the engine sent a command here and it never arrived
+      if ((r as { reconnect?: boolean }).reconnect === true) reopenBus();
+    })
+    .catch(() => {
+      /* logged out or engine restarting — the next beat retries */
+      heard = heard || said;
+    });
 }
 
 function startHeartbeat(): void {
@@ -407,6 +430,8 @@ const listener: BusListener = (type, payload) => {
     return;
   }
   if (type !== "sandbox_run" || typeof payload.command !== "string") return;
+  // receipt first: the engine gives up early on a command nobody took
+  void api("/v1/sandbox/taken", { method: "POST", body: JSON.stringify({ id }) }).catch(() => undefined);
   const controller = new AbortController();
   commands.set(id, controller);
   const timeoutMs = typeof payload.timeoutMs === "number" ? payload.timeoutMs : 120_000;
@@ -441,7 +466,10 @@ const startOnce = (): void => {
   else scheduleWarm();
 };
 busListeners.add((type) => {
-  if (type === "hello") startOnce();
+  if (type !== "hello") return;
+  heard = true;
+  if (started) beat();
+  else startOnce();
 });
 ensureBus();
 publish();

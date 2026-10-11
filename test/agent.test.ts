@@ -134,6 +134,18 @@ describe("agent tools", () => {
     await expect(read.execute("t2", { path: "apps/roleplay/data/nope.json" })).rejects.toThrow(/File not found/);
   });
 
+  it("read_file refuses a file that is not text instead of answering with its bytes", async () => {
+    const p = bootstrapUserDir(dataDir, "alice");
+    const read = buildUserTools("alice", p, { dataDir: p.root }).find((t) => t.name === "read_file")!;
+    fs.mkdirSync(path.join(p.root, "apps/roleplay/data"), { recursive: true });
+    fs.writeFileSync(path.join(p.root, "apps/roleplay/data/card.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]));
+    fs.writeFileSync(path.join(p.root, "apps/roleplay/data/plain.txt"), "caf\u00e9 \u2713\n");
+    await expect(read.execute("t1", { path: "apps/roleplay/data/card.png" })).rejects.toThrow(/Not a text file/);
+    await expect(read.execute("t2", { path: "apps/roleplay/data/card.png", offset: 1, limit: 5 })).rejects.toThrow(/Not a text file/);
+    const text = (await read.execute("t3", { path: "apps/roleplay/data/plain.txt" })) as { content: { text: string }[] };
+    expect(text.content[0]!.text).toContain("caf\u00e9");
+  });
+
   it("file tools report a diff with real line numbers; a no-op write reports none", async () => {
     const p = bootstrapUserDir(dataDir, "alice");
     const tools = buildUserTools("alice", p, { dataDir: p.root });
@@ -592,6 +604,10 @@ describe("agent loop + sessions (faux provider)", () => {
     const result = await agent.run("read long.txt", { onEvent: (ev) => events.push(ev) });
 
     const firstEnd = events.findIndex((e) => e.type === "tool_end");
+    const readings = events.filter((e) => e.type === "usage");
+    expect(readings).toHaveLength(2);
+    expect(events.findIndex((e) => e.type === "usage")).toBeLessThan(firstEnd);
+    expect(readings.at(-1)?.usage).toMatchObject(result.usage!);
     const announced = events.findIndex((e) => e.type === "tool_start" && e.id === "tc1" && e.args.path === "long.txt");
     expect(announced).toBeGreaterThanOrEqual(0);
     expect(announced).toBeLessThan(firstEnd);

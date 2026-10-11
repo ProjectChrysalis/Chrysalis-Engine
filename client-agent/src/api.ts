@@ -32,6 +32,7 @@ export interface EngineUsage {
   input: number
   output: number
   cacheRead: number
+  contextWindow?: number
 }
 
 export interface EngineRun {
@@ -51,6 +52,7 @@ export interface EngineRun {
 }
 
 export interface AgentResponse {
+  contextWindow?: number
   appId?: string | null
   sessionId: string
   finalText: string
@@ -137,6 +139,8 @@ export interface SendInput {
   selection?: { appId: string; selection: unknown }
   sessionId?: string
   mode?: "normal" | "plan" | "accept"
+  /** The mode an accepted plan is carried out in. */
+  planExit?: "normal" | "accept"
   model?: string
   reasoning?: string
   images?: Array<{ data: string; mimeType: string }>

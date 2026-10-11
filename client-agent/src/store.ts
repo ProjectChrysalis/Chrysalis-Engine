@@ -23,7 +23,7 @@ import {
   type EngineUsage,
   type McpServer,
 } from "./api"
-import { applyStreamEvent, msgsFromRuns, partsFromResponse, uid, type Msg, type PartData } from "./runs"
+import { applyStreamEvent, msgsFromRuns, partsFromResponse, usageFromRuns, uid, type Msg, type PartData } from "./runs"
 import { createStreamDeltaBatcher, type StreamEvent } from "./streaming"
 
 export interface PendingAsk {
@@ -122,6 +122,8 @@ const storedMode = (): AgentState["mode"] => {
   const v = prefs.get("agent-ui-mode")
   return MODES.find((m) => m === v) ?? "normal"
 }
+/** The mode last used outside Plan: an accepted plan is carried out in it. */
+const workMode = (): "normal" | "accept" => prefs.get("agent-ui-work-mode") === "accept" ? "accept" : "normal"
 
 /** The open thread is remembered so a reload — the rebuild reload the app does
  *  to itself included — lands back in the conversation instead of a blank new
@@ -216,12 +218,12 @@ export const useAgent = create<AgentState>()((set, get) => {
       runSequence += 1
       liveId = null
       rememberSession(id)
-      set({ running: false, stopping: false, sessionId: id, msgs: [], banner: null, ask: null, sidebarOpen: false })
+      set({ running: false, stopping: false, sessionId: id, msgs: [], banner: null, ask: null, sidebarOpen: false, usage: null })
       try {
         const r = await sessionsApi.get(id)
         if (get().sessionId === id) {
           const delivered = new Set((r.runs ?? []).flatMap((run) => run.turns?.map((turn) => turn.userId).filter(Boolean) ?? []));
-          set((state) => ({ appId: r.appId, msgs: msgsFromRuns(r.runs ?? [], tr), queue: state.queue.filter((item) => !delivered.has(item.id)) }));
+          set((state) => ({ appId: r.appId, msgs: msgsFromRuns(r.runs ?? [], tr), usage: usageFromRuns(r.runs ?? []), queue: state.queue.filter((item) => !delivered.has(item.id)) }));
           const live = await agentState(id);
           if (get().sessionId === id) set((state) => ({ running: live.running, ask: live.ask ?? null, queue: [...state.queue.filter((item) => item.sessionId !== id || !live.queue.some((queued) => queued.id === item.id)).map((item) => item.sessionId === id ? { ...item, accepted: false } : item), ...live.queue.map((item) => ({ ...item, sessionId: id, pending: false, accepted: true }))] }));
           if (get().sessionId === id && live.running && live.live) restoreLive(live.live);
@@ -239,7 +241,7 @@ export const useAgent = create<AgentState>()((set, get) => {
         const r = await sessionsApi.get(sid)
         if (get().sessionId === sid) {
           const delivered = new Set((r.runs ?? []).flatMap((run) => run.turns?.map((turn) => turn.userId).filter(Boolean) ?? []));
-          set((state) => ({ msgs: msgsFromRuns(r.runs ?? [], tr), queue: state.queue.filter((item) => !delivered.has(item.id)) }));
+          set((state) => ({ msgs: msgsFromRuns(r.runs ?? [], tr), usage: usageFromRuns(r.runs ?? []), queue: state.queue.filter((item) => !delivered.has(item.id)) }));
         }
       } catch {
         // keep the local view; the stream already showed the run
@@ -267,7 +269,7 @@ export const useAgent = create<AgentState>()((set, get) => {
       if (get().running) void get().stop()
       streamDeltaBatcher.reset()
       rememberSession(null)
-      set({ running: false, stopping: false, sessionId: null, appId: null, msgs: [], banner: null, ask: null, sidebarOpen: false })
+      set({ running: false, stopping: false, sessionId: null, appId: null, msgs: [], banner: null, ask: null, sidebarOpen: false, usage: null })
     },
 
     send: async (text, images, urls) => {
@@ -314,7 +316,6 @@ export const useAgent = create<AgentState>()((set, get) => {
         stopping: false,
         sessionId: sid,
         banner: null,
-        usage: null,
       })
       try {
         const res: AgentResponse = await sendAgent({
@@ -325,19 +326,22 @@ export const useAgent = create<AgentState>()((set, get) => {
           model: s.model ?? undefined,
           reasoning: s.reasoning || undefined,
           mode: s.mode,
+          ...(s.mode === "plan" ? { planExit: workMode() } : {}),
           images: images?.length ? images : undefined,
         })
         if (runSequence !== sequence || get().sessionId !== sid) return
         streamDeltaBatcher.reset()
         rememberSession(res.sessionId)
         const finalParts = partsFromResponse(res)
+        // an accepted plan continues as a second run in a bubble of its own
+        const live = liveId ?? id
         set((st) => ({
-          msgs: st.msgs.map((m) => ({ ...m, ...(m.id === id && !res.turns.some((turn) => turn.user !== undefined) ? { parts: finalParts } : {}), streaming: false })),
+          msgs: st.msgs.map((m) => ({ ...m, ...(m.id === live && !res.turns.some((turn) => turn.user !== undefined) ? { parts: finalParts } : {}), streaming: false })),
           running: false,
           stopping: false,
           sessionId: res.sessionId,
           appId: res.appId === undefined ? st.appId : res.appId,
-          usage: res.usage ?? null,
+          usage: res.usage ? { ...res.usage, ...(res.contextWindow ? { contextWindow: res.contextWindow } : {}) } : st.usage,
           banner: res.stopped
             ? { kind: "info", text: tr("Stopped") }
             : res.stopReason === "length"
@@ -486,6 +490,7 @@ export const useAgent = create<AgentState>()((set, get) => {
 
     setMode: (m) => {
       prefs.set("agent-ui-mode", m)
+      if (m !== "plan") prefs.set("agent-ui-work-mode", m)
       set({ mode: m })
     },
 
@@ -519,7 +524,10 @@ function restoreLive(live: { id: string; seq: number; user: string; events: Stre
     let index = 0;
     let parts: PartData[] = [];
     const queue = new Map(state.queue.map(item => [item.id, item]));
+    let usage = state.usage;
     for (const event of live.events) {
+      if (event.type === "usage" && event.usage) usage = event.usage;
+      if (event.type === "autocompact") usage = null;
       if (event.type === "queue_sent" && event.text) {
         msgs.push({ id: `${prefix}_${index++}`, role: "assistant", parts, streaming: false });
         msgs.push({ id: `${prefix}_user_${index}`, role: "user", parts: [{ kind: "text", text: event.text }] });
@@ -530,7 +538,7 @@ function restoreLive(live: { id: string; seq: number; user: string; events: Stre
       else parts = applyStreamEvent(parts, event);
     }
     liveId = `${prefix}_${index}`;
-    return { msgs: [...msgs, { id: liveId, role: "assistant", parts, streaming: true }], queue: [...queue.values()], running: true };
+    return { msgs: [...msgs, { id: liveId, role: "assistant", parts, streaming: true }], queue: [...queue.values()], running: true, usage };
   });
 }
 let retry = 0
@@ -557,7 +565,7 @@ export function connectWs(): void {
     setTimeout(connectWs, wait)
   }
   ws.onmessage = (ev) => {
-    let msg: { type?: string; build?: number; payload?: { sessionId?: string; delta?: string; ev?: StreamEvent; seq?: number; runId?: string; id?: string; appId?: string } }
+    let msg: { type?: string; build?: number; payload?: { sessionId?: string; delta?: string; ev?: StreamEvent; seq?: number; runId?: string; id?: string; appId?: string; mode?: string } }
     try {
       msg = JSON.parse(ev.data as string)
     } catch {
@@ -601,6 +609,10 @@ export function connectWs(): void {
       useAgent.setState({ appId: (payload as { appId?: string | null }).appId ?? null, selection: null, availableSelection: null });
       return;
     }
+    if (msg.type === "agent_mode" && payload?.sessionId === st.sessionId) {
+      st.setMode(payload.mode === "accept" ? "accept" : "normal");
+      return;
+    }
     if (msg.type === "agent_settled" && payload?.sessionId === st.sessionId) {
       streamDeltaBatcher.flush();
       useAgent.setState({ running: false, stopping: false, ask: null });
@@ -633,6 +645,8 @@ export function connectWs(): void {
       streamDeltaBatcher.enqueue({ type: "text", delta: payload.delta })
     } else if (msg.type === "agent_event" && payload.ev) {
       const e = payload.ev
+      if (e.type === "usage" && e.usage) useAgent.setState({ usage: e.usage })
+      if (e.type === "autocompact") useAgent.setState({ usage: null })
       if (e.type === "thinking") {
         streamDeltaBatcher.enqueue({ type: "thinking", delta: e.delta })
       } else {

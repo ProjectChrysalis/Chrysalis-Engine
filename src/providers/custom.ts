@@ -401,7 +401,10 @@ function catalogEntry(baseUrl: string, id: string): Model<Api> | undefined {
 function toModel(m: CustomModelDef, providerId: string, api: Api, def: CustomProviderDef): Model<Api> {
   const { baseUrl, headers } = def;
   const cacheCompat = compatFor(api, m.id, baseUrl, !!def.extraBody);
-  const compat = def.thinkingFormat && api === "openai-completions" ? { ...cacheCompat, thinkingFormat: def.thinkingFormat } : cacheCompat;
+  // Compatible endpoints may close a complete stream without a finish field.
+  const compat = api === "openai-completions"
+    ? { ...cacheCompat, supportsFinishReason: false, ...(def.thinkingFormat ? { thinkingFormat: def.thinkingFormat } : {}) }
+    : cacheCompat;
   const known = catalogEntry(baseUrl, m.id);
   const model: Model<Api> = {
     id: m.id,

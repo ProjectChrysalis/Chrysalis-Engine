@@ -1,5 +1,6 @@
 export interface StreamEvent {
-  type: "text" | "thinking" | "thinking_end" | "tool_start" | "tool_end" | "ask_user" | "ask_user_done" | "autocompact" | "queue_added" | "queue_sent" | "queue_cancelled"
+  type: "text" | "thinking" | "thinking_end" | "tool_start" | "tool_end" | "ask_user" | "ask_user_done" | "autocompact" | "queue_added" | "queue_sent" | "queue_cancelled" | "usage"
+  usage?: { input: number; output: number; cacheRead: number; contextWindow?: number }
   text?: string
   mode?: "steer" | "followUp"
   id?: string
