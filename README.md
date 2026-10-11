@@ -27,8 +27,7 @@ Run [SillyTavern](https://github.com/cata02222/chrysalis-sillytavern) and
 using the models you already connected. The agent can create and edit characters,
 lorebooks, chats and settings through each app's own API.
 
-These community wrappers are in the Store and currently require the
-[staging build](https://github.com/ProjectChrysalis/Chrysalis-Engine/releases/tag/staging-latest).
+These community wrappers are in the Store and require Chrysalis 1.0.4 or later.
 An admin approves each program before it starts.
 
 <p align="center"><img src="https://github.com/ProjectChrysalis/projectchrysalis.github.io/raw/main/assets/service-apps.gif" alt="The Chrysalis agent creates a character in SillyTavern, then opens the new character for a chat" /></p>
