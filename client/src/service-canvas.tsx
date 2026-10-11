@@ -155,7 +155,7 @@ export function ServiceCanvas(props: { tab: { id: string; name: string }; onAskA
   }, [info, logOpen])
   const iconButton = "flex size-7 items-center justify-center rounded-md transition-colors hover:bg-hover hover:text-ink disabled:opacity-50 "
   return (
-    <div className="m-2 ml-0 flex min-h-0 min-w-0 flex-1 flex-col self-stretch overflow-hidden rounded-[10px] bg-base shadow-[var(--s-raised)] max-md:m-0 max-md:rounded-none max-md:border-t max-md:border-line max-md:shadow-none">
+    <div className="service-pane m-2 ml-0 flex min-h-0 min-w-0 flex-1 flex-col self-stretch overflow-hidden rounded-[10px] bg-base shadow-[var(--s-raised)] max-md:m-0 max-md:rounded-none max-md:border-t max-md:border-line max-md:shadow-none">
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line px-2 max-md:hidden">
         <span className="truncate px-1 text-13 text-ink-muted">{props.tab.name}</span>
         <div className="ml-auto flex items-center gap-0.5">
@@ -245,28 +245,28 @@ export function ServiceCanvas(props: { tab: { id: string; name: string }; onAskA
           </p>
         ) : null}
         {!running ? (
-          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 overflow-auto bg-base p-6 text-13 text-ink-muted">
+          <div className="service-gate absolute inset-0 z-10 bg-base text-13 text-ink-muted">
             {!info ? (
               failure ? <span role="alert" className="text-danger">{failure}</span> : <span className="size-4 animate-spin rounded-full border-2 border-line border-t-ink-muted" aria-hidden="true" />
             ) : !info.approved ? (
-              <div className="flex max-w-[520px] flex-col gap-3">
+              <div className="service-gate-content flex flex-col gap-3">
                 <p className="text-14 text-ink">{tr("This app runs a program on this computer")}</p>
                 <p>{tr("It is not sandboxed like other apps: it can read and change anything your account can. Allow it only if you trust where it came from.")}</p>
-                <pre className="overflow-auto rounded-lg border border-line bg-panel p-3 text-12 leading-4 text-ink">{[info.setup ? info.setup.join(" ") : null, info.command.join(" ")].filter(Boolean).join("\n")}</pre>
+                <pre className="service-command rounded-lg border border-line bg-panel p-3 text-12 leading-4 text-ink">{[info.setup ? info.setup.join(" ") : null, info.command.join(" ")].filter(Boolean).join("\n")}</pre>
                 <p className="text-12">{tr("Runs in: {folder}", { folder: `apps/${props.tab.id}/${info.cwd === "." ? "" : info.cwd}` })}</p>
                 {info.canApprove ? (
                   <>
-                    <label className="flex cursor-pointer items-center gap-2 text-12">
-                      <input type="checkbox" className="size-4 accent-[var(--c-contrast)]" checked={always} onChange={(e) => setAlways(e.currentTarget.checked)} />
+                    <label className="service-approval-choice flex cursor-pointer gap-2 text-12">
+                      <input type="checkbox" className="mt-0.5 size-4 shrink-0 accent-[var(--c-contrast)]" checked={always} onChange={(e) => setAlways(e.currentTarget.checked)} />
                       <span>{tr("Don't ask again for this app, even if its program changes")}</span>
                     </label>
-                    <div><Button variant="primary" size="small" onClick={() => void act("approve")}>{tr("Allow and start")}</Button></div>
+                    <div className="service-gate-actions"><Button variant="primary" size="small" onClick={() => void act("approve")}>{tr("Allow and start")}</Button></div>
                   </>
                 ) : <p>{tr("Only an admin account can run this kind of app.")}</p>}
                 {failure ? <span role="alert" className="text-danger">{failure}</span> : null}
               </div>
             ) : (
-              <div className="flex w-full max-w-[720px] flex-col gap-3">
+              <div className="service-gate-content service-gate-status flex flex-col gap-3">
                 <div className="flex items-center gap-2">
                   {busy ? <span className="size-4 shrink-0 animate-spin rounded-full border-2 border-line border-t-ink-muted motion-reduce:animate-none" aria-hidden="true" /> : null}
                   <span role="status" aria-live="polite" className={info.state === "failed" ? "text-danger" : undefined}>
@@ -276,9 +276,9 @@ export function ServiceCanvas(props: { tab: { id: string; name: string }; onAskA
                       : tr("The program is stopped.")}
                   </span>
                 </div>
-                {log.length ? <pre className="max-h-[50vh] overflow-auto rounded-lg border border-line bg-panel p-3 text-12 leading-4 text-ink-muted">{log.slice(-40).join("\n")}</pre> : null}
+                {log.length ? <pre className="service-command max-h-[50vh] rounded-lg border border-line bg-panel p-3 text-12 leading-4 text-ink-muted">{log.slice(-40).join("\n")}</pre> : null}
                 {!busy ? (
-                  <div className="flex items-center gap-2">
+                  <div className="service-gate-actions">
                     <Button variant="neutral" size="small" onClick={() => void act("start")}>{tr("Start")}</Button>
                     {info.state === "failed" ? (
                       <Button

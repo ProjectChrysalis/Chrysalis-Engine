@@ -2131,7 +2131,7 @@ function ImportAppDialog(props: { from: StoreApp | null; onClose: () => void; on
                 </ul> : null}
               {preview.service ? <div className="rounded-lg border border-warning/30 bg-warning-soft/10 p-3">
                   <p className="text-12 font-medium text-ink">{tr("This app runs a program on this computer")}</p>
-                  <pre className="mt-1.5 overflow-auto rounded-md bg-pressed/50 p-2 text-11 leading-4 text-ink">{[preview.service.setup?.join(" "), preview.service.command.join(" ")].filter(Boolean).join("\n")}</pre>
+                  <pre className="service-command mt-1.5 rounded-md bg-pressed/50 p-2 text-11 leading-4 text-ink">{[preview.service.setup?.join(" "), preview.service.command.join(" ")].filter(Boolean).join("\n")}</pre>
                   <p className="mt-1.5 text-12 leading-4 text-ink-muted">
                     {tr("It is not sandboxed like other apps: it can read and change anything your account can. Allow it only if you trust where it came from.")}
                     {" "}

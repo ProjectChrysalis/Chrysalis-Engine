@@ -162,3 +162,19 @@ body {
 @container (max-width: 28rem) {
   .app-update-card { margin-inline: .75rem; padding: .75rem; }
 }
+
+.service-pane { container-type: inline-size; }
+.service-gate { display: flex; flex-direction: column; align-items: center; gap: .75rem; padding: 1.5rem; overflow-y: auto; overscroll-behavior: contain; }
+.service-gate > * { flex-shrink: 0; margin-block: auto; }
+.service-gate-content { width: 100%; min-width: 0; max-width: 32.5rem; overflow-wrap: anywhere; }
+.service-gate-status { max-width: 45rem; }
+.service-command { min-width: 0; max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.service-approval-choice { align-items: flex-start; line-height: 1.5; }
+.service-approval-choice span { min-width: 0; }
+.service-gate-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+@container (max-width: 448px) {
+  .service-gate { padding: 1rem; }
+  .service-approval-choice { min-height: 44px; padding-block: .375rem; }
+  .service-gate-actions { flex-direction: column; align-items: stretch; }
+  .service-gate-actions [data-component="button"] { width: 100%; min-height: 44px; height: auto; white-space: normal; }
+}
