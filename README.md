@@ -2,11 +2,11 @@
 
 <p align="center">
   <a href="https://github.com/ProjectChrysalis/Chrysalis-Engine/releases/latest"><img src="https://img.shields.io/github/v/release/ProjectChrysalis/Chrysalis-Engine?label=Release" alt="Latest release" /></a>
-  <a href="https://www.npmjs.com/package/chrysalis-engine"><img src="https://img.shields.io/npm/v/chrysalis-engine?logo=npm&label=npm" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/chrysalis-engine"><img src="https://img.shields.io/npm/v/chrysalis-engine.svg?logo=npm&amp;label=npm&amp;cacheSeconds=300" alt="npm version" /></a>
   <a href="https://github.com/ProjectChrysalis/Chrysalis-Engine/stargazers"><img src="https://img.shields.io/github/stars/ProjectChrysalis/Chrysalis-Engine?style=flat&logo=github&label=Stars" alt="GitHub stars" /></a>
   <a href="https://discord.gg/maFVqyeD4Q"><img src="https://img.shields.io/discord/1548807690380255262?logo=discord&logoColor=white&label=Discord&color=5865F2" alt="Discord" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/ProjectChrysalis/Chrysalis-Engine?label=License" alt="License" /></a>
-  <a href="https://github.com/ProjectChrysalis/Chrysalis-Engine/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/ProjectChrysalis/Chrysalis-Engine/ci.yml?branch=main&label=CI" alt="CI status" /></a>
+  <a href="https://github.com/ProjectChrysalis/Chrysalis-Engine/actions/workflows/ci.yml"><img src="https://github.com/ProjectChrysalis/Chrysalis-Engine/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status" /></a>
 </p>
 
 # Chrysalis
@@ -19,6 +19,19 @@ built-in agent can change while you watch. Ask for a feature and it builds it.
 Your chats, characters and keys are stored on your device.
 
 <p align="center"><img src="https://github.com/ProjectChrysalis/projectchrysalis.github.io/raw/main/assets/showcase.gif" alt="Chrysalis showcase: the agent editing the roleplay app live, character search, building a visual novel app, tool calling, mobile layout and model providers" /></p>
+
+## Service apps
+
+Run [SillyTavern](https://github.com/cata02222/chrysalis-sillytavern) and
+[Marinara](https://github.com/cata02222/chrysalis-marinara) in Chrysalis tabs,
+using the models you already connected. The agent can create and edit characters,
+lorebooks, chats and settings through each app's own API.
+
+These community wrappers are in the Store and currently require the
+[staging build](https://github.com/ProjectChrysalis/Chrysalis-Engine/releases/tag/staging-latest).
+An admin approves each program before it starts.
+
+<p align="center"><img src="https://github.com/ProjectChrysalis/projectchrysalis.github.io/raw/main/assets/service-apps.gif" alt="The Chrysalis agent creates a character in SillyTavern, then opens the new character for a chat" /></p>
 
 ## Install
 
