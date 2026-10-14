@@ -13,6 +13,7 @@
     "start": "bun run src/index.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.builder.json && tsc --noEmit -p client/tsconfig.json && cd client-agent && bun run typecheck",
     "test": "bun test test/ --parallel",
+    "test:speech-live": "CHRYSALIS_LIVE_SPEECH=1 bun test test/speech.test.ts",
     "lint": "biome lint --max-diagnostics=none .",
     "build:client": "bun run scripts/build-frontends.ts",
     "dev:shell": "bun run scripts/dev/shell.ts",
