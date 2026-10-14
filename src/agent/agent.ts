@@ -4,7 +4,8 @@
  * Sessions persist as JSONL run records (agent can read its own history);
  * resume reconstructs dialogue from past runs.
  */
-import { readAppContext, writeAppContext, discoverSkills, skillContext, skillLoadText, skillsHeld } from "./skills.js";
+import { engineSkillsLoaded, readEngineSkillResource } from "./builtin-skills.js";
+import { readAppContext, writeAppContext, availableSkills, skillContext, skillLoadText, skillsHeld } from "./skills.js";
 import { inspectionTool, type AppInspection } from "./inspection.js";
 import { AgentPolicy } from "./policy.js";
 import { buildSkillTools } from "./skill-tools.js";
@@ -356,27 +357,37 @@ export class UserAgent {
       async execute(_id, params) {
         const { appId } = params as { appId: string | null };
         if (appContext.appId !== appId) {
-          writeAppContext(paths, sessionId, { appId, loaded: [] });
-          appContext.appId = appId; appContext.loaded = [];
+          const loaded = engineSkillsLoaded(appContext.loaded);
+          writeAppContext(paths, sessionId, { appId, loaded });
+          appContext.appId = appId; appContext.loaded = loaded;
         }
         opts.notify?.("agent_target", { sessionId, appId });
         return { content: [{ type: "text", text: skillContext(paths, appContext, new Set(appContext.loaded)) }], details: { appId } };
       },
     }, {
-      name: "skill_load", label: "Load app skill", executionMode: "sequential",
-      description: "Load a skill from the conversation's selected app. Choose by its advertised description. Supporting resources remain on disk; loading never executes scripts. Loaded instructions remain available after compaction.",
+      name: "skill_load", label: "Load skill", executionMode: "sequential",
+      description: "Load a bundled engine skill or a skill from the conversation's selected app. Choose by its advertised description. Supporting resources remain on disk; loading never executes scripts. Loaded instructions remain available after compaction.",
       parameters: Type.Object({ name: Type.String() }),
       async execute(_id, params) {
         const { name } = params as { name: string };
-        const skill = discoverSkills(paths, appContext.appId).skills.find((s) => s.name === name);
-        if (!skill) throw new Error("Skill is not available for the selected app");
+        const skill = availableSkills(paths, appContext.appId).skills.find((s) => s.name === name);
+        if (!skill) throw new Error("Skill is not available in this conversation");
         if (appContext.loaded.includes(name)) return { content: [{ type: "text", text: `Skill ${name} is already loaded. Its instructions are in the earlier skill_load result or in the system prompt.` }], details: { name, appId: appContext.appId } };
-        const loaded = discoverSkills(paths, appContext.appId).skills.filter((s) => appContext.loaded.includes(s.name) || s.name === name);
+        const loaded = availableSkills(paths, appContext.appId).skills.filter((s) => appContext.loaded.includes(s.name) || s.name === name);
         if (loaded.reduce((bytes, s) => bytes + Buffer.byteLength(s.body), 0) > 65_536) throw new Error("Loaded skills exceed 64 KB. Start a focused conversation or shorten the skills.");
         const next = { ...appContext, loaded: [...new Set([...appContext.loaded, name])] };
         writeAppContext(paths, sessionId, next);
         appContext.loaded = next.loaded;
         return { content: [{ type: "text", text: skillLoadText(paths, skill) }], details: { name, appId: appContext.appId } };
+      },
+    }, {
+      name: "skill_read", label: "Read engine documentation", executionMode: "sequential",
+      description: "Read a supporting topic from a loaded engine skill. Use the exact resource path listed by skill_load. Available offline and in Plan mode; does not read workspace files or execute code.",
+      parameters: Type.Object({ name: Type.String(), path: Type.String() }),
+      async execute(_id, params) {
+        const { name, path: resource } = params as { name: string; path: string };
+        if (!appContext.loaded.includes(name)) throw new Error("Load the engine skill first");
+        return { content: [{ type: "text", text: readEngineSkillResource(name, resource) }], details: { name, path: resource } };
       },
     });
 
@@ -451,7 +462,7 @@ export class UserAgent {
           // A loaded skill is sent once: in the answer to its load while that
           // answer is in what goes out, in the system prompt once it is not
           // (trimmed away, compacted, or the skill changed on disk).
-          const live = new Set(discoverSkills(paths, appContext.appId).skills.filter((s) => appContext.loaded.includes(s.name)).map((s) => s.body));
+          const live = new Set(availableSkills(paths, appContext.appId).skills.filter((s) => appContext.loaded.includes(s.name)).map((s) => s.body));
           const stale = (message: AgentMessage) => message.role === "toolResult" && message.toolName === "skill_load" && !message.isError
             && !message.content.some((b) => b.type === "text" && [...live].some((body) => b.text.includes(body)));
           const base = msgs.map((message) => stale(message) ? { ...message, content: [{ type: "text" as const, text: "Historical skill load. These instructions are no longer in effect." }] } : message);
@@ -1305,29 +1316,17 @@ function systemPromptFor(username: string, isAdmin: boolean, paths: UserPaths, s
   - plugins/<id>/           bundled backend behavior: manifest.json {permissions} + plugin.js
   - data/                   app-owned data files (git-tracked): whatever that app stores, in its own layout
   - node_modules/, dist/    — derived (installed / browser-built, outside git). dist/.chrysalis-build.json holds the last build's errors.
-  - kind "service" is different: no UI to build. manifest.json carries service { command, cwd, setup?, setupOn?, env?, reloadOn?, patchOn?, restartOn? } and the engine runs that program and shows it in the tab. Its files live under cwd: saving a stylesheet under a reloadOn path updates the open page in place, any other file there reloads it (typed text and scroll positions are put back), and one under a restartOn path restarts the program. patchOn is reloadOn for folders of script files the page loads exactly as they are on disk (no build step): a save that only changes the inside of functions is swapped into the open page, nothing reloads and nothing the page holds is lost; a change outside every function (imports, top-level code) reloads as usual, and code that already ran once at start shows its change only after a reload. An app that builds its pages from source gets nothing from these lists: run its own development server as the command instead, so its own hot updates reach the page. In command and env words, {port} is the port it must listen on (also given as PORT unless env sets PORT itself), {port2} a second free port for a helper it runs beside itself (a development server in front of an API, say), {data} its data folder, {models} the address of this engine's models in the common chat-completions shape and {models_key} the key for it (the model id "default" is the account's default model). setup runs before the first start; setupOn names the files it works from (package.json, say), and it runs again before the next start when one of them changed. To do inside a running service app what its own pages do (read what it holds, add or change things), call its program with app_request: the app's AGENTS.md and skills say which routes it has, and nothing else about its API should be guessed. It only runs once an admin has allowed it in its tab, and a change to command, cwd, setup or env needs that again unless the admin chose not to be asked again for the app (so do not edit those to "fix" something without saying so).
+  - kind "service" runs an administrator-approved program with its own page and API. Read the service-app topic in chrysalis-docs for launch configuration, model access and live updates; use app_request with routes documented by the app.
 - plugins/<id>/             — top-level always-on plugins (same format as bundled)
 (User-managed config is NOT here: MCP servers, model connections, speech endpoints and settings all live outside this workspace with the credentials; the Settings UI owns them and you do not read or edit them. Asking the user to change one there is the right move when something is missing.)
 - providers.json            — custom model providers { providers: { id: { api: openai-completions|anthropic-messages, baseUrl, models: [...] | "auto" } } }
 - agent/sessions/           — your own session transcripts (readable)
 
-# App/plugin authoring contract (how you build things)
-plugin.js is an ES MODULE — use ESM syntax exactly like this (NOT CommonJS \`exports.foo\`):
-  export function handleRoute(req, host) { /* ... */ }
-Exports:
-- handleRoute(req, host) → { status, json | text } for HTTP routes under /v1/apps/<activeApp>/<path> (permission: routes). req = { method, path, query, body }. EVERY bundled plugin receives the same app-scoped path (the plugin's folder id is NOT part of the URL) and the first plugin that responds wins, so namespace your routes with your own prefix (e.g. chats/…, import/…) or another plugin's catch-all will answer for you. Return { __llmPending: true } on pass A after host.llm.request(key, genReq); on the next pass read host.llm.results[key] and commit — write NOTHING on pass A (stateless two-phase).
-- TOOLS + handleTool(name, args, host) → { text, isError? } for model tools (permission: tools).
-- uiPanel(ctx, host) → a declarative settings panel the app renders for this plugin. onTick(ctx, host) fires on the manifest's schedule (permission: schedule). appTools(host) → { tools } contributes model tools to sibling generations that request them (permission: tools). llmRequest(ctx, host) → a patch object over a sibling plugin's model request (ctx.request is a JSON snapshot; permission: hooks + llm; manifest priority orders multiple patchers, lower runs first and higher wins conflicts). It may also set streamMuted: true to keep a wire-format generation out of the live stream entirely (the result still commits; Stop still works), or streamDecode: { fields, replace? } to decode JSON string fields out of the wire format live (in wire order), so the real text streams as the model writes it. llmResponse(ctx, host) → a patch object over a sibling's model result (ctx.request is the request that was sent, ctx.result the GenerateResult; same permission and ordering; fields: text/json/reasoning/assistantPrefill). These and the route/tool exports above are the exports the engine calls.
-host API: host.fs (read/write/readBase64/list/remove — scoped to the app's data/ for bundled plugins), host.store (get/put/delete/keys — persists), host.llm.request/results, host.log.
-Permissions: routes, tools, llm, store, fs, schedule, hooks, network. network = two-phase host.net, fetch-class (method/headers/body/form/json/binary/timeout/maxBytes/redirects; results carry status, headers, json/text/base64 — same pattern as llm; optional manifest networkHosts allowlist). Imported plugins need grants (settings.json pluginGrants); origin local = trusted.
-manifest.json may declare schedule: { intervalMs } → onTick(ctx, host) fires on a timer, and priority (number) → cross-plugin hook order.
-
-# App UI authoring (React + tailwind, with the module conventions you know best)
-- package.json holds REAL package deps (any package works — edit it, then call app_deps; remove one with app_deps { remove: ["name"] }. Both run engine-side with lifecycle scripts disabled; npm does not run in the shell). shadcn/ui and any React library drops in natively. Tailwind v4 is built in (no need to install it); @plugin/@source work.
-- Builds happen in the user's browser, in a sandbox: index.html module scripts are the entries; TS/TSX/JSX, CSS + CSS modules, JSON, assets as URLs, ?raw ?url ?inline ?worker, import.meta.glob, import.meta.env (the .env VITE_* values), tsconfig paths and the @ -> src alias, public/ copied as-is. Editor/toolchain config files are NOT run: no bundler plugins (Vue/Svelte SFCs are not supported).
-- Write utility classes directly in TSX; app css (src/app.css) starts with @import "tailwindcss". Theme colors live as CSS vars in :root + @theme (bg-base, text-ink, text-accent…).
-- Save a source file → the user's open app hot-updates in place (React Fast Refresh keeps component state). The build runs in the user's browser, so after editing src/ or package.json call app_check: it waits for the build and returns ok or the errors. Never assume an edit built cleanly. An app nobody has open builds when it is next opened.
-- Static assets go in public/ (served at the app root). State: useState or @preact/signals-react (signal/effect — same API on React). Fast refresh preserves component state, not module state.
+# Engine documentation
+Load the chrysalis-docs engine skill when a task depends on engine behavior or capabilities. Read its relevant topic with skill_read for settings, updates, builds, service apps, plugins, model/network calls, and troubleshooting. It is bundled for this engine version and works without internet. Read the selected app's own instructions for its routes and data.
+- Web apps use the engine bridge for their own routes and permitted shared services. Direct network access and shell/settings/admin routes are outside the app contract.
+- Plugin exports are synchronous ES modules in QuickJS, with scoped host APIs and declared permissions. Model, network, and embedding calls use request/result passes; do not persist writes before the result is ready.
+- After frontend or dependency edits, run app_check and inspect its build result.
 
 # Learn from the apps already installed
 ${installedAppsSection(paths, appId)}Before editing an app, read its own AGENTS.md and its data/README.md when present: they name the exact files, field shapes and gotchas so you never have to rediscover the layout. To learn how to build one, read its plugins/ for backend behavior (routes, two-phase LLM turns, how it lays out data/) and its src/ for the UI. An app is free to be anything — a chat studio, a visual novel, a game, a tool — so take the patterns, not the subject matter. New app: app_create (UI app scaffolded), app_deps, then write plugins + src/ + seed data.

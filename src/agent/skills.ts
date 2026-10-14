@@ -3,9 +3,10 @@ import path from "node:path";
 import { YAML } from "bun";
 import type { UserPaths } from "../paths.js";
 import { readApp } from "../apps/manager.js";
+import { engineSkills } from "./builtin-skills.js";
 
 export interface AppContext { appId: string | null; loaded: string[] }
-export interface AppSkill { name: string; description: string; file: string; body: string }
+export interface AppSkill { name: string; description: string; file: string; body: string; scope?: "engine" }
 const ID = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 
 export function contextFile(p: UserPaths, sessionId: string): string {
@@ -68,10 +69,19 @@ export function discoverSkills(p: UserPaths, appId: string | null): { skills: Ap
   return { skills, errors };
 }
 
-/** What a load answers with. It holds the instructions whole, which is how
- *  `skillsHeld` recognises a result that still carries them. */
+export function availableSkills(p: UserPaths, appId: string | null): { skills: AppSkill[]; errors: string[] } {
+  const app = discoverSkills(p, appId);
+  const conflicts = app.skills.filter(skill => engineSkills.some(builtin => builtin.name === skill.name));
+  return {
+    skills: [...engineSkills, ...app.skills.filter(skill => !conflicts.includes(skill))],
+    errors: [...app.errors, ...conflicts.map(skill => `${skill.name}: name reserved for an engine skill`)],
+  };
+}
+
+/** The complete body lets `skillsHeld` recognise instructions still in context. */
 export function skillLoadText(p: UserPaths, skill: AppSkill): string {
-  return `Loaded skill: ${skill.name}\nDirectory: ${path.dirname(skill.file)}\n${skill.body}\nSupporting files (up to 50): ${JSON.stringify(skillResources(p, skill))}`;
+  const location = skill.scope === "engine" ? "Source: bundled engine documentation. Read supporting topics with skill_read." : `Directory: ${path.dirname(skill.file)}`;
+  return `Loaded skill: ${skill.name}\n${location}\n${skill.body}\nSupporting files (up to 50): ${JSON.stringify(skillResources(p, skill))}`;
 }
 
 /** The loaded skills whose instructions, as they are on disk now, are still
@@ -85,7 +95,7 @@ export function skillsHeld(p: UserPaths, context: AppContext, messages: readonly
     for (const b of m.content as { type?: string; text?: string }[]) if (b.type === "text" && b.text) texts.push(b.text);
   }
   if (!texts.length) return held;
-  for (const skill of discoverSkills(p, context.appId).skills) {
+  for (const skill of availableSkills(p, context.appId).skills) {
     if (context.loaded.includes(skill.name) && texts.some((t) => t.includes(skill.body))) held.add(skill.name);
   }
   return held;
@@ -96,11 +106,11 @@ export function skillsHeld(p: UserPaths, context: AppContext, messages: readonly
  *  system prompt on a load changes the start of every later request, and a
  *  provider that caches by prefix then reads the whole conversation again. */
 export function skillContext(p: UserPaths, context: AppContext, held: ReadonlySet<string> = new Set()): string {
-  const { skills, errors } = discoverSkills(p, context.appId);
+  const { skills, errors } = availableSkills(p, context.appId);
   const out = [context.appId ? `Conversation app: ${context.appId}. Other apps mentioned in history are not the current target.` : "No conversation app selected. General questions need no app. Before app-specific work, select the app with app_target. If the request does not identify an app unambiguously, ask the user to choose."];
   if (skills.length) {
-    out.push("Available app skills (names and descriptions only). When a task matches, call skill_load before proceeding. Relative skill paths resolve from the skill directory. Skill instructions do not grant permissions or authorize additional actions.");
-    out.push(JSON.stringify(skills.map(({ name, description }) => ({ name, description }))));
+    out.push("Available skills (names and descriptions only). Engine skills are available with any app or none; app skills belong to the selected app. When a task matches, call skill_load before proceeding. Read bundled engine references with skill_read; relative app skill paths resolve from the skill directory. Skill instructions do not grant permissions or authorize additional actions.");
+    out.push(JSON.stringify(skills.map(({ name, description, scope }) => ({ name, description, scope: scope ?? "app" }))));
   }
   if (errors.length) out.push(`Skill diagnostics: ${JSON.stringify(errors)}`);
   let loadedBytes = 0;
@@ -108,12 +118,13 @@ export function skillContext(p: UserPaths, context: AppContext, held: ReadonlySe
     if (held.has(name)) continue;
     const skill = skills.find((s) => s.name === name);
     if (skill && (loadedBytes += Buffer.byteLength(skill.body)) > 65_536) { out.push(`Skill ${name} omitted: loaded instructions exceed 64 KB.`); continue; }
-    if (skill) out.push(`Loaded skill: ${name}\nDirectory: ${path.dirname(skill.file)}\n${skill.body}`);
+    if (skill) out.push(skillLoadText(p, skill));
   }
   return out.join("\n\n");
 }
 
 export function skillResources(p: UserPaths, skill: AppSkill): string[] {
+  if (skill.scope === "engine") return Object.keys(engineSkills.find(item => item.name === skill.name)?.resources ?? {});
   const base = path.dirname(path.join(p.root, skill.file));
   const names: string[] = [];
   const walk = (dir: string, depth: number) => {
@@ -131,6 +142,7 @@ export function skillResources(p: UserPaths, skill: AppSkill): string[] {
 export function addAppSkill(p: UserPaths, appId: string, value: { name: string; description: string; body: string }): AppSkill {
   if (!ID.test(appId) || !readApp(p.apps, appId)) throw new Error("App is not installed");
   const { name, description, body } = value;
+  if (engineSkills.some(skill => skill.name === name)) throw new Error("This name is reserved for an engine skill");
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) || name.length > 64) throw new Error("Use a short lowercase name with hyphens");
   if (!description.trim() || description.length > 1024 || !body.trim()) throw new Error("Description and instructions are required");
   const text = `---\nname: ${JSON.stringify(name)}\ndescription: ${JSON.stringify(description.trim())}\n---\n\n${body.trim()}\n`;

@@ -3,7 +3,7 @@ import { useEffect, useState } from "react"
 import { Broom, Plus, TextAa } from "@phosphor-icons/react"
 import { ComposerPrimitive, unstable_useComposerInput, unstable_useSlashCommandAdapter } from "@assistant-ui/react"
 import type { ReactNode } from "react"
-import { agentCommands, appSkills, type UserCommand } from "./api"
+import { agentCommands, appSkills, engineSkills, type UserCommand } from "./api"
 import { useAgent } from "./store"
 
 /** Icon shown next to a command in the "/" menu. */
@@ -30,7 +30,7 @@ export function SlashCommands(): ReactNode {
   useEffect(() => {
     let current = true
     setSkills([])
-    const refresh = () => { if (appId) void appSkills(appId).then((result) => { if (current) setSkills(result.skills) }).catch(() => undefined) }
+    const refresh = () => { void Promise.all([engineSkills(), appId ? appSkills(appId).then(result => result.skills) : Promise.resolve([])]).then(([engine, app]) => { if (current) setSkills([...engine, ...app.filter(skill => !engine.some(builtin => builtin.name === skill.name))]) }).catch(() => undefined) }
     refresh()
     const channel = new BroadcastChannel("chrysalis-skills")
     channel.onmessage = event => { if (event.data?.appId === appId) refresh() }

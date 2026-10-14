@@ -3,7 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import { addAppSkill, updateAppSkill, removeAppSkill, discoverSkills, readAppContext, writeAppContext, skillContext } from "../src/agent/skills.js";
+import { addAppSkill, updateAppSkill, removeAppSkill, availableSkills, discoverSkills, readAppContext, writeAppContext, skillContext } from "../src/agent/skills.js";
+import { engineSkills, readEngineSkillResource } from "../src/agent/builtin-skills.js";
 import { UserAgent, instructionDocsStamp } from "../src/agent/agent.js";
 import { bootstrapUserDir } from "../src/paths.js";
 import { UserService } from "../src/users.js";
@@ -24,6 +25,72 @@ function app(p: ReturnType<typeof bootstrapUserDir>, id: string, instructions: s
   fs.writeFileSync(path.join(dir, "SKILL.md"), `---\nname: preset-editing\ndescription: Inspect and edit presets\n---\n${instructions}`);
   return dir;
 }
+
+it("offers bundled engine documentation without an app and prevents app overrides", () => {
+  const p = bootstrapUserDir(root, "alice");
+  expect(availableSkills(p, null).skills.map(skill => skill.name)).toContain("chrysalis-docs");
+  expect(skillContext(p, { appId: null, loaded: [] })).not.toContain(engineSkills[0]!.body);
+  expect(skillContext(p, { appId: null, loaded: ["chrysalis-docs"] })).toContain(engineSkills[0]!.body);
+  const directory = app(p, "first", "BODY");
+  expect(() => addAppSkill(p, "first", { name: "chrysalis-docs", description: "Override", body: "Override" })).toThrow("reserved");
+  const shadow = path.join(path.dirname(directory), "chrysalis-docs");
+  fs.mkdirSync(shadow);
+  fs.writeFileSync(path.join(shadow, "SKILL.md"), "---\nname: chrysalis-docs\ndescription: Fake engine docs\n---\nOVERRIDE");
+  const catalog = availableSkills(p, "first");
+  expect(catalog.skills.filter(skill => skill.name === "chrysalis-docs")).toHaveLength(1);
+  expect(catalog.skills.find(skill => skill.name === "chrysalis-docs")?.scope).toBe("engine");
+  expect(catalog.errors.join(" ")).toContain("reserved");
+  for (const resource of Object.keys(engineSkills[0]!.resources)) expect(readEngineSkillResource("chrysalis-docs", resource).length).toBeGreaterThan(0);
+  for (const resource of ["../persona.md", "references/../../persona.md", "toString", "/etc/passwd"]) expect(() => readEngineSkillResource("chrysalis-docs", resource)).toThrow();
+});
+
+it("loads and reads engine docs in Plan mode, keeps them across app switches and compaction", async () => {
+  const users = new UserService(root); users.create("alice", "admin", { password: "test-password-1" });
+  const p = bootstrapUserDir(root, "alice"); app(p, "first", "FIRST BODY");
+  const svc = new UserModelService("alice", p, defaultInstanceConfig());
+  const faux = fauxProvider({ models: [{ id: "engine-docs-model" }] }); svc.models.setProvider(faux.provider);
+  const docs = engineSkills[0]!.body;
+  faux.setResponses([
+    context => { expect(JSON.stringify(context)).not.toContain(JSON.stringify(docs).slice(1, -1)); return fauxAssistantMessage([{ type: "toolCall", id: "load", name: "skill_load", arguments: { name: "chrysalis-docs" } }], { stopReason: "toolUse" }); },
+    () => fauxAssistantMessage([{ type: "toolCall", id: "read", name: "skill_read", arguments: { name: "chrysalis-docs", path: "references/plugins.md" } }], { stopReason: "toolUse" }),
+    context => { expect(JSON.stringify(context)).toContain("# Plugin capabilities"); return fauxAssistantMessage([{ type: "toolCall", id: "target", name: "app_target", arguments: { appId: "first" } }], { stopReason: "toolUse" }); },
+    context => { expect(JSON.stringify(context)).toContain(JSON.stringify(docs).slice(1, -1)); return fauxAssistantMessage("Docs available."); },
+  ]);
+  const agent = await UserAgent.create("alice", svc, p, users, defaultInstanceConfig(), { sessionId: "engine-docs", mode: "plan" });
+  const result = await agent.run("Explain plugin capabilities, then select first.");
+  expect(result.finalText).toBe("Docs available.");
+  expect(result.toolTrace.map(tool => tool.name)).toEqual(["skill_load", "skill_read", "app_target"]);
+  expect(result.toolTrace.every(tool => tool.ok)).toBe(true);
+  expect(readAppContext(p, "engine-docs")).toEqual({ appId: "first", loaded: ["chrysalis-docs"] });
+  fs.appendFileSync(path.join(p.root, "agent/sessions/engine-docs.jsonl"), JSON.stringify({ type: "compact", at: Date.now(), summary: "Read the engine docs." }) + "\n");
+  faux.setResponses([context => { expect(context.messages.find(message => message.role === "system")?.content).toContain(docs); return fauxAssistantMessage("Still available."); }]);
+  const resumed = await UserAgent.create("alice", svc, p, users, defaultInstanceConfig(), { sessionId: "engine-docs", mode: "plan" });
+  expect((await resumed.run("continue")).finalText).toBe("Still available.");
+}, 20_000);
+
+it("exposes read-only engine skills and reference topics through authenticated settings routes", async () => {
+  const users = new UserService(root);
+  const token = users.create("alice", "admin", { password: "test-password-1" }).token;
+  const p = bootstrapUserDir(root, "alice"); app(p, "first", "BODY");
+  const server = buildApp({ users, sessions: new SessionService(root), config: defaultInstanceConfig(), dataDir: root, bus: new EventBus() });
+  const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+  const url = "/v1/agent/skills/chrysalis-docs";
+  expect((await server.request(url)).status).toBe(401);
+  const catalog = await (await server.request("/v1/agent/skills", { headers })).json() as { engine: { name: string }[] };
+  expect(catalog.engine.map(skill => skill.name)).toContain("chrysalis-docs");
+  const detail = await (await server.request(url, { headers })).json() as { body: string; files: string[] };
+  expect(detail.body).toBe(engineSkills[0]!.body);
+  expect(detail.files).toContain("references/plugins.md");
+  expect((await server.request(`${url}/resource?path=references/plugins.md`, { headers })).status).toBe(200);
+  expect((await server.request(`${url}/resource?path=../persona.md`, { headers })).status).toBe(404);
+  expect((await server.request(url, { method: "PUT", headers, body: JSON.stringify({ body: "override" }) })).status).toBe(404);
+  expect((await server.request(url, { method: "DELETE", headers })).status).toBe(404);
+  const session = await (await server.request("/v1/agent/sessions/one/skills", { headers })).json() as { skills: { name: string }[] };
+  expect(session.skills.map(skill => skill.name)).toContain("chrysalis-docs");
+  writeAppContext(p, "one", { appId: "first", loaded: ["chrysalis-docs", "preset-editing"] });
+  expect((await server.request("/v1/agent/sessions/one/target", { method: "POST", headers, body: JSON.stringify({ appId: null }) })).status).toBe(200);
+  expect(readAppContext(p, "one")).toEqual({ appId: null, loaded: ["chrysalis-docs"] });
+});
 
 it("keeps conversation targets independent of tab activation and refreshes changed skill bodies", () => {
   const p = bootstrapUserDir(root, "alice");

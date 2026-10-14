@@ -6,7 +6,7 @@ import type { UserPaths } from "../paths.js";
 import { PluginSandbox } from "../plugins/sandbox.js";
 import { commitWrittenPaths } from "../git.js";
 import { makePathGuard } from "../sandbox/workspace.js";
-import { discoverSkills, type AppContext } from "./skills.js";
+import { availableSkills, type AppContext } from "./skills.js";
 import { atomicText, revisionOf, recordChange, withMutation, writableFile, type FileChange } from "./changes.js";
 
 export function buildSkillTools(p: UserPaths, username: string, context: AppContext, readOnly: boolean, authorize: (tool: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<void>): AgentTool[] {
@@ -18,8 +18,8 @@ export function buildSkillTools(p: UserPaths, username: string, context: AppCont
     async execute(_id, input, signal) {
       const { name, args } = input as { name: string; args: Record<string, unknown> };
       if (!context.appId || !context.loaded.includes(name)) throw new Error("Load the selected app's skill first");
-      const skill = discoverSkills(p, context.appId).skills.find(item => item.name === name);
-      if (!skill) throw new Error("Skill is unavailable");
+      const skill = availableSkills(p, context.appId).skills.find(item => item.name === name);
+      if (!skill || skill.scope === "engine") throw new Error("App skill helper is unavailable");
       if (Buffer.byteLength(JSON.stringify(args)) > 16384) throw new Error("Skill arguments exceed 16 KB");
       const appRoot = fs.realpathSync(path.join(p.apps, context.appId));
       const moduleFile = path.join(p.root, path.dirname(skill.file), `${kind}.js`);

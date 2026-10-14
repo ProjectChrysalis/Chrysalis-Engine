@@ -12,7 +12,7 @@ export class AgentPolicy {
   }
   private file(): string { return path.join(this.root, "agent", "sessions", this.sessionId + ".permissions.json"); }
   async check(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
-    if (["read_file", "grep", "app_check", "app_rebuild", "app_console", "ask_user", "present_plan", "app_target", "skill_load", "skill_inspect", "tool_output", "app_inspect", "admin_list_users"].includes(tool)) return;
+    if (["read_file", "grep", "app_check", "app_rebuild", "app_console", "ask_user", "present_plan", "app_target", "skill_load", "skill_read", "skill_inspect", "tool_output", "app_inspect", "admin_list_users"].includes(tool)) return;
     if (tool === "server_settings" && args.action === "read") return;
     // a read of what an app's program holds changes nothing
     if (tool === "app_request" && /^(get|head)$/i.test(String(args.method ?? (args.json === undefined && args.body === undefined && args.body_file === undefined && !args.form && !args.files ? "GET" : "POST")))) return;

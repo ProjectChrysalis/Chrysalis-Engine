@@ -1,7 +1,8 @@
+import { engineSkills, engineSkillsLoaded, readEngineSkillResource } from "../agent/builtin-skills.js";
 import { recordChange, withMutation } from '../agent/changes.js';
 import { recoverRun } from "../agent/journal.js";
 import type { AppInspection } from "../agent/inspection.js";
-import { readAppContext, writeAppContext, discoverSkills, skillResources, addAppSkill, updateAppSkill, removeAppSkill, contextFile } from "../agent/skills.js";
+import { readAppContext, writeAppContext, availableSkills, discoverSkills, skillResources, addAppSkill, updateAppSkill, removeAppSkill, contextFile } from "../agent/skills.js";
 /**
  * Hono app + routes (SPEC §6). Thin handlers over services.
  */
@@ -2318,10 +2319,20 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   // every app with the skills it carries, for a page that shows them side by side
   app.get("/v1/agent/skills", (c) => {
     const p = c.get("paths");
-    return c.json({ apps: listApps(p.apps).map((a) => {
+    return c.json({ engine: engineSkills.map(({ name, description }) => ({ name, description })), apps: listApps(p.apps).map((a) => {
       const result = discoverSkills(p, a.id);
       return { id: a.id, name: a.manifest.name, skills: result.skills.map(({ name, description }) => ({ name, description })), errors: result.errors };
     }) });
+  });
+
+  app.get("/v1/agent/skills/:name", (c) => {
+    const skill = engineSkills.find(item => item.name === c.req.param("name"));
+    return skill ? c.json({ name: skill.name, description: skill.description, body: skill.body, files: Object.keys(skill.resources) }) : c.json({ error: "Engine skill not found" }, 404);
+  });
+
+  app.get("/v1/agent/skills/:name/resource", (c) => {
+    try { return c.json({ text: readEngineSkillResource(c.req.param("name"), c.req.query("path") ?? "") }); }
+    catch { return c.json({ error: "Engine skill resource not found" }, 404); }
   });
 
   app.get("/v1/agent/apps/:id/skills", (c) => {
@@ -2384,7 +2395,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const p = c.get("paths"), id = c.req.param("id");
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id)) return c.json({ error: "Invalid session id" }, 400);
     const context = readAppContext(p, id);
-    const result = discoverSkills(p, context.appId);
+    const result = availableSkills(p, context.appId);
     return c.json({ appId: context.appId, skills: result.skills.map(({ name, description }) => ({ name, description })), errors: result.errors });
   });
 
@@ -2395,7 +2406,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const body = await c.req.json<{ appId?: unknown }>().catch(() => null);
     if (!body || (body.appId !== null && typeof body.appId !== "string")) return c.json({ error: "appId required" }, 400);
     try {
-      if (readAppContext(p, id).appId !== body.appId) writeAppContext(p, id, { appId: body.appId as string | null, loaded: [] });
+      const current = readAppContext(p, id);
+      if (current.appId !== body.appId) writeAppContext(p, id, { appId: body.appId as string | null, loaded: engineSkillsLoaded(current.loaded) });
     }
     catch (e) { return c.json({ error: (e as Error).message }, 400); }
     evictAgents(username);
@@ -2508,7 +2520,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     if (explicit) {
       const context = readAppContext(paths, requestedSessionId);
       const name = explicit[1]!;
-      if (!discoverSkills(paths, context.appId).skills.some((skill) => skill.name === name)) return c.json({ error: "Skill is not available for the selected app" }, 400);
+      if (!availableSkills(paths, context.appId).skills.some((skill) => skill.name === name)) return c.json({ error: "Skill is not available in this conversation" }, 400);
       if (!context.loaded.includes(name)) context.loaded.push(name);
       writeAppContext(paths, requestedSessionId, context);
     }

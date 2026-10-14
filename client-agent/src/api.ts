@@ -208,3 +208,5 @@ export const setAgentTarget = (id: string, appId: string | null) => api("POST", 
 export const agentSkills = (id: string) => api<{ skills: { name: string; description: string }[]; errors: string[] }>("GET", `/v1/agent/sessions/${encodeURIComponent(id)}/skills`);
 
 export const appSkills = (id: string) => api<{ skills: { name: string; description: string }[]; errors: string[] }>("GET", `/v1/agent/apps/${encodeURIComponent(id)}/skills`);
+
+export const engineSkills = async () => (await api<{ engine: { name: string; description: string }[] }>("GET", "/v1/agent/skills")).engine;
