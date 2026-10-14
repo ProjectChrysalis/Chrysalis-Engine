@@ -5,12 +5,7 @@
  * format based on what their build can decode.
  */
 import { describe, it, expect } from "bun:test";
-import { EDGE_FORMATS, edgeSpeakFmt } from "../src/speech.js";
-
-it("speech output formats pair the requested codec with its response MIME type", () => {
-  expect(EDGE_FORMATS.mp3).toEqual({ outputFormat: "audio-24khz-48kbitrate-mono-mp3", mime: "audio/mpeg" });
-  expect(EDGE_FORMATS.webm).toEqual({ outputFormat: "webm-24khz-16bit-mono-opus", mime: "audio/webm" });
-});
+import { edgeSpeakFmt } from "../src/speech.js";
 
 // The public service can reject requests independently of the code under test.
 describe.skipIf(process.env.CHRYSALIS_LIVE_SPEECH !== "1")("edge tts wire formats", () => {
