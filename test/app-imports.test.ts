@@ -41,6 +41,23 @@ it("bounds each batch even when the archive spans many batches", async () => {
   while (cursor < 80) { const batch = await service.batch(created.id, cursor); expect(Object.keys(batch.entries).length).toBeLessThanOrEqual(32); expect(JSON.stringify(batch.entries).length).toBeLessThan(9 * 1024 ** 2); service.advance(created.id, cursor, batch.next, {}); cursor = batch.next; batches++; }
   expect(batches).toBeGreaterThan(2);
 });
+it("orders dotted collection filenames alongside folders", async () => {
+  const service = imports();
+  const zip = zipSync({
+    "wrapper/library.json": strToU8("{}"),
+    "wrapper/settings.json": strToU8("{}"),
+    "wrapper/personas.json": strToU8("{}"),
+    "wrapper/characters/A.json": strToU8('{"name":"A"}'),
+  });
+  const collections = ["characters/", "settings.json", "personas.json", "library.json"];
+  const state = service.create("backup.zip", zip.length, collections);
+  service.append(state.id, 0, zip);
+  expect((await ready(service, state.id)).collectionCounts).toEqual(Object.fromEntries(collections.map((name) => [name, 1])));
+  expect(Object.keys((await service.batch(state.id, 0)).entries)).toEqual([
+    "wrapper/characters/A.json", "wrapper/settings.json", "wrapper/personas.json", "wrapper/library.json",
+  ]);
+  expect(() => service.create("backup.zip", 1, ["bad\u0000.json"])).toThrow("invalid collection order");
+});
 it("accepts multi-GB declarations without allocating them and enforces disk and chunk limits", () => {
   const service = imports();
   const state = service.create("large.zip", 3 * 1024 ** 3, []);

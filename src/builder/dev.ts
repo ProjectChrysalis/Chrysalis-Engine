@@ -379,6 +379,21 @@ export class DevSession {
     return out;
   }
 
+  /** Forget modules no entry reaches any more. A deleted file whose last
+   *  importer stopped importing it is otherwise rebuilt on every update and
+   *  reported as a build error for the rest of the session. */
+  private dropUnreachable(): void {
+    const reached = new Set<string>();
+    const queue = [...this.entryIds];
+    for (let id = queue.pop(); id !== undefined; id = queue.pop()) {
+      const m = this.mods.get(id);
+      if (!m || reached.has(id)) continue;
+      reached.add(id);
+      queue.push(...Object.values(m.deps));
+    }
+    for (const id of [...this.mods.keys()]) if (!reached.has(id)) this.mods.delete(id);
+  }
+
   private collectErrors(): BuildMessage[] {
     return [...this.mods.values()].filter((m) => m.error).map((m) => m.error!);
   }
@@ -471,7 +486,8 @@ export class DevSession {
     const built = await this.process(affected.map((m) => ({ ...m, inputs: new Set(m.inputs) })));
     // a new package import needs a new deps bundle, and the page a reload
     if (this.depIds.size !== depCount) return this.full();
-    const out = built.filter((m) => before.get(m.id) !== m.code + JSON.stringify(m.deps));
+    this.dropUnreachable();
+    const out = built.filter((m) => this.mods.has(m.id) && before.get(m.id) !== m.code + JSON.stringify(m.deps));
     const meta = this.meta;
     if (!out.length) {
       return { ok: true, mode: "development", files: [], copies: [], warnings: [], errors: this.collectErrors(), remove: [], keep: [], meta, hot: null, full: false, unchanged: true };

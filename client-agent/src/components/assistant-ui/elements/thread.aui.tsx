@@ -231,7 +231,46 @@ const ThreadMessage: FC = () => {
 
   if (isEditing) return <EditComposer />;
   if (role === "user") return <UserMessage />;
+  if (role === "system") return <CompactionDivider />;
   return <AssistantMessageComponent />;
+};
+
+// Everything above the line is out of the model's context; the summary that
+// stands for it opens from the label.
+const CompactionDivider: FC = () => {
+  const auto = useAuiState((s) => s.message.metadata.custom.compaction === "auto");
+  const hasSummary = useAuiState((s) => s.message.content.some((part) => part.type === "text" && part.text.trim() !== ""));
+  const [open, setOpen] = useState(false);
+  const label = auto ? tr("Context auto-compacted") : tr("Context compacted");
+  return (
+    <MessagePrimitive.Root data-slot="aui_compaction-divider" data-role="system" className="px-2">
+      <div className="text-muted-foreground flex items-center gap-3 text-xs">
+        <span aria-hidden className="bg-border h-px flex-1" />
+        {hasSummary ? (
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={() => setOpen((value) => !value)}
+            className="hover:text-foreground flex shrink-0 items-center gap-1.5 py-1 transition-colors"
+          >
+            <CaretRight aria-hidden className={cn("size-3 transition-transform", open && "rotate-90")} />
+            {label}
+          </button>
+        ) : (
+          <span className="shrink-0 py-1">{label}</span>
+        )}
+        <span aria-hidden className="bg-border h-px flex-1" />
+      </div>
+      {open && (
+        <div
+          data-slot="aui_compaction-summary"
+          className="border-border/70 bg-muted/40 text-muted-foreground mt-2 max-h-96 overflow-y-auto overscroll-contain rounded-xl border px-4 py-3 text-sm leading-relaxed wrap-break-word"
+        >
+          <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        </div>
+      )}
+    </MessagePrimitive.Root>
+  );
 };
 
 const ThreadScrollToBottom: FC = () => {

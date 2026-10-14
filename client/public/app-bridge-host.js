@@ -20,6 +20,11 @@
     sockets.forEach(function (ws) { try { ws.close(); } catch { /* already closed */ } });
   }
 
+  function closeFetches(record) {
+    record.fetches.forEach(function (controller) { controller.abort(); });
+    record.fetches.clear();
+  }
+
   function randomNonce() {
     var bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
@@ -205,6 +210,8 @@
       send(source, { __chrysalis: 1, type: "fetch-error", id: d.id, error: "request body too large" });
       return;
     }
+    var controller = new AbortController();
+    record.fetches.set(d.id, controller);
     fetch(url.toString(), {
       method: method,
       headers: headers,
@@ -213,6 +220,7 @@
       // the allowlist judged THIS url; a redirect must not carry the
       // session somewhere it never looked at
       redirect: "error",
+      signal: controller.signal,
     }).then(function (res) {
       return res.arrayBuffer().then(function (buf) {
         var outHeaders = [];
@@ -232,6 +240,8 @@
       });
     }).catch(function (e) {
       send(source, { __chrysalis: 1, type: "fetch-error", id: d.id, error: String((e && e.message) || e) });
+    }).finally(function () {
+      if (record.fetches.get(d.id) === controller) record.fetches.delete(d.id);
     });
   }
 
@@ -325,6 +335,7 @@
     if (d.type === "hello") {
       if (!record.handshake || record.documentId !== d.documentId) {
         closeSockets(record);
+        closeFetches(record);
         record.documentId = d.documentId;
         record.selection = null;
         record.handshake = true;
@@ -355,6 +366,10 @@
     }
     if (d.type === "download") handleDownload(record, e.source, d);
     else if (d.type === "fetch") handleFetch(record, e.source, d);
+    else if (d.type === "fetch-abort") {
+      var controller = record.fetches.get(d.id);
+      if (controller) controller.abort();
+    }
     else if (d.type === "ws-open") handleWsOpen(record, e.source, d);
     else if (d.type === "ws-send") {
       var ws = record.sockets.get(String(d.wsId));
@@ -379,12 +394,13 @@
   CH.serve = function (iframe, appId, username, trusted) {
     var source = iframe.contentWindow;
     var previous = frames.get(source);
-    if (previous) closeSockets(previous);
-    var record = { appId: appId, username: username, nonce: randomNonce(), trusted: trusted === true, sockets: new Map() };
+    if (previous) { closeSockets(previous); closeFetches(previous); }
+    var record = { appId: appId, username: username, nonce: randomNonce(), trusted: trusted === true, sockets: new Map(), fetches: new Map() };
     frames.set(source, record);
     return function unserve() {
       if (frames.get(source) === record) frames.delete(source);
       closeSockets(record);
+      closeFetches(record);
       if (pendingDownload && pendingDownload.record === record) pendingDownload.close();
     };
   };

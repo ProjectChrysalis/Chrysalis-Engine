@@ -40,8 +40,8 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { radiusProvider } from "@earendil-works/pi-ai/providers/radius";
 import type { AuthPrompt, Credential, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { curatedProviders, loadCustomProviders, reservedProviderIds } from "../providers/custom.js";
-import { UserAgent, instructionDocsStamp, listSessions, renameSession, archiveSession, sessionDir, isReasoningLevel, type AgentStreamEvent, type ReasoningLevel } from "../agent/agent.js";
-import { lastSessionModel, summarizeSession } from "../agent/compact.js";
+import { UserAgent, instructionDocsStamp, listSessions, renameSession, archiveSession, sessionDir, isReasoningLevel, type AgentStreamEvent, type ReasoningLevel, type SessionCompactRecord } from "../agent/agent.js";
+import { compactionCut, fileActivity, lastSessionModel, summarizeMessages, type FileActivity } from "../agent/compact.js";
 import { listConnections, createConnection, updateConnection, deleteConnection, validateConnectionInput, validatePromptFormatInput, readConnections, connectionKeyUsable, type ConnectionInfo } from "../connections.js";
 import { PROMPT_FORMATS, type PromptFormat } from "../providers/prompt-formats.js";
 import {
@@ -461,21 +461,21 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         return key ? cancelledGens.delete(key) : false;
       },
       onLlmDelta: (tag, delta) => {
-        const t = tag as { chatId?: string; name?: string };
+        const t = tag as { chatId?: string; name?: string; speakerId?: string };
         if (!t || typeof t !== "object") return;
-        bus.emit(u.username, "app_stream", { app: appId, chatId: t.chatId, name: t.name, delta });
+        bus.emit(u.username, "app_stream", { app: appId, chatId: t.chatId, name: t.name, speakerId: t.speakerId, delta });
       },
       onLlmThinking: (tag, delta) => {
-        const t = tag as { chatId?: string; name?: string };
+        const t = tag as { chatId?: string; name?: string; speakerId?: string };
         if (!t || typeof t !== "object") return;
-        bus.emit(u.username, "app_stream", { app: appId, chatId: t.chatId, name: t.name, thinking: delta });
+        bus.emit(u.username, "app_stream", { app: appId, chatId: t.chatId, name: t.name, speakerId: t.speakerId, thinking: delta });
       },
       // tool-call progress rides the same stream so the UI can interleave
       // activity rows between text segments while the reply is still streaming
       onLlmTool: (tag, ev) => {
-        const t = tag as { chatId?: string; name?: string };
+        const t = tag as { chatId?: string; name?: string; speakerId?: string };
         if (!t || typeof t !== "object") return;
-        bus.emit(u.username, "app_stream", { app: appId, chatId: t.chatId, name: t.name, tool: ev });
+        bus.emit(u.username, "app_stream", { app: appId, chatId: t.chatId, name: t.name, speakerId: t.speakerId, tool: ev });
       },
       // sibling tool contribution: a plugin's llm request marked wantsTools
       // picks up every other app plugin's appTools() export (the dedicated
@@ -2725,7 +2725,9 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     // renames, archive state and the run-opened marker are session metadata, not dialogue:
     // they survive truncation so the thread keeps its name and its place in
     // the sidebar even when every run is cut
-    const keep = runs.filter((r) => r.type === "rename" || r.type === "start" || r.type === "archive" || (r.type === "run" && typeof r.at === "number" && (r.at as number) < cutoff));
+    // A compaction made before the cut still stands for the runs it folded:
+    // without its marker the whole folded history would be back in the context.
+    const keep = runs.filter((r) => r.type === "rename" || r.type === "start" || r.type === "archive" || ((r.type === "run" || r.type === "compact") && typeof r.at === "number" && (r.at as number) < cutoff));
     writeRuns(p, id, keep);
     evictAgents(c.get("user").username);
     return c.json({ ok: true, runs: keep.length });
@@ -2739,7 +2741,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const body = await c.req.json<{ at?: number }>().catch(() => null) ?? {};
     const runs = readRuns(p, id);
     if (runs === null) return c.json({ error: "session not found" }, 404);
-    const keep = runs.filter((r) => r.type === "rename" || r.type === "start" || (r.type === "run" && (body.at === undefined || (typeof r.at === "number" && (r.at as number) < body.at))));
+    const keep = runs.filter((r) => r.type === "rename" || r.type === "start" || ((r.type === "run" || r.type === "compact") && (body.at === undefined || (typeof r.at === "number" && (r.at as number) < body.at))));
     let newId = `fork-${Math.random().toString(36).slice(2, 10)}`;
     while (fs.existsSync(path.join(sessionDir(p), `${newId}.jsonl`))) {
       newId = `fork-${Math.random().toString(36).slice(2, 10)}`;
@@ -2776,17 +2778,16 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     }
   });
 
-  // ---------- compact: summarize the session, APPEND a compact marker ----------
+  // ---------- compact: fold the older context, APPEND a compact marker ----------
   // History stays in the file (the UI keeps it scrollable behind a divider);
-  // the model's context restarts from the summary (loadSessionDialogue drops
-  // everything before the marker).
-  const compactSession = async (u: UserRecord, id: string, opts: { auto?: boolean; model?: string } = {}): Promise<{ summary: string; runsBefore: number }> => {
+  // the model's context restarts from the summary plus the recent messages
+  // the marker keeps (sessionContext in agent.ts reads it back).
+  const compactSession = async (u: UserRecord, id: string, opts: { auto?: boolean; model?: string } = {}): Promise<{ summary: string; folded: number; kept: number }> => {
     const p = userPaths(dataDir, u.username);
     const file = path.join(sessionDir(p), `${id}.jsonl`);
     if (!fs.existsSync(file)) throw new HttpError(404, "session not found");
     const pre = fs.readFileSync(file, "utf8");
     const records = readRuns(p, id) ?? [];
-    const runs = records.filter((r) => r.type === "run");
 
     // Use an explicit choice or the recorded session model, including after
     // restart. Legacy sessions without model metadata can use a live agent;
@@ -2815,9 +2816,21 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       // no longer fits, so its history must not ride along (see compact.ts)
       const svc = getModels(u);
       const { ref, contextWindow, maxTokens } = agent.model;
-      const folded = await summarizeSession({
+      const context = agent.context();
+      // an earlier compaction's summary leads the context: it is updated, not
+      // read as conversation
+      const lead = context.origins[0] === null ? 1 : 0;
+      const body = context.messages.slice(lead);
+      if (!body.length) throw new HttpError(400, "nothing to compact");
+      const cut = compactionCut({ contextWindow, maxTokens }, body);
+      const older = body.slice(0, cut);
+      const keep = context.origins[lead + cut] ?? undefined;
+      const last = records.findLast((r) => r.type === "compact") as { summary?: string; files?: FileActivity } | undefined;
+      const { summary } = await summarizeMessages({
         model: { contextWindow, maxTokens },
-        records,
+        messages: older,
+        ...(lead && last?.summary ? { previous: last.summary } : {}),
+        tailKept: cut < body.length,
         generate: async (prompt, max) => {
           controller.signal.throwIfAborted();
           const res = await abortable(svc.generate(
@@ -2831,19 +2844,22 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         if (e instanceof HttpError) throw e;
         throw new HttpError(/nothing to compact/.test(e.message) ? 400 : 500, e.message);
       });
-      if (folded.droppedRuns) log.warn(`[agent] compact ${u.username}/${id}: ${folded.droppedRuns} oldest runs left out (too long to fold)`);
-      const summary = folded.summary;
+      const files = fileActivity(older, lead ? last?.files : undefined);
       // keep prior history, append the marker
-      const rec: { type: "compact"; at: number; model: string; summary: string; auto?: boolean } = {
+      const rec: SessionCompactRecord = {
         type: "compact",
         model: ref,
         at: Date.now(),
         summary,
         ...(opts.auto ? { auto: true } : {}),
+        ...(keep ? { keep } : {}),
+        ...(files.read.length || files.modified.length ? { files } : {}),
+        folded: older.length,
+        kept: body.length - cut,
       };
       controller.signal.throwIfAborted();
       fs.writeFileSync(file, pre + JSON.stringify(rec) + "\n", "utf8");
-      return { summary, runsBefore: runs.length };
+      return { summary, folded: older.length, kept: body.length - cut };
     } catch (e) {
       if (e instanceof HttpError) throw e;
       throw new HttpError(500, (e as Error).message);
@@ -2926,6 +2942,12 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const u = c.get("user");
     const p = c.get("paths");
     const body = await c.req.json<{ name?: string; baseUrl?: string; key?: string; models?: unknown; promptFormat?: unknown; promptFormatCustom?: unknown }>().catch(() => null) ?? {};
+    let baseUrl: string | undefined;
+    if (body.baseUrl !== undefined) {
+      const check = validateConnectionInput({ name: "x", api: "openai-completions", baseUrl: body.baseUrl });
+      if (!check.ok) return c.json({ error: check.error }, 400);
+      baseUrl = check.value.baseUrl;
+    }
     let models: import("../connections.js").ConnectionDef["models"] | undefined;
     if (body.models !== undefined) {
       const check = validateConnectionInput({ name: "x", api: "openai-completions", baseUrl: "http://x.example", models: body.models });
@@ -2940,7 +2962,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     }
     const updated = updateConnection(p, c.req.param("id"), {
       ...(typeof body.name === "string" ? { name: body.name } : {}),
-      ...(typeof body.baseUrl === "string" ? { baseUrl: body.baseUrl } : {}),
+      ...(baseUrl !== undefined ? { baseUrl } : {}),
       ...(typeof body.key === "string" ? { key: body.key } : {}),
       ...(models !== undefined ? { models } : {}),
       ...format,
@@ -4385,6 +4407,9 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     "sandbox allow-scripts allow-popups allow-downloads allow-forms; " +
     "default-src 'none'; " +
     `script-src ${origin} 'wasm-unsafe-eval'; ` +
+    // a worker built from a blob runs under this same policy, so it reaches
+    // no network either
+    "worker-src blob:; " +
     `style-src ${origin} 'unsafe-inline'; ` +
     `img-src ${origin} blob: data:; media-src ${origin} blob: data:; font-src ${origin} data:; ` +
     "connect-src 'none'; " +

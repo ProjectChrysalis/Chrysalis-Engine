@@ -37,7 +37,7 @@ export class AppImports {
   }
   create(name: string, size: number, collections: string[]): ImportState {
     if (!Number.isSafeInteger(size) || size <= 0 || size > IMPORT_MAX_BYTES) throw new Error("archive must be between 1 byte and 32 GB");
-    if (collections.length > 32 || collections.some((v) => !/^[a-zA-Z0-9 _/-]{1,80}$/.test(v))) throw new Error("invalid collection order");
+    if (collections.length > 32 || collections.some((v) => !/^[a-zA-Z0-9 _/.-]{1,80}$/.test(v))) throw new Error("invalid collection order");
     // Abandoned uploads expire; running uploads and indexing are retained.
     for (const id of fs.readdirSync(this.root)) {
       try { const state = JSON.parse(fs.readFileSync(path.join(this.root, id, "state.json"), "utf8")); if (Date.now() - state.updatedAt > 7 * 86400_000 && !active.has(path.join(this.root, id))) { if (this.dataRoot) this.recover(id, this.dataRoot); fs.rmSync(path.join(this.root, id), { recursive: true, force: true }); } } catch { /* unrelated or incomplete directory */ }

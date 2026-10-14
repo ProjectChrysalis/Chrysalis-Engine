@@ -587,7 +587,6 @@ const dict = {
   "Extra high": "매우 높음",
   "Writing": "쓰는 중",
   "Context compacted": "컨텍스트 압축됨",
-  "Compacted {count} runs": "{count}개 실행 압축됨",
   "Stop this app's program and start it again": "이 앱의 프로그램을 중지하고 다시 시작",
   "Restart": "다시 시작",
   "Stop this app's program": "이 앱의 프로그램 중지",

@@ -587,7 +587,6 @@ const dict = {
   "Extra high": "Bardzo wysokie",
   "Writing": "Zapisywanie",
   "Context compacted": "Kontekst skompaktowany",
-  "Compacted {count} runs": "Skompaktowano {count} przebiegów",
   "Stop this app's program and start it again": "Zatrzymaj program tej aplikacji i uruchom go ponownie",
   "Restart": "Uruchom ponownie",
   "Stop this app's program": "Zatrzymaj program tej aplikacji",

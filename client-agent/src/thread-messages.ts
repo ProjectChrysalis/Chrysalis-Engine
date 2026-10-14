@@ -3,6 +3,10 @@ import type { ReadonlyJSONObject } from "assistant-stream/utils"
 import { visibleParts, type Msg } from "./runs"
 
 function toThreadMessage(m: Msg): ThreadMessageLike {
+  if (m.compaction) {
+    const summary = m.parts[0]?.kind === "text" ? m.parts[0].text : ""
+    return { id: m.id, role: "system", content: [{ type: "text", text: summary }], metadata: { custom: { compaction: m.compaction } } }
+  }
   if (m.role === "user") {
     const content: ThreadMessageLike["content"] = [
       ...(m.images ?? []).map((image) => ({ type: "image" as const, image })),

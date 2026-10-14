@@ -19,8 +19,8 @@ import {
   newTrimState,
   outputCap,
 } from "../src/agent/context-budget.js";
-import { compactionInput, lastSessionModel, summarizeSession } from "../src/agent/compact.js";
-import { UserAgent, windowFromError } from "../src/agent/agent.js";
+import { compactionCut, fileActivity, lastSessionModel, serializeConversation, summarizeMessages, summaryText } from "../src/agent/compact.js";
+import { UserAgent, sessionContext, windowFromError } from "../src/agent/agent.js";
 import { UserModelService } from "../src/models.js";
 import { defaultInstanceConfig } from "../src/config.js";
 import { bootstrapUserDir, userPaths } from "../src/paths.js";
@@ -248,67 +248,145 @@ describe("compaction", () => {
     expect(lastSessionModel([{ type: "run" }, { type: "run", model: {} }, { type: "compact", model: "invalid" }])).toBeUndefined();
   });
 
-  it("folds every run even when the transcript needs more than six chunks", async () => {
+  const assistant = (text: string, calls: { name: string; arguments: Record<string, unknown> }[] = []): AgentMessage =>
+    ({ role: "assistant", content: [...(text ? [{ type: "text", text }] : []), ...calls.map((c, i) => ({ type: "toolCall", id: `c${i}`, ...c }))], timestamp: 1 }) as unknown as AgentMessage;
+  const result = (text: string, isError = false): AgentMessage =>
+    ({ role: "toolResult", toolCallId: "c0", toolName: "t", content: [{ type: "text", text }], isError, timestamp: 1 }) as unknown as AgentMessage;
+  const conversation = (prompt: string) => prompt.split("<conversation>\n")[1]!.split("\n</conversation>")[0]!;
+
+  it("folds every message even when the transcript needs more than six parts", async () => {
     const prompts: string[] = [];
-    const records = Array.from({ length: 14 }, (_, i) => ({ type: "run", user: `TASK_${i}: ${"a".repeat(20_000)}`, assistant: `done ${i}` }));
-    const out = await summarizeSession({ model: { contextWindow: 8192, maxTokens: 4096 }, records, generate: async (prompt, max) => {
+    const messages = Array.from({ length: 14 }, (_, i) => [user(`TASK_${i}: ${"a".repeat(20_000)}`), assistant(`done ${i}`)]).flat();
+    const out = await summarizeMessages({ model: { contextWindow: 8192, maxTokens: 4096 }, messages, generate: async (prompt, max) => {
       prompts.push(prompt);
       expect(estimateTextTokens(prompt) + max).toBeLessThanOrEqual(8192);
-      return "folded";
+      return `summary ${prompts.length}`;
     } });
     expect(out.chunks).toBeGreaterThan(6);
-    expect(out.droppedRuns).toBe(0);
-    const transcript = prompts.map((p) => p.split("<conversation>\n")[1]!.split("\n</conversation>")[0]!).join("");
-    expect(transcript).toBe(compactionInput(records).runs.join("\n\n"));
+    expect(prompts.map(conversation).join("")).toBe(serializeConversation(messages));
+    expect(prompts[0]).not.toContain("<previous-summary>");
+    expect(prompts[1]).toContain("<previous-summary>\nsummary 1\n</previous-summary>");
+    expect(out.summary).toBe(`summary ${prompts.length}`);
+  });
+
+  it("updates the checkpoint that already stands for the earlier history", async () => {
+    const prompts: string[] = [];
+    const out = await summarizeMessages({
+      model: { contextWindow: 200_000, maxTokens: 8192 },
+      messages: [user("now the footer"), assistant("footer done")],
+      previous: "EARLIER CHECKPOINT",
+      tailKept: true,
+      generate: async (prompt) => { prompts.push(prompt); return "merged"; },
+    });
+    expect(out).toEqual({ summary: "merged", chunks: 1 });
+    expect(prompts[0]).toContain("<previous-summary>\nEARLIER CHECKPOINT\n</previous-summary>");
+    expect(prompts[0]).toContain("[User]: now the footer");
+    expect(prompts[0]).toContain("are kept as they are");
   });
 
   it("fits a small window with a large previous summary and CJK transcript", async () => {
-    const out = await summarizeSession({
+    const out = await summarizeMessages({
       model: { contextWindow: 8192, maxTokens: 4096 },
-      records: [{ type: "compact", summary: "界".repeat(4000) }, { type: "run", user: "界".repeat(6000), assistant: "done" }],
+      messages: [user("界".repeat(6000)), assistant("done")],
+      previous: "界".repeat(4000),
       generate: async (prompt, max) => {
         expect(estimateTextTokens(prompt) + max).toBeLessThanOrEqual(8192);
         return "界".repeat(max);
       },
     });
     expect(out.chunks).toBeGreaterThan(1);
-    expect(out.droppedRuns).toBe(0);
   });
 
-  it("starts from the last marker and lists the files each run touched", () => {
-    const input = compactionInput([
-      { type: "run", user: "old", assistant: "old answer", tools: [] },
-      { type: "compact", summary: "EARLIER" },
-      { type: "run", user: "edit it", assistant: "edited", turns: [{ tools: [{ name: "edit_file", ok: true, args: { path: "apps/rp/src/App.tsx" } }] }] },
+  it("shows the summarizer tool calls and their results, clipped", () => {
+    const text = serializeConversation([
+      user("fix the header"),
+      assistant("Looking.", [{ name: "read_file", arguments: { path: "apps/rp/src/App.tsx" } }]),
+      result(`HEADER_SOURCE ${"x".repeat(5000)}`),
+      assistant("", [{ name: "edit_file", arguments: { path: "apps/rp/src/App.tsx", old: "a", new: "b" } }]),
+      result("no match", true),
     ]);
-    expect(input.earlier).toBe("EARLIER");
-    expect(input.runs).toHaveLength(1);
-    expect(input.runs[0]).toContain("edit_file apps/rp/src/App.tsx");
-    expect(input.runs[0]).not.toContain("old answer");
+    expect(text).toContain("[User]: fix the header");
+    expect(text).toContain('[Assistant tool calls]: read_file(path="apps/rp/src/App.tsx")');
+    expect(text).toContain("[Tool result]: HEADER_SOURCE");
+    expect(text).toContain("[Tool result, failed]: no match");
+    expect(text).toContain("more characters]");
+    expect(text.length).toBeLessThan(3200);
   });
 
-  it("folds a transcript bigger than the window in chunks, each carrying the summary so far", async () => {
-    const records = Array.from({ length: 30 }, (_, i) => ({ type: "run", user: `task ${i} ${"слово ".repeat(800)}`, assistant: `done ${i}` }));
-    const prompts: string[] = [];
-    const model = { contextWindow: 16_384, maxTokens: 4096 };
-    const out = await summarizeSession({
-      model,
-      records,
-      generate: async (prompt, max) => {
-        prompts.push(prompt);
-        expect(estimateTextTokens(prompt) + max).toBeLessThanOrEqual(16_384);
-        return `summary ${prompts.length}`;
-      },
-    });
-    expect(prompts.length).toBeGreaterThan(1);
-    expect(prompts[1]).toContain("<earlier_summary>\nsummary 1");
-    expect(out.summary).toBe(`summary ${prompts.length}`);
+  it("keeps the recent messages and never starts them at a tool result", () => {
+    const model = { contextWindow: 200_000, maxTokens: 8192 };
+    const old = Array.from({ length: 12 }, (_, i) => [user(`step ${i} ${"word ".repeat(4000)}`), assistant(`done ${i}`)]).flat();
+    const recent = [user("last task"), assistant("", [{ name: "read_file", arguments: { path: "a.ts" } }]), result("R".repeat(400)), assistant("finished")];
+    const messages = [...old, ...recent];
+    const cut = compactionCut(model, messages);
+    expect(cut).toBeGreaterThan(0);
+    expect(cut).toBeLessThanOrEqual(old.length);
+    expect((messages[cut] as { role: string }).role).not.toBe("toolResult");
+    expect(estimateContextTokens({ messages: messages.slice(cut) })).toBeLessThanOrEqual(20_000);
+
+    // the budget ends inside a call and its result: the result goes with the call
+    const split = [user("a".repeat(2000)), assistant("", [{ name: "read_file", arguments: { path: "a.ts" } }]), result("b".repeat(300)), assistant("ok")];
+    const at = compactionCut({ contextWindow: 1000, maxTokens: 256 }, split);
+    expect(at).toBeGreaterThan(0);
+    if (at < split.length) expect((split[at] as { role: string }).role).not.toBe("toolResult");
+
+    expect(compactionCut(model, [user("only message")])).toBe(1);
   });
 
-  it("refuses when nothing happened since the last marker", async () => {
-    await expect(
-      summarizeSession({ model: { contextWindow: 0 }, records: [{ type: "compact", summary: "s" }], generate: async () => "x" }),
-    ).rejects.toThrow("nothing to compact");
+  it("records the files that were read and changed across compactions", () => {
+    const files = fileActivity(
+      [
+        assistant("", [{ name: "read_file", arguments: { path: "a.ts" } }, { name: "read_file", arguments: { path: "b.ts" } }]),
+        assistant("", [{ name: "edit_file", arguments: { path: "b.ts" } }, { name: "write_file", arguments: { path: "c.ts" } }, { name: "run_command", arguments: { path: "ignored" } }]),
+      ],
+      { read: ["old.ts", "c.ts"], modified: ["gone.ts"] },
+    );
+    expect(files).toEqual({ read: ["old.ts", "a.ts"], modified: ["gone.ts", "b.ts", "c.ts"] });
+    const text = summaryText("STATE", files);
+    expect(text).toContain("<summary>\nSTATE\n</summary>");
+    expect(text).toContain("<read-files>\nold.ts\na.ts\n</read-files>");
+    expect(text).toContain("<modified-files>\ngone.ts\nb.ts\nc.ts\n</modified-files>");
+    expect(summaryText("STATE")).not.toContain("files>");
+  });
+
+  it("refuses when there is nothing to fold", async () => {
+    await expect(summarizeMessages({ model: { contextWindow: 0 }, messages: [], generate: async () => "x" })).rejects.toThrow("nothing to compact");
+  });
+
+  it("puts the summary and the kept messages in the context a marker leaves", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctxmarker-"));
+    try {
+      const file = path.join(dir, "s.jsonl");
+      const model = { api: "faux", provider: "faux", id: "m" };
+      const run = (at: number, text: string) => ({ type: "run", at, user: `ask ${text}`, assistant: `answer ${text}`, turns: [{ tools: [{ name: "read_file", ok: true, args: { path: `${text}.ts` }, summary: `body ${text}` }] }, { text: `answer ${text}` }] });
+      const write = (...records: unknown[]) => fs.writeFileSync(file, records.map((r) => JSON.stringify(r)).join("\n") + "\n");
+
+      write(run(1, "one"), run(2, "two"));
+      const before = sessionContext(file, model);
+      expect(before.messages).toHaveLength(8);
+      expect(before.origins[5]).toEqual({ at: 2, index: 1 });
+
+      write(run(1, "one"), run(2, "two"), { type: "compact", at: 3, summary: "CHECKPOINT", keep: { at: 2, index: 1 }, files: { read: ["one.ts"], modified: [] } }, run(4, "three"));
+      const after = sessionContext(file, model);
+      expect(after.origins[0]).toBeNull();
+      expect(after.messages[0]).toMatchObject({ role: "user" });
+      expect((after.messages[0] as { content: string }).content).toContain("<summary>\nCHECKPOINT\n</summary>");
+      expect((after.messages[0] as { content: string }).content).toContain("<read-files>\none.ts\n</read-files>");
+      expect(after.messages.map((m) => (m as { role: string }).role)).toEqual(["user", "assistant", "toolResult", "assistant", "user", "assistant", "toolResult", "assistant"]);
+      expect(after.origins.slice(1, 4)).toEqual([{ at: 2, index: 1 }, { at: 2, index: 2 }, { at: 2, index: 3 }]);
+      expect(JSON.stringify(after.messages)).not.toContain("ask one");
+      expect(JSON.stringify(after.messages)).not.toContain("ask two");
+      expect(JSON.stringify(after.messages)).toContain("body two");
+
+      // a marker without a kept place stands for everything before it
+      write(run(1, "one"), { type: "compact", at: 3, summary: "ALL OF IT" }, run(4, "three"));
+      const legacy = sessionContext(file, model);
+      expect(legacy.messages).toHaveLength(5);
+      expect((legacy.messages[0] as { role: string; content: string }).role).toBe("user");
+      expect(JSON.stringify(legacy.messages)).not.toContain("ask one");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

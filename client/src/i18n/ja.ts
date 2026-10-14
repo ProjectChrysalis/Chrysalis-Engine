@@ -587,7 +587,6 @@ const dict = {
   "Extra high": "最高",
   "Writing": "書き込み中",
   "Context compacted": "コンテキストを圧縮しました",
-  "Compacted {count} runs": "{count} 回の実行を圧縮しました",
   "Stop this app's program and start it again": "このアプリのプログラムを停止して再び起動",
   "Restart": "再起動",
   "Stop this app's program": "このアプリのプログラムを停止",

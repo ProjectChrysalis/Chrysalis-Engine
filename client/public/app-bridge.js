@@ -57,11 +57,32 @@
     var want = base.protocol === "https:" ? "wss:" : "ws:";
     return url.protocol === want && url.host === base.host;
   }
-  function call(msg) {
+  function call(msg, signal) {
     return new Promise(function (resolve, reject) {
+      var id = null;
+      function cleanup() {
+        if (signal) signal.removeEventListener("abort", abort);
+      }
+      function abort() {
+        cleanup();
+        if (id !== null) {
+          delete pending[id];
+          post({ type: "fetch-abort", id: id });
+        }
+        reject(signal.reason || new DOMException("The operation was aborted", "AbortError"));
+      }
+      if (signal) {
+        if (signal.aborted) { abort(); return; }
+        signal.addEventListener("abort", abort, { once: true });
+      }
       whenReady(function () {
-        var id = nextId++;
-        pending[id] = { resolve: resolve, reject: reject };
+        // aborted while queued for the handshake: never sent
+        if (signal && signal.aborted) return;
+        id = nextId++;
+        pending[id] = {
+          resolve: function (value) { cleanup(); resolve(value); },
+          reject: function (error) { cleanup(); reject(error); },
+        };
         msg.__chrysalis = 1;
         msg.id = id;
         msg.nonce = nonce;
@@ -137,6 +158,7 @@
   function bridgeFetch(input, init) {
     var req;
     try { req = new Request(input, init); } catch (e) { return Promise.reject(e); }
+    if (req.signal.aborted) return Promise.reject(req.signal.reason || new DOMException("The operation was aborted", "AbortError"));
     var url;
     try { url = new URL(req.url, location.href); } catch { return Promise.reject(new TypeError("bad url")); }
     if (!parentWin) return Promise.reject(new TypeError("this app is not running inside Chrysalis"));
@@ -154,7 +176,7 @@
         url: url.pathname + url.search,
         headers: headers,
         bodyBuffer: isBodyless || buf.byteLength === 0 ? null : buf,
-      });
+      }, req.signal);
     }).then(function (res) {
       var body = res.bodyBuffer instanceof ArrayBuffer ? new Uint8Array(res.bodyBuffer) : res.body ? b64ToBytes(res.body) : null;
       var status = res.status || 200;
@@ -192,12 +214,17 @@
       setTimeout(function () { self._fail(); }, 0);
       return;
     }
-    call({
-      type: "ws-open",
-      wsId: this._id,
-      url: target.pathname + target.search,
-      protocols: Array.isArray(protocols) ? protocols : protocols ? [protocols] : [],
-    }).catch(function () { self._fail(); });
+    // Not a call(): the host answers with ws-event frames only, so an entry
+    // in pending would never be taken out and would keep the socket alive.
+    whenReady(function () {
+      if (self.readyState !== 0) return;
+      post({
+        type: "ws-open",
+        wsId: self._id,
+        url: target.pathname + target.search,
+        protocols: Array.isArray(protocols) ? protocols : protocols ? [protocols] : [],
+      });
+    });
   }
   BridgeWebSocket.CONNECTING = 0;
   BridgeWebSocket.OPEN = 1;

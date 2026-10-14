@@ -65,6 +65,7 @@ afterEach(() => {
     expect(html).toContain("app-bridge.js");
     const csp = res.headers.get("content-security-policy") ?? "";
     expect(csp).toContain("connect-src 'none'");
+    expect(csp).toContain("worker-src blob:;");
     expect(csp).toContain("frame-ancestors http://localhost");
     // response-level sandbox: the document is opaque-origin even if the URL is
     // opened top-level (bookmark, PWA window, popup), so it can never read
@@ -177,6 +178,27 @@ afterEach(() => {
     for (const no of ["demo/node_modules/preact/package.json", "demo/dist/index.html", "demo/data/chats/a.json", "notes/plugins/x.js", "demo/.git/HEAD", "demo/.dist-next-1/index.html", "demo"]) {
       expect(isBuildSource(no), no).toBe(false);
     }
+  });
+
+  it("rejects invalid endpoint edits without saving other fields and normalizes valid edits", async () => {
+    const post = await app.request("/v1/settings/connections", {
+      method: "POST", headers: { ...h(), "content-type": "application/json" },
+      body: JSON.stringify({ name: "endpoint", api: "openai-completions", baseUrl: "http://127.0.0.1:9/v1", models: [{ id: "stub" }] }),
+    });
+    const { connection } = await post.json() as { connection: { id: string } };
+    const invalid = await app.request(`/v1/settings/connections/${connection.id}`, {
+      method: "PATCH", headers: { ...h(), "content-type": "application/json" },
+      body: JSON.stringify({ name: "must not save", baseUrl: "not-a-url" }),
+    });
+    expect(invalid.status).toBe(400);
+    const saved = await (await app.request("/v1/settings/connections", { headers: h() })).json() as { connections: Array<{ id: string; name: string; baseUrl: string }> };
+    expect(saved.connections.find((c) => c.id === connection.id)).toMatchObject({ name: "endpoint", baseUrl: "http://127.0.0.1:9/v1" });
+    const valid = await app.request(`/v1/settings/connections/${connection.id}`, {
+      method: "PATCH", headers: { ...h(), "content-type": "application/json" },
+      body: JSON.stringify({ baseUrl: "  http://127.0.0.1:9/v2  " }),
+    });
+    expect(valid.status).toBe(200);
+    expect((await valid.json() as { connection: { baseUrl: string } }).connection.baseUrl).toBe("http://127.0.0.1:9/v2");
   });
 
   it("connection mutations warm the rebuilt catalog, then broadcast connections_changed", async () => {

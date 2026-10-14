@@ -51,6 +51,8 @@ export interface Msg {
   /** Set on the live in-flight assistant message; drives part statuses so
    *  the reasoning disclosure auto-opens while it streams. */
   streaming?: boolean
+  /** A compaction: shown as a divider, its one text part is the summary. */
+  compaction?: "auto" | "manual"
 }
 
 let seq = 0
@@ -126,15 +128,11 @@ export function partsFromResponse(res: AgentResponse): PartData[] {
   return partsLegacy({ thinking: res.thinking, thinkingMs: res.thinkingMs, tools: res.toolTrace, text: res.finalText || res.error })
 }
 
-export function msgsFromRuns(runs: EngineRun[], translate: (key: "Context compacted") => string = (key) => key): Msg[] {
+export function msgsFromRuns(runs: EngineRun[]): Msg[] {
   const msgs: Msg[] = []
   for (const run of runs) {
     if (run.type === "compact") {
-      msgs.push({
-        id: uid("m"),
-        role: "assistant",
-        parts: [{ kind: "text", text: run.summary ? `_${translate("Context compacted")}: ${run.summary}_` : `_${translate("Context compacted")}_` }],
-      })
+      msgs.push({ id: `c${run.at}`, role: "assistant", parts: [{ kind: "text", text: run.summary ?? "" }], compaction: run.auto ? "auto" : "manual" })
       continue
     }
     if (run.type !== "run") continue

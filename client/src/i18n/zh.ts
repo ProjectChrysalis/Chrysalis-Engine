@@ -587,7 +587,6 @@ const dict = {
   "Extra high": "极高",
   "Writing": "正在写入",
   "Context compacted": "上下文已压缩",
-  "Compacted {count} runs": "已压缩 {count} 次运行",
   "Stop this app's program and start it again": "停止此应用的程序并重新启动",
   "Restart": "重新启动",
   "Stop this app's program": "停止此应用的程序",

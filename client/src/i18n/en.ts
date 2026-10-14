@@ -590,7 +590,6 @@ const en = {
   "Extra high": "",
   "Writing": "",
   "Context compacted": "",
-  "Compacted {count} runs": "",
   "Stop this app's program and start it again": "",
   "Restart": "",
   "Stop this app's program": "",

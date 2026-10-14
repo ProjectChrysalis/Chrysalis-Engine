@@ -223,7 +223,7 @@ export const useAgent = create<AgentState>()((set, get) => {
         const r = await sessionsApi.get(id)
         if (get().sessionId === id) {
           const delivered = new Set((r.runs ?? []).flatMap((run) => run.turns?.map((turn) => turn.userId).filter(Boolean) ?? []));
-          set((state) => ({ appId: r.appId, msgs: msgsFromRuns(r.runs ?? [], tr), usage: usageFromRuns(r.runs ?? []), queue: state.queue.filter((item) => !delivered.has(item.id)) }));
+          set((state) => ({ appId: r.appId, msgs: msgsFromRuns(r.runs ?? []), usage: usageFromRuns(r.runs ?? []), queue: state.queue.filter((item) => !delivered.has(item.id)) }));
           const live = await agentState(id);
           if (get().sessionId === id) set((state) => ({ running: live.running, ask: live.ask ?? null, queue: [...state.queue.filter((item) => item.sessionId !== id || !live.queue.some((queued) => queued.id === item.id)).map((item) => item.sessionId === id ? { ...item, accepted: false } : item), ...live.queue.map((item) => ({ ...item, sessionId: id, pending: false, accepted: true }))] }));
           if (get().sessionId === id && live.running && live.live) restoreLive(live.live);
@@ -241,7 +241,7 @@ export const useAgent = create<AgentState>()((set, get) => {
         const r = await sessionsApi.get(sid)
         if (get().sessionId === sid) {
           const delivered = new Set((r.runs ?? []).flatMap((run) => run.turns?.map((turn) => turn.userId).filter(Boolean) ?? []));
-          set((state) => ({ msgs: msgsFromRuns(r.runs ?? [], tr), usage: usageFromRuns(r.runs ?? []), queue: state.queue.filter((item) => !delivered.has(item.id)) }));
+          set((state) => ({ msgs: msgsFromRuns(r.runs ?? []), usage: usageFromRuns(r.runs ?? []), queue: state.queue.filter((item) => !delivered.has(item.id)) }));
         }
       } catch {
         // keep the local view; the stream already showed the run
@@ -466,7 +466,7 @@ export const useAgent = create<AgentState>()((set, get) => {
         const r = await sessionsApi.compact(sid)
         await get().refreshSessions()
         await get().open(r.sessionId)
-        set({ banner: { kind: "info", text: tr("Compacted {count} runs", { count: r.runsBefore }) } })
+        set({ banner: { kind: "info", text: tr("Context compacted") } })
       } catch (e) {
         set({ banner: { kind: "error", text: e instanceof Error ? e.message : String(e) } })
       }

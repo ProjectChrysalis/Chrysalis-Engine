@@ -49,6 +49,8 @@ export interface EngineRun {
   usage?: EngineUsage
   title?: string
   summary?: string
+  /** On a compaction: it ran by itself when the context filled up. */
+  auto?: boolean
 }
 
 export interface AgentResponse {
@@ -127,7 +129,7 @@ export const sessionsApi = {
   truncate: (id: string, at: number) =>
     api<{ runs: number }>("POST", `/v1/agent/sessions/${encodeURIComponent(id)}/truncate`, { at }),
   compact: (id: string) =>
-    api<{ sessionId: string; summary: string; runsBefore: number }>(
+    api<{ sessionId: string; summary: string }>(
       "POST",
       `/v1/agent/sessions/${encodeURIComponent(id)}/compact`,
     ),

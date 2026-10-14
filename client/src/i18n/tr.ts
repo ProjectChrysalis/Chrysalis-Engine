@@ -587,7 +587,6 @@ const dict = {
   "Extra high": "Çok yüksek",
   "Writing": "Yazıyor",
   "Context compacted": "Bağlam sıkıştırıldı",
-  "Compacted {count} runs": "{count} çalıştırma sıkıştırıldı",
   "Stop this app's program and start it again": "Bu uygulamanın programını durdur ve yeniden başlat",
   "Restart": "Yeniden başlat",
   "Stop this app's program": "Bu uygulamanın programını durdur",

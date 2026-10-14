@@ -14,6 +14,7 @@ import { invalidatePluginCache } from "../src/plugins/runtime.js";
 let dataDir: string;
 let endpoint: ReturnType<typeof Bun.serve>;
 let modelsSent: string[];
+let requests: string[];
 let summariesStarted: number;
 let releaseSummary: (() => void) | undefined;
 let holdSummary = false;
@@ -23,6 +24,7 @@ let abortRequests = 0;
 beforeEach(() => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "compact-http-"));
   modelsSent = [];
+  requests = [];
   summariesStarted = 0;
   holdSummary = false;
   holdResponse = false;
@@ -34,13 +36,16 @@ beforeEach(() => {
       if (new URL(req.url).pathname === "/api/extra/abort") { abortRequests++; return Response.json({ ok: true }); }
       const body = await req.json() as { model: string; messages: { content: unknown }[] };
       modelsSent.push(body.model);
-      if (JSON.stringify(body.messages).includes("Summarize the conversation below")) {
+      const sent = JSON.stringify(body.messages);
+      requests.push(sent);
+      const summary = sent.includes("only write the checkpoint");
+      if (summary) {
         summariesStarted++;
         if (holdSummary) await new Promise<void>(resolve => { releaseSummary = resolve; });
       }
       if (holdResponse) await new Promise<void>(resolve => { releaseSummary = resolve; });
       const chunk = (delta: unknown, finish_reason: string | null) => `data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", model: body.model, choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
-      return new Response(chunk({ role: "assistant", content: "saved summary" }, null) + chunk({}, "stop") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+      return new Response(chunk({ role: "assistant", content: summary ? `CHECKPOINT_${summariesStarted}` : "saved reply" }, null) + chunk({}, "stop") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
     },
   });
 });
@@ -133,3 +138,65 @@ it("Stop aborts a pending agent response and tells the local inference server to
   expect(abortRequests).toBe(1);
   releaseSummary?.();
 }, 5_000);
+
+it("compaction keeps the recent messages, updates its own summary, and survives going back", async () => {
+  const { p, provider, freshApp, post } = setup();
+  const app = freshApp();
+  expect((await post(app, "/v1/settings", { autoCompact: false }, "PUT")).status).toBe(200);
+  const say = async (message: string) => expect((await post(app, "/v1/agent", { sessionId: "long", model: `${provider}/first`, message })).status).toBe(200);
+  await say(`FIRST_TASK ${"alpha ".repeat(600)}`);
+  await say(`SECOND_TASK ${"beta ".repeat(600)}`);
+  await say("THIRD_TASK short");
+  const file = path.join(p.root, "agent/sessions/long.jsonl");
+  type Rec = { type: string; at: number; summary?: string; keep?: { at: number; index: number }; folded?: number; kept?: number };
+  const read = (f = file) => fs.readFileSync(f, "utf8").trim().split("\n").map(line => JSON.parse(line) as Rec);
+
+  const first = await post(app, "/v1/agent/sessions/long/compact", {});
+  expect(first.status).toBe(200);
+  expect(await first.json()).toMatchObject({ summary: "CHECKPOINT_1", kept: 2 });
+  const summaryRequest = requests.at(-1)!;
+  expect(summaryRequest).toContain("FIRST_TASK");
+  expect(summaryRequest).toContain("SECOND_TASK");
+  expect(summaryRequest).not.toContain("THIRD_TASK");
+  const third = read().filter(r => r.type === "run")[2]!;
+  const marker = read().at(-1)!;
+  expect(marker).toMatchObject({ type: "compact", summary: "CHECKPOINT_1", keep: { at: third.at, index: 0 }, folded: 4, kept: 2 });
+
+  await say("FOURTH_TASK");
+  const next = requests.at(-1)!;
+  expect(next).toContain("CHECKPOINT_1");
+  expect(next).toContain("THIRD_TASK short");
+  expect(next).toContain("FOURTH_TASK");
+  expect(next).not.toContain("FIRST_TASK");
+  expect(next).not.toContain("SECOND_TASK");
+
+  // going back to the message after the compaction keeps the compaction
+  const fourth = read().filter(r => r.type === "run")[3]!;
+  expect((await post(app, "/v1/agent/sessions/long/truncate", { at: fourth.at })).status).toBe(200);
+  expect(read().filter(r => r.type === "compact")).toHaveLength(1);
+  await say("FOURTH_AGAIN");
+  expect(requests.at(-1)).toContain("CHECKPOINT_1");
+  expect(requests.at(-1)).not.toContain("FIRST_TASK");
+  expect(requests.at(-1)).not.toContain("FOURTH_TASK");
+
+  const fork = await post(app, "/v1/agent/sessions/long/fork", {});
+  const forked = (await fork.json() as { sessionId: string }).sessionId;
+  expect(read(path.join(p.root, `agent/sessions/${forked}.jsonl`)).filter(r => r.type === "compact")).toHaveLength(1);
+  const early = await post(app, "/v1/agent/sessions/long/fork", { at: third.at });
+  expect(read(path.join(p.root, `agent/sessions/${(await early.json() as { sessionId: string }).sessionId}.jsonl`)).map(r => r.type).filter(t => t !== "start")).toEqual(["run", "run"]);
+
+  // the second compaction rewrites the first summary instead of reading it as conversation
+  await say(`FIFTH_TASK ${"gamma ".repeat(600)}`);
+  await say("SIXTH_TASK short");
+  expect((await post(app, "/v1/agent/sessions/long/compact", {})).status).toBe(200);
+  const update = requests.at(-1)!;
+  expect(update).toContain("<previous-summary>\\nCHECKPOINT_1\\n</previous-summary>");
+  expect(update).toContain("FIFTH_TASK");
+  expect(update).not.toContain("FIRST_TASK");
+  expect(read().at(-1)).toMatchObject({ type: "compact", summary: "CHECKPOINT_2" });
+
+  // going back before a compaction undoes it
+  expect((await post(app, "/v1/agent/sessions/long/truncate", { at: third.at })).status).toBe(200);
+  expect(read().filter(r => r.type === "compact")).toHaveLength(0);
+  expect(read().filter(r => r.type === "run")).toHaveLength(2);
+}, 30_000);

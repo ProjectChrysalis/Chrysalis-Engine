@@ -38,6 +38,23 @@ test("development builds report actual stages and hot updates finish normally", 
   expect(stages).toEqual(["bundling"]);
 });
 
+test("a deleted module nothing imports any more is not a build error", async () => {
+  const ctx = await context("development", []);
+  const app = path.join(dirs[0]!, "sample");
+  fs.writeFileSync(path.join(app, "helper.js"), "export const label = 'Ready';");
+  fs.writeFileSync(path.join(app, "main.js"), 'import { label } from "./helper.js"; document.body.textContent = label;');
+  ctx.fs.invalidate("all");
+  const dev = new DevSession(ctx, null);
+  expect((await dev.full()).errors).toEqual([]);
+  fs.writeFileSync(path.join(app, "main.js"), 'document.body.textContent = "Ready";');
+  fs.rmSync(path.join(app, "helper.js"));
+  const update = await dev.update(["main.js", "helper.js"]);
+  expect(update.errors).toEqual([]);
+  expect((await dev.update(["helper.js"])).errors).toEqual([]);
+  fs.writeFileSync(path.join(app, "main.js"), 'import { label } from "./helper.js"; document.body.textContent = label;');
+  expect((await dev.update(["main.js"])).errors).toHaveLength(1);
+});
+
 test("production builds report reading and bundling without inventing a percentage", async () => {
   const stages: string[] = [];
   const out = await buildProduction(await context("production", stages));

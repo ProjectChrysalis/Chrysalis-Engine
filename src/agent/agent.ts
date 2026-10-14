@@ -27,6 +27,7 @@ import { abortable } from "../cancellation.js";
 import { log } from "../logger.js";
 import { clampThinkingLevel, isContextOverflow, type AssistantMessage } from "@earendil-works/pi-ai";
 import { clampMaxTokens, fitContext, newTrimState } from "./context-budget.js";
+import { summaryText, type FileActivity } from "./compact.js";
 import { readSandboxSettings } from "../sandbox/network.js";
 
 const ADMIN_TOOLS_PROMPT = `You are also the ADMIN agent for this instance: create users with admin_create_user, list them with admin_list_users. New user tokens are shown exactly once.`;
@@ -113,13 +114,22 @@ interface SessionRunRecord {
 /**
  * Compaction marker: APPENDED to the session file (history is kept for the
  * UI — the user can still scroll back). The model's context restarts from
- * the summary: everything before this record is excluded from the dialogue.
+ * the summary, followed by the recent messages the marker kept.
  */
 export interface SessionCompactRecord {
   type: "compact";
   model?: string;
   at: number;
   summary: string;
+  auto?: boolean;
+  /** First message that stays in the context: a run (its `at`) and a place
+   *  in it. Absent when the summary stands for everything. */
+  keep?: { at: number; index: number };
+  /** Files read and changed in everything folded so far. */
+  files?: FileActivity;
+  /** Messages folded into the summary, and messages kept after it. */
+  folded?: number;
+  kept?: number;
 }
 
 /**
@@ -480,6 +490,11 @@ export class UserAgent {
       },
     });
     return new UserAgent(agent, sessionId, sFile, budget, () => { failures.clear(); toolCount.value = 0; modelSteps.value = 0; delete budget.halt; delete budget.planAccepted; });
+  }
+
+  /** The session as its model sees it now, read from the session file. */
+  context(): SessionContext {
+    return sessionContext(this.sFile, this.agent.state.model);
   }
 
   /** The model this session runs on, for one-shot calls made on its behalf. */
@@ -848,121 +863,49 @@ export class UserAgent {
   }
 }
 
+const ZERO_USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+
 /**
- * Reconstruct prior dialogue from run records. When a run recorded tool args
+ * Reconstruct one run's dialogue from its record. When a run recorded tool args
  * we rebuild the REAL sequence (user → assistant toolCalls → toolResults →
  * final assistant text) so the model remembers what its tools actually
  * returned. Older records without args fall back to text pairs with a
  * compact tool note.
  */
-function loadSessionDialogue(sFile: string, model: { api: string; provider: string; id: string }): AgentMessage[] {
-  try {
-    let out: AgentMessage[] = [];
-    const zeroUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-    for (const line of fs.readFileSync(sFile, "utf8").split("\n")) {
-      if (!line.trim()) continue;
-      let r: SessionRunRecord | SessionCompactRecord;
-      try {
-        r = JSON.parse(line) as SessionRunRecord | SessionCompactRecord;
-      } catch {
+function runMessages(r: SessionRunRecord, model: { api: string; provider: string; id: string }): AgentMessage[] {
+  const out: AgentMessage[] = [];
+  if (Array.isArray(r.native) && r.native.length) {
+    for (const message of r.native) {
+      if (message.role === "assistant" && (message.provider !== model.provider || message.api !== model.api || message.model !== model.id)) {
+        const content = message.content.filter(block => block.type !== "thinking").map(block => {
+          if (block.type === "text") return { type: "text" as const, text: block.text };
+          if (block.type === "toolCall") return { type: "toolCall" as const, id: block.id, name: block.name, arguments: block.arguments };
+          return block;
+        });
+        out.push({ ...message, content: content.length ? content : [{ type: "text", text: "" }] });
+      } else out.push(message);
+    }
+    return out;
+  }
+  out.push({ role: "user", content: r.user, timestamp: r.at } as AgentMessage);
+  // per-turn reconstruction (newer records): preserves interleaved
+  // text/thinking phases exactly as the run happened
+  if (r.turns && r.turns.length > 0) {
+    for (const [ti, turn] of r.turns.entries()) {
+      if (turn.user !== undefined) {
+        out.push({ role: "user", content: turn.user, timestamp: r.at } as AgentMessage);
         continue;
       }
-      // compact marker: the model's context RESTARTS from the summary —
-      // everything recorded before stays in the file for the UI only.
-      // AUTO compacts keep a user/assistant pair (mid-conversation fold);
-      // manual /compact folds to the summary alone — no fake user turn.
-      if (r.type === "compact") {
-        out = [];
-        if (r.summary) {
-          if ((r as { auto?: boolean }).auto) {
-            out.push({ role: "user", content: "Session compacted — continue from the summary.", timestamp: r.at } as AgentMessage);
-          }
-          out.push({
-            role: "assistant",
-            content: [{ type: "text", text: r.summary }],
-            api: model.api as never,
-            provider: model.provider,
-            model: model.id,
-            usage: zeroUsage,
-            stopReason: "stop",
-            timestamp: r.at,
-          } as unknown as AgentMessage);
-        }
-        continue;
-      }
-      if (r.type !== "run" || !r.user) continue;
-      if (Array.isArray(r.native) && r.native.length) {
-        for (const message of r.native) {
-          if (message.role === "assistant" && (message.provider !== model.provider || message.api !== model.api || message.model !== model.id)) {
-            const content = message.content.filter(block => block.type !== "thinking").map(block => {
-              if (block.type === "text") return { type: "text" as const, text: block.text };
-              if (block.type === "toolCall") return { type: "toolCall" as const, id: block.id, name: block.name, arguments: block.arguments };
-              return block;
-            });
-            out.push({ ...message, content: content.length ? content : [{ type: "text", text: "" }] });
-          } else out.push(message);
-        }
-        continue;
-      }
-      out.push({ role: "user", content: r.user, timestamp: r.at } as AgentMessage);
-      const zeroUsageTurn = zeroUsage;
-      // per-turn reconstruction (newer records): preserves interleaved
-      // text/thinking phases exactly as the run happened
-      if (r.turns && r.turns.length > 0) {
-        for (const [ti, turn] of r.turns.entries()) {
-          if (turn.user !== undefined) {
-            out.push({ role: "user", content: turn.user, timestamp: r.at } as AgentMessage);
-            continue;
-          }
-          const withArgs = (turn.tools ?? []).filter((t) => t && t.name && t.args && Object.keys(t.args).length > 0);
-          if (withArgs.length > 0) {
-            const callIds = withArgs.map((_t, i) => `hist_${r.at}_${ti}_${i}`);
-            out.push({
-              role: "assistant",
-              content: withArgs.map((t, i) => ({ type: "toolCall" as const, id: callIds[i]!, name: t.name, arguments: t.args })),
-              api: model.api as never,
-              provider: model.provider,
-              model: model.id,
-              usage: zeroUsageTurn,
-              stopReason: "toolUse",
-              timestamp: r.at,
-            } as unknown as AgentMessage);
-            for (const [i, t] of withArgs.entries()) {
-              out.push({
-                role: "toolResult",
-                toolCallId: callIds[i]!,
-                toolName: t.name,
-                content: [{ type: "text", text: t.summary ?? "(no output recorded)" }],
-                isError: !t.ok,
-              } as unknown as AgentMessage);
-            }
-          }
-          if (turn.text) {
-            out.push({
-              role: "assistant",
-              content: [{ type: "text", text: turn.text }],
-              api: model.api as never,
-              provider: model.provider,
-              model: model.id,
-              usage: zeroUsageTurn,
-              stopReason: "stop",
-              timestamp: r.at,
-            } as unknown as AgentMessage);
-          }
-        }
-        continue;
-      }
-      const tools = (r.tools ?? []).filter((t) => t && t.name);
-      const withArgs = tools.filter((t) => t.args && Object.keys(t.args).length > 0);
+      const withArgs = (turn.tools ?? []).filter((t) => t && t.name && t.args && Object.keys(t.args).length > 0);
       if (withArgs.length > 0) {
-        const callIds = withArgs.map((_t, i) => `hist_${r.at}_${i}`);
+        const callIds = withArgs.map((_t, i) => `hist_${r.at}_${ti}_${i}`);
         out.push({
           role: "assistant",
           content: withArgs.map((t, i) => ({ type: "toolCall" as const, id: callIds[i]!, name: t.name, arguments: t.args })),
           api: model.api as never,
           provider: model.provider,
           model: model.id,
-          usage: zeroUsage,
+          usage: ZERO_USAGE,
           stopReason: "toolUse",
           timestamp: r.at,
         } as unknown as AgentMessage);
@@ -976,30 +919,122 @@ function loadSessionDialogue(sFile: string, model: { api: string; provider: stri
           } as unknown as AgentMessage);
         }
       }
-      if (r.assistant) {
-        let text = r.assistant;
-        // legacy records: fold a compact tool note into the text so the model
-        // at least knows what it did
-        if (tools.length > 0 && withArgs.length === 0) {
-          const note = tools.map((t) => `- ${t.name}${t.ok ? "" : " (failed)"}: ${(t.summary ?? "").slice(0, 120)}`).join("\n");
-          text += `\n\n[tools used in this turn]\n${note}`;
-        }
+      if (turn.text) {
         out.push({
           role: "assistant",
-          content: [{ type: "text", text }],
+          content: [{ type: "text", text: turn.text }],
           api: model.api as never,
           provider: model.provider,
           model: model.id,
-          usage: zeroUsage,
+          usage: ZERO_USAGE,
           stopReason: "stop",
           timestamp: r.at,
         } as unknown as AgentMessage);
       }
     }
     return out;
-  } catch {
-    return [];
   }
+  const tools = (r.tools ?? []).filter((t) => t && t.name);
+  const withArgs = tools.filter((t) => t.args && Object.keys(t.args).length > 0);
+  if (withArgs.length > 0) {
+    const callIds = withArgs.map((_t, i) => `hist_${r.at}_${i}`);
+    out.push({
+      role: "assistant",
+      content: withArgs.map((t, i) => ({ type: "toolCall" as const, id: callIds[i]!, name: t.name, arguments: t.args })),
+      api: model.api as never,
+      provider: model.provider,
+      model: model.id,
+      usage: ZERO_USAGE,
+      stopReason: "toolUse",
+      timestamp: r.at,
+    } as unknown as AgentMessage);
+    for (const [i, t] of withArgs.entries()) {
+      out.push({
+        role: "toolResult",
+        toolCallId: callIds[i]!,
+        toolName: t.name,
+        content: [{ type: "text", text: t.summary ?? "(no output recorded)" }],
+        isError: !t.ok,
+      } as unknown as AgentMessage);
+    }
+  }
+  if (r.assistant) {
+    let text = r.assistant;
+    // legacy records: fold a compact tool note into the text so the model
+    // at least knows what it did
+    if (tools.length > 0 && withArgs.length === 0) {
+      const note = tools.map((t) => `- ${t.name}${t.ok ? "" : " (failed)"}: ${(t.summary ?? "").slice(0, 120)}`).join("\n");
+      text += `\n\n[tools used in this turn]\n${note}`;
+    }
+    out.push({
+      role: "assistant",
+      content: [{ type: "text", text }],
+      api: model.api as never,
+      provider: model.provider,
+      model: model.id,
+      usage: ZERO_USAGE,
+      stopReason: "stop",
+      timestamp: r.at,
+    } as unknown as AgentMessage);
+  }
+  return out;
+}
+
+/** What the model sees of a session, and where each message came from. */
+export interface SessionContext {
+  messages: AgentMessage[];
+  /** The run (its `at`) and the place in that run each message has; null for
+   *  the summary a compaction left. A compaction names its first kept
+   *  message this way. */
+  origins: ({ at: number; index: number } | null)[];
+}
+
+export function sessionContext(sFile: string, model: { api: string; provider: string; id: string }): SessionContext {
+  const messages: AgentMessage[] = [];
+  const origins: SessionContext["origins"] = [];
+  try {
+    for (const line of fs.readFileSync(sFile, "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      let r: SessionRunRecord | SessionCompactRecord;
+      try {
+        r = JSON.parse(line) as SessionRunRecord | SessionCompactRecord;
+      } catch {
+        continue;
+      }
+      // compact marker: the context restarts from the summary, followed by
+      // the messages the marker kept. Everything else recorded before it
+      // stays in the file for the UI only.
+      if (r.type === "compact") {
+        const keep = r.keep;
+        const from = keep ? origins.findIndex((o) => o?.at === keep.at && o.index === keep.index) : -1;
+        // a provider reading taken with the folded history in front of it
+        // says nothing about the smaller context these messages are now in
+        const tail = from < 0 ? [] : messages.slice(from).map((m) => (m.role === "assistant" ? ({ ...m, usage: ZERO_USAGE } as AgentMessage) : m));
+        const tailOrigins = from < 0 ? [] : origins.slice(from);
+        messages.length = 0;
+        origins.length = 0;
+        if (r.summary) {
+          messages.push({ role: "user", content: summaryText(r.summary, r.files), timestamp: r.at } as AgentMessage);
+          origins.push(null);
+        }
+        messages.push(...tail);
+        origins.push(...tailOrigins);
+        continue;
+      }
+      if (r.type !== "run" || !r.user) continue;
+      for (const [index, message] of runMessages(r, model).entries()) {
+        messages.push(message);
+        origins.push({ at: r.at, index });
+      }
+    }
+  } catch {
+    return { messages: [], origins: [] };
+  }
+  return { messages, origins };
+}
+
+function loadSessionDialogue(sFile: string, model: { api: string; provider: string; id: string }): AgentMessage[] {
+  return sessionContext(sFile, model).messages;
 }
 
 /** pi-ai's overflow patterns (minus the bodiless-status guess), plus wordings
