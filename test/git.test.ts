@@ -200,3 +200,27 @@ it("committing named files preserves unrelated staged and unstaged edits", async
   expect(row).toEqual(["other.json", 1, 2, 3]);
   expect((await log(dir))[0]!.author).toBe("alice (via agent)");
 });
+
+it("commits many written paths at once, leaving out ignored and absent ones", async () => {
+  await initRepo(dir);
+  fs.writeFileSync(path.join(dir, ".gitignore"), "*.tmp\n");
+  await commitAll(dir, "alice", "initial");
+  const written: string[] = [];
+  for (let i = 0; i < 300; i++) {
+    const rel = `apps/rp/data/chats/c${i}.jsonl`;
+    fs.mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), String(i));
+    written.push(rel);
+  }
+  fs.writeFileSync(path.join(dir, "scratch.tmp"), "x");
+  fs.unlinkSync(path.join(dir, "card.json"));
+  const oid = await commitWrittenPaths(dir, "alice", "import", [...written, "card.json", "scratch.tmp", "never/was.json"]);
+  expect(oid).toBeTruthy();
+  const files = await isomorphicGit.listFiles({ fs, dir, ref: oid! });
+  expect(files.filter(f => f.includes("/chats/"))).toHaveLength(300);
+  expect(files).not.toContain("card.json");
+  expect(files).not.toContain("scratch.tmp");
+  expect(new TextDecoder().decode((await isomorphicGit.readBlob({ fs, dir, oid: oid!, filepath: "apps/rp/data/chats/c7.jsonl" })).blob)).toBe("7");
+  expect(await changedPaths(dir)).toEqual([]);
+  expect(await commitWrittenPaths(dir, "alice", "again", written)).toBeNull();
+});

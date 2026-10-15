@@ -10,12 +10,20 @@ export const IMPORT_MAX_BYTES = 32 * 1024 ** 3;
 const MAX_EXPANDED = 256 * 1024 ** 3;
 const MAX_ENTRY = 64 * 1024 ** 2;
 const BATCH_BYTES = 8 * 1024 ** 2;
-export interface ImportState { id: string; name: string; size: number; uploaded: number; status: "uploading" | "indexing" | "ready" | "failed"; files: number; expanded: number; cursor: number; error?: string; collections: string[]; collectionCounts?: Record<string, number>; lastBatch?: { from: number; cursor: number; total: number; done: boolean; summary: unknown }; counts?: Record<string, number>; errors?: string[]; updatedAt: number }
-interface Row { seq: number; name: string; size: number; entry: string }
+const BATCH_ENTRIES = 128;
+/** `include` limits the import to some collections; entries outside them are
+ *  never read. `selected` and `processed` count entries inside them, so
+ *  progress means something when most of the archive is skipped. `run` is the
+ *  engine-driven import: while `running`, the engine works through the
+ *  batches itself and resumes after a restart. */
+export interface ImportState { id: string; name: string; size: number; uploaded: number; status: "uploading" | "indexing" | "ready" | "failed" | "done"; files: number; expanded: number; cursor: number; error?: string; collections: string[]; collectionCounts?: Record<string, number>; include?: string[]; selected?: number; processed?: number; run?: { route: string; finish: string }; running?: boolean; runError?: string; lastBatch?: { from: number; cursor: number; total: number; done: boolean; summary: unknown }; counts?: Record<string, number>; errors?: string[]; updatedAt: number }
+interface Row { seq: number; name: string; size: number; entry: string; ordinal: number }
 const active = new Set<string>();
 const zipOpen = (file: string): Promise<ZipFile> => new Promise((resolve, reject) => yauzl.open(file, { lazyEntries: true, autoClose: false }, (err, zip) => err || !zip ? reject(err ?? new Error("invalid archive")) : resolve(zip)));
 
-/** Uploads live outside app data. Archive names are metadata, never filesystem paths. */
+/** Uploads live outside app data. Archive names are metadata, never filesystem paths.
+ *  Entries import collection by collection, and inside one a folder's own
+ *  files come before its subfolders. */
 export class AppImports {
   constructor(private root: string, private dataRoot?: string) { fs.mkdirSync(root, { recursive: true }); }
   private dir(id: string): string {
@@ -23,6 +31,13 @@ export class AppImports {
     const dir = path.join(this.root, id);
     if (fs.lstatSync(dir).isSymbolicLink()) throw new Error("invalid import directory");
     return dir;
+  }
+  list(): ImportState[] {
+    const out: ImportState[] = [];
+    for (const id of fs.readdirSync(this.root)) {
+      try { out.push(this.state(id)); } catch { /* unrelated or incomplete directory */ }
+    }
+    return out.sort((a, b) => b.updatedAt - a.updatedAt);
   }
   state(id: string): ImportState {
     const state = JSON.parse(fs.readFileSync(path.join(this.dir(id), "state.json"), "utf8")) as ImportState;
@@ -97,13 +112,13 @@ export class AppImports {
           });
           zip!.readEntry();
         });
-        db.exec("COMMIT; CREATE INDEX IF NOT EXISTS ordered ON entries(phase, name); DROP TABLE IF EXISTS ordered_entries; CREATE TABLE ordered_entries AS SELECT ROW_NUMBER() OVER (ORDER BY phase,name) AS ordinal, * FROM entries; CREATE UNIQUE INDEX ordinal_index ON ordered_entries(ordinal);");
+        db.exec("COMMIT; CREATE INDEX IF NOT EXISTS ordered ON entries(phase, name); DROP TABLE IF EXISTS ordered_entries; CREATE TABLE ordered_entries AS SELECT ROW_NUMBER() OVER (ORDER BY phase,LENGTH(name)-LENGTH(REPLACE(name,'/','')),name) AS ordinal, * FROM entries; CREATE UNIQUE INDEX ordinal_index ON ordered_entries(ordinal);");
         state.status = "ready";
       } catch (err) { state.status = "failed"; state.error = err instanceof Error ? err.message : String(err); }
       finally { zip?.close(); db.close(); this.save(state); active.delete(dir); }
     })();
   }
-  async batch(id: string, cursor: number): Promise<{ entries: Record<string, unknown>; next: number; total: number }> {
+  async batch(id: string, cursor: number): Promise<{ entries: Record<string, unknown>; next: number; used: number; total: number }> {
     const state = this.state(id);
     if (state.status !== "ready" || cursor !== state.cursor) throw new Error("import is not ready at this cursor");
     const dir = this.dir(id);
@@ -111,7 +126,7 @@ export class AppImports {
     const zip = await zipOpen(path.join(dir, "archive.zip"));
     zip.on("error", () => undefined);
     try {
-      const rows = db.query<Row, [number]>("SELECT seq,name,size,entry FROM ordered_entries WHERE ordinal>? ORDER BY ordinal LIMIT 32").all(cursor);
+      const rows = db.query<Row, [number]>(`SELECT seq,name,size,entry,ordinal FROM ordered_entries WHERE ordinal>?${this.phaseFilter(state)} ORDER BY ordinal LIMIT ${BATCH_ENTRIES}`).all(cursor);
       const entries: Record<string, unknown> = {};
       let size = 0; let used = 0;
       const read = async (row: Row): Promise<unknown> => {
@@ -125,9 +140,11 @@ export class AppImports {
         const data = Buffer.concat(chunks);
         return /\.(json|jsonl|txt|md|js|css|html|yml|yaml|csv)$/i.test(row.name) ? data.toString("utf8") : { __b64__: true, base64: data.toString("base64"), size: data.length };
       };
+      let next = rows.length < BATCH_ENTRIES ? state.files : cursor;
       for (const row of rows) {
-        if (used && size + row.size > BATCH_BYTES) break;
+        if (used && size + row.size > BATCH_BYTES) { next = rows[used - 1]!.ordinal; break; }
         entries[row.name] = await read(row); size += row.size; used++;
+        if (rows.length === BATCH_ENTRIES) next = row.ordinal;
         if (/(^|\/)card\.json$/i.test(row.name) && typeof entries[row.name] === "string") {
           const card = JSON.parse(entries[row.name] as string) as { assets?: { uri?: string }[]; data?: { assets?: { uri?: string }[] } };
           let assetBytes = row.size;
@@ -148,8 +165,54 @@ export class AppImports {
           if (side) entries[side.name] = await read(side);
         }
       }
-      return { entries, next: cursor + used, total: state.files };
+      return { entries, next, used, total: state.files };
     } finally { zip.close(); db.close(); }
+  }
+  /** SQL condition keeping only the phases of the included collections. */
+  private phaseFilter(state: ImportState): string {
+    if (!state.include) return "";
+    const phases = state.include.map((name) => state.collections.indexOf(name)).filter((phase) => phase >= 0);
+    return ` AND phase IN (${phases.join(",") || "-1"})`;
+  }
+  /** Hands the batches to the engine. `include` can only be set before the
+   *  first batch: changing it later would leave the counts meaningless. */
+  start(id: string, run: { route: string; finish: string }, include?: string[]): ImportState {
+    const state = this.state(id);
+    if (state.status !== "ready") throw new Error("import is not ready");
+    if (include && state.processed === undefined && state.cursor === 0) {
+      if (include.some((name) => !state.collections.includes(name))) throw new Error("unknown collection");
+      state.include = include;
+    }
+    if (state.processed === undefined) {
+      const db = new Database(path.join(this.dir(id), "index.sqlite"), { readonly: true });
+      try { state.selected = db.query<{ n: number }, []>(`SELECT COUNT(*) AS n FROM ordered_entries WHERE 1${this.phaseFilter(state)}`).get()?.n ?? 0; }
+      finally { db.close(); }
+      state.processed = 0;
+    }
+    state.run = run;
+    state.running = true;
+    delete state.runError;
+    this.save(state);
+    return state;
+  }
+  pause(id: string, error?: string): ImportState {
+    const state = this.state(id);
+    state.running = false;
+    if (error) state.runError = error;
+    this.save(state);
+    return state;
+  }
+  /** The archive and its index are the bulk of the disk an import holds; the
+   *  state stays until the app has shown the result and removes it. */
+  complete(id: string): ImportState {
+    const state = this.state(id);
+    state.status = "done";
+    state.running = false;
+    this.save(state);
+    const dir = this.dir(id);
+    for (const name of ["archive.zip", "index.sqlite"]) fs.rmSync(path.join(dir, name), { force: true });
+    fs.rmSync(this.transactionDir(id), { recursive: true, force: true });
+    return state;
   }
   transactionDir(id: string): string { return path.join(this.dir(id), "transaction"); }
   recover(id: string, dataRoot: string): void {
@@ -195,9 +258,10 @@ export class AppImports {
     try { return db.query<{ name: string }, []>("SELECT name FROM written_paths").all().map((row) => row.name); }
     finally { db.close(); }
   }
-  advance(id: string, from: number, cursor: number, summary: unknown): void {
+  advance(id: string, from: number, cursor: number, summary: unknown, used = 0): void {
     const state = this.state(id);
     state.cursor = cursor;
+    if (state.processed !== undefined) state.processed += used;
     state.lastBatch = { from, cursor, total: state.files, done: cursor >= state.files, summary };
     state.counts ??= {};
     for (const [key, value] of Object.entries((summary ?? {}) as Record<string, unknown>)) if (Array.isArray(value)) state.counts[key] = (state.counts[key] ?? 0) + value.length;

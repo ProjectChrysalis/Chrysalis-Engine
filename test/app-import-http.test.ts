@@ -14,6 +14,7 @@ import { defaultInstanceConfig } from "../src/config.js";
 import { invalidatePluginCache } from "../src/plugins/runtime.js";
 interface FixtureResponse {
   id: string; status: string; files: number; cursor: number; counts: Record<string, number>;
+  running?: boolean; selected?: number; processed?: number; errors?: string[]; imports: { id: string; status: string }[];
   characters: { id: string; name: string; avatar: string; description: string }[];
   items: { linkedCharacterIds: string[] }[];
   chats: { characterId: string }[];
@@ -39,6 +40,7 @@ export function handleRoute(req, host) {
   if (req.path === "/import/finish") { fs.remove("__lookup/" + req.body.importId); return { status: 200, json: { ok: true } }; }
   const result = { characters: [], books: [], chats: [], errors: [] };
   for (const [name, value] of Object.entries(host.zip.entries())) {
+    if (name.includes("/backgrounds/")) result.errors.push("read a skipped entry: " + name);
     if (name.includes("/characters/")) {
       if (!value.__image__ || value.base64) throw new Error("image bytes exposed to guest");
       const image = host.zip.image(name);
@@ -57,14 +59,15 @@ export function handleRoute(req, host) {
   }
   return { status: 200, json: result };
 }`);
-  const app = buildApp({ users, sessions: new SessionService(root), config: defaultInstanceConfig(), dataDir: root, bus: new EventBus() });
+  let app = buildApp({ users, sessions: new SessionService(root), config: defaultInstanceConfig(), dataDir: root, bus: new EventBus() });
+  const restart = () => { app = buildApp({ users, sessions: new SessionService(root), config: defaultInstanceConfig(), dataDir: root, bus: new EventBus() }); };
   const request = async (url: string, body?: unknown, method = body === undefined ? "GET" : "POST") => {
     const response = await app.request("/v1/apps/roleplay" + url, { method, headers: { authorization: `Bearer ${token}`, "x-chrysalis-app": "roleplay", "content-type": body instanceof Uint8Array ? "application/octet-stream" : "application/json" }, body: body === undefined ? undefined : body instanceof Uint8Array ? body : JSON.stringify(body) });
     const result = await response.json() as FixtureResponse;
     expect(response.status, JSON.stringify(result)).toBe(200);
     return result;
   };
-  return { root, p, dir, app, token, request };
+  return { root, p, dir, get app() { return app; }, token, request, restart };
 }
 const png = (name: string) => {
   const image = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jcbkAAAAASUVORK5CYII=", "base64");
@@ -105,4 +108,36 @@ it("imports through the HTTP bridge namespace, preserves cross-batch links, and 
   const denied = await app.request(hero.avatar, { headers: { authorization: `Bearer ${token}`, "x-chrysalis-app": "another-app" } }); expect(denied.status).toBe(403);
   await request(`/__imports/${state.id}/finish`, { route: "/import/finish" });
   await request(`/__imports/${state.id}`, undefined, "DELETE");
+}, 60_000);
+
+it("runs an import engine-side over the chosen collections, survives a restart, and frees the archive", async () => {
+  const { p, request, restart } = fixture();
+  const files: Record<string, Uint8Array> = Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`user/characters/hero-${i}.png`, png("Hero " + i)]));
+  for (let i = 0; i < 50; i++) files[`user/backgrounds/bg-${i}.png`] = png("Background " + i);
+  files["user/chats/Hero 0/chat.jsonl"] = strToU8('{"user_name":"You","character_name":"Hero 0"}\n{"mes":"hello","is_user":true,"name":"You"}\n');
+  const archive = zipSync(files);
+  const state = await request("/__imports/new", { name: "library.zip", size: archive.length, collections: ["characters/", "chats/"] });
+  await request(`/__imports/${state.id}?offset=0`, archive, "PUT");
+  for (let n = 0; n < 100 && (await request(`/__imports/${state.id}`)).status === "indexing"; n++) await Bun.sleep(10);
+  const started = await request(`/__imports/${state.id}/run`, { route: "/import/zip", finish: "/import/finish", include: ["characters/"] });
+  expect(started.selected).toBe(300);
+  const paused = await request(`/__imports/${state.id}/stop`, {});
+  expect(paused.running).toBe(false);
+  expect(paused.status).toBe("ready");
+  expect(paused.processed).toBeLessThan(300);
+  // a run marked on disk resumes when a restarted engine is next asked about it
+  const file = path.join(path.dirname(p.auth), "app-imports", "roleplay", state.id, "state.json");
+  fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, "utf8")), running: true }));
+  restart();
+  expect((await request("/__imports/")).imports.map((item) => item.id)).toEqual([state.id]);
+  let done = started;
+  for (let n = 0; n < 500 && done.status !== "done"; n++) { await Bun.sleep(20); done = await request(`/__imports/${state.id}`); }
+  expect(done.status).toBe("done");
+  expect(done.processed).toBe(300);
+  expect(done.counts.characters).toBe(300);
+  expect(done.counts.chats ?? 0).toBe(0);
+  expect(done.errors ?? []).toEqual([]);
+  expect(fs.existsSync(path.join(path.dirname(file), "archive.zip"))).toBe(false);
+  await request(`/__imports/${state.id}`, undefined, "DELETE");
+  expect((await request("/__imports/")).imports).toEqual([]);
 }, 60_000);

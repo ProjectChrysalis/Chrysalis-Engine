@@ -236,17 +236,46 @@ export async function commitPaths(
 }
 
 /** Replace one tree entry without involving unrelated staged files. */
-async function replaceTreeFile(dir: string, oid: string | undefined, segments: string[], blob: string | null, mode = "100644"): Promise<string> {
+interface TreeChange { segments: string[]; filepath: string; blob: string | null; mode: string }
+
+/** Writes every change into the tree under `oid`, one tree write per folder
+ *  touched (a write per file rewrote a whole folder each time, which made a
+ *  large import's commit quadratic). A file in neither the tree nor on disk,
+ *  or new and ignored, is left out. Returns null for an empty tree. */
+async function applyTreeChanges(dir: string, oid: string | undefined, changes: TreeChange[], changed: string[]): Promise<string | null> {
   const entries = oid ? (await git.readTree({ fs, dir, oid })).tree : [];
-  const name = segments[0]!;
-  const previous = entries.find(entry => entry.path === name);
-  const next = entries.filter(entry => entry.path !== name);
-  if (segments.length > 1) {
+  const byName = new Map(entries.map(entry => [entry.path, entry]));
+  const groups = new Map<string, TreeChange[]>();
+  for (const change of changes) {
+    const name = change.segments[0]!;
+    const group = groups.get(name);
+    if (group) group.push(change); else groups.set(name, [change]);
+  }
+  let dirty = false;
+  for (const [name, group] of groups) {
+    const previous = byName.get(name);
+    const leaf = group.find(change => change.segments.length === 1);
+    if (leaf) {
+      if (leaf.blob) {
+        if (!previous && await git.isIgnored({ fs, dir, filepath: leaf.filepath })) continue;
+        if (previous?.oid === leaf.blob && previous.mode === leaf.mode) continue;
+        byName.set(name, { path: name, mode: leaf.mode, type: "blob", oid: leaf.blob });
+      } else {
+        if (!previous) continue;
+        byName.delete(name);
+      }
+      changed.push(leaf.filepath);
+      dirty = true;
+      continue;
+    }
     if (previous && previous.type !== "tree") throw new Error("File blocks a directory: " + name);
-    const child = await replaceTreeFile(dir, previous?.oid, segments.slice(1), blob, mode);
-    if ((await git.readTree({ fs, dir, oid: child })).tree.length) next.push({ path: name, mode: "040000", type: "tree", oid: child });
-  } else if (blob) next.push({ path: name, mode, type: "blob", oid: blob });
-  return git.writeTree({ fs, dir, tree: next });
+    const child = await applyTreeChanges(dir, previous?.oid, group.map(change => ({ ...change, segments: change.segments.slice(1) })), changed);
+    if (child === (previous?.oid ?? null)) continue;
+    if (child) byName.set(name, { path: name, mode: "040000", type: "tree", oid: child }); else byName.delete(name);
+    dirty = true;
+  }
+  if (!dirty) return oid ?? null;
+  return byName.size ? git.writeTree({ fs, dir, tree: [...byName.values()] }) : null;
 }
 
 /** Commit only the named paths; unrelated index entries keep their staging. */
@@ -255,26 +284,24 @@ export async function commitWrittenPaths(dir: string, username: string, message:
     await ensureRepo(dir);
     const head = await resolveHead(dir);
     const original = head === "0".repeat(40) ? undefined : (await git.readCommit({ fs, dir, oid: head })).commit.tree;
-    let tree = original;
-    const changed: string[] = [];
+    const changes: TreeChange[] = [];
     for (const raw of new Set(paths)) {
       const filepath = path.posix.normalize(raw.replaceAll("\\", "/"));
       const full = path.resolve(dir, filepath);
       if (!full.startsWith(path.resolve(dir) + path.sep) || gitBoundaryIgnored(filepath)) continue;
-      const state = await git.status({ fs, dir, filepath });
-      if (state === "absent" || state === "ignored") continue;
       const exists = fs.existsSync(full);
       if (exists && !fs.lstatSync(full).isFile()) continue;
       const blob = exists ? await git.writeBlob({ fs, dir, blob: fs.readFileSync(full) }) : null;
       const mode = exists && (fs.statSync(full).mode & 0o111) ? "100755" : "100644";
-      const updated = await replaceTreeFile(dir, tree, filepath.split("/"), blob, mode);
-      if (updated !== tree) { tree = updated; changed.push(filepath); }
+      changes.push({ segments: filepath.split("/"), filepath, blob, mode });
     }
-    if (!tree || tree === original) return null;
-    for (const filepath of changed) {
-      if (fs.existsSync(path.join(dir, filepath))) await git.add({ fs, dir, filepath });
-      else await git.remove({ fs, dir, filepath });
-    }
+    const changed: string[] = [];
+    const tree = await applyTreeChanges(dir, original, changes, changed) ?? await git.writeTree({ fs, dir, tree: [] });
+    if (!changed.length || tree === original) return null;
+    const kept = changed.filter(filepath => fs.existsSync(path.join(dir, filepath)));
+    if (kept.length) await git.add({ fs, dir, filepath: kept });
+    const keptSet = new Set(kept);
+    for (const filepath of changed) if (!keptSet.has(filepath)) await git.remove({ fs, dir, filepath });
     return commitWithReflog(dir, username, message, viaAgent, tree);
   });
 }

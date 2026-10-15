@@ -7,7 +7,7 @@ import { readAppContext, writeAppContext, availableSkills, discoverSkills, skill
  * Hono app + routes (SPEC §6). Thin handlers over services.
  */
 import { saveAttachment, MAX_ATTACHMENT_BYTES } from "../agent/attachments.js";
-import { AppImports, IMPORT_CHUNK_BYTES } from "../apps/imports.js";
+import { AppImports, IMPORT_CHUNK_BYTES, type ImportState } from "../apps/imports.js";
 import { abortable } from "../cancellation.js";
 import { Hono, type Context, type Next } from "hono";
 import { compress } from "hono/compress";
@@ -5056,19 +5056,94 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
     if (!/^[A-Za-z0-9_-]+$/.test(id) || !readApp(p.apps, id)) throw new Error("app not found");
     return new AppImports(path.join(path.dirname(p.auth), "app-imports", id), path.join(p.apps, id, "data"));
   };
+  const IMPORT_ROUTE = /^\/import\/[a-zA-Z0-9_/-]+$/;
+  /** One batch of an archive import: the app's route maps the entries, and
+   *  everything it wrote rolls back if it fails. */
+  const importBatch = async (u: UserRecord, appId: string, paths: UserPaths, imports: AppImports, id: string, cursor: number, route: string) => {
+    const state = imports.state(id);
+    const batch = await imports.batch(id, cursor);
+    const root = path.join(paths.apps, appId, "data");
+    const transaction = imports.begin(id, root);
+    try {
+      const result = await dispatchAppRoute(u, appId, "POST", route, {}, { importId: id, collections: state.collectionCounts, ...(state.include ? { include: state.include } : {}) }, batch.entries, transaction);
+      if (!result || result.status >= 400) throw new Error(typeof result?.payload === "object" ? (result.payload as { error?: string }).error ?? "import route failed" : "import route failed");
+      imports.recordWrites(id, result.fsWrites ?? []);
+      imports.advance(id, cursor, batch.next, result.payload, batch.used);
+      imports.commit(id);
+      return { cursor: batch.next, total: batch.total, done: batch.next >= batch.total, summary: result.payload, counts: imports.state(id).counts };
+    } catch (error) { imports.recover(id, root); throw error; }
+  };
+  const finishImport = async (u: UserRecord, appId: string, paths: UserPaths, imports: AppImports, id: string, route: string) => {
+    const state = imports.state(id);
+    if (state.status !== "ready" || state.cursor !== state.files) throw new Error("import is not complete");
+    const result = await dispatchAppRoute(u, appId, "POST", route, {}, { importId: id }, {});
+    if (!result || result.status >= 400) throw new Error(typeof result?.payload === "object" ? (result.payload as { error?: string }).error ?? "import cleanup failed" : "import cleanup failed");
+    await git.commitWrittenPaths(paths.root, u.username, `app(${appId}): import ${state.name}`, imports.writtenPaths(id));
+  };
+  /** Engine-driven imports, so closing or reloading the page does not stop
+   *  one. A run marked running on disk picks up again the next time anyone
+   *  asks about it, which is how it survives an engine restart. */
+  const importRuns = new Map<string, { stop: boolean; done: Promise<void> }>();
+  const runImport = (u: UserRecord, appId: string, paths: UserPaths, imports: AppImports, id: string) => {
+    const key = `${u.username}/${appId}/${id}`;
+    if (importRuns.has(key)) return;
+    const lock = `${u.username}/${appId}`;
+    const run = { stop: false, done: Promise.resolve() };
+    importRuns.set(key, run);
+    run.done = (async () => {
+      try {
+        for (;;) {
+          const state = imports.state(id);
+          if (run.stop) { imports.pause(id); return; }
+          if (!state.running || !state.run || state.status !== "ready") return;
+          if (importLocks.has(lock)) { await Bun.sleep(100); continue; }
+          importLocks.add(lock);
+          try {
+            if (state.cursor < state.files) await importBatch(u, appId, paths, imports, id, state.cursor, state.run.route);
+            else { await finishImport(u, appId, paths, imports, id, state.run.finish); imports.complete(id); return; }
+          } finally { importLocks.delete(lock); }
+        }
+      } catch (err) {
+        try { imports.pause(id, err instanceof Error ? err.message : String(err)); } catch { /* removed meanwhile */ }
+      } finally { importRuns.delete(key); }
+    })();
+  };
+  const stopImport = async (u: UserRecord, appId: string, id: string) => {
+    const run = importRuns.get(`${u.username}/${appId}/${id}`);
+    if (!run) return false;
+    run.stop = true;
+    await run.done;
+    return true;
+  };
   app.all("/v1/apps/:appId/__imports/*", async (c) => {
     const parts = c.req.path.split("/__imports/")[1]?.split("/") ?? [];
     const id = parts[0] ?? "";
     const op = parts[1] ?? "";
-    const lock = `${c.get("user").username}/${c.req.param("appId")}`;
+    const u = c.get("user");
+    const appId = c.req.param("appId");
+    const lock = `${u.username}/${appId}`;
     try {
       const imports = importsFor(c);
+      const resume = (state: ImportState) => { if (state.running && state.run && state.status === "ready") runImport(u, appId, c.get("paths"), imports, state.id); return state; };
       if (id === "new" && c.req.method === "POST") {
         const body = await c.req.json<{ name: string; size: number; collections?: string[] }>();
         if (typeof body.name !== "string" || !Array.isArray(body.collections ?? [])) throw new Error("invalid import request");
         return c.json(imports.create(body.name, body.size, body.collections ?? []));
       }
-      if (c.req.method === "GET" && !op) return c.json(imports.state(id));
+      if (c.req.method === "GET" && !id) return c.json({ imports: imports.list().map(resume) });
+      if (c.req.method === "GET" && !op) return c.json(resume(imports.state(id)));
+      if (c.req.method === "POST" && op === "run") {
+        const body = await c.req.json<{ route: string; finish: string; include?: string[] }>();
+        if (!IMPORT_ROUTE.test(body.route) || !IMPORT_ROUTE.test(body.finish) || (body.include !== undefined && (!Array.isArray(body.include) || body.include.some((v) => typeof v !== "string")))) throw new Error("invalid run request");
+        const state = imports.start(id, { route: body.route, finish: body.finish }, body.include);
+        runImport(u, appId, c.get("paths"), imports, id);
+        return c.json(state);
+      }
+      if (c.req.method === "POST" && op === "stop") {
+        if (!(await stopImport(u, appId, id))) imports.pause(id);
+        return c.json(imports.state(id));
+      }
+      if (c.req.method === "DELETE" && !op) await stopImport(u, appId, id);
       if (importLocks.has(lock)) return c.json({ error: "import is busy" }, 409);
       importLocks.add(lock);
       try {
@@ -5079,31 +5154,18 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
           return c.json(imports.append(id, Number(c.req.query("offset")), body.bytes));
         }
         if (c.req.method === "POST" && op === "finish") {
-          const state = imports.state(id);
-          if (state.status !== "ready" || state.cursor !== state.files) throw new Error("import is not complete");
           const body = await c.req.json<{ route: string }>();
-          if (!/^\/import\/[a-zA-Z0-9_/-]+$/.test(body.route)) throw new Error("invalid finish route");
-          const result = await dispatchAppRoute(c.get("user"), c.req.param("appId"), "POST", body.route, {}, { importId: id }, {});
-          if (!result || result.status >= 400) throw new Error(typeof result?.payload === "object" ? (result.payload as { error?: string }).error ?? "import cleanup failed" : "import cleanup failed");
-          await git.commitWrittenPaths(c.get("paths").root, c.get("user").username, `app(${c.req.param("appId")}): import ${state.name}`, imports.writtenPaths(id));
+          if (!IMPORT_ROUTE.test(body.route)) throw new Error("invalid finish route");
+          await finishImport(u, appId, c.get("paths"), imports, id, body.route);
           return c.json({ ok: true });
         }
         if (c.req.method === "POST" && op === "batch") {
           const body = await c.req.json<{ cursor: number; route: string }>();
-          if (!Number.isSafeInteger(body.cursor) || body.cursor < 0 || !/^\/import\/[a-zA-Z0-9_/-]+$/.test(body.route)) throw new Error("invalid batch request");
+          if (!Number.isSafeInteger(body.cursor) || body.cursor < 0 || !IMPORT_ROUTE.test(body.route)) throw new Error("invalid batch request");
           const state = imports.state(id);
           if (state.lastBatch?.from === body.cursor) { const { from: _from, ...result } = state.lastBatch; return c.json({ ...result, counts: state.counts }); }
-          const batch = await imports.batch(id, body.cursor);
-          const root = path.join(c.get("paths").apps, c.req.param("appId"), "data");
-          const transaction = imports.begin(id, root);
-          try {
-            const result = await dispatchAppRoute(c.get("user"), c.req.param("appId"), "POST", body.route, {}, { importId: id, collections: state.collectionCounts }, batch.entries, transaction);
-            if (!result || result.status >= 400) throw new Error(typeof result?.payload === "object" ? (result.payload as { error?: string }).error ?? "import route failed" : "import route failed");
-            imports.recordWrites(id, result.fsWrites ?? []);
-            imports.advance(id, body.cursor, batch.next, result.payload);
-            imports.commit(id);
-            return c.json({ cursor: batch.next, total: batch.total, done: batch.next >= batch.total, summary: result.payload, counts: imports.state(id).counts });
-          } catch (error) { imports.recover(id, root); throw error; }
+          if (state.running) throw new Error("the engine is running this import");
+          return c.json(await importBatch(u, appId, c.get("paths"), imports, id, body.cursor, body.route));
         }
         return c.json({ error: "unknown import operation" }, 404);
       } finally { importLocks.delete(lock); }
