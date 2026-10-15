@@ -4441,8 +4441,10 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     "default-src 'none'; " +
     `script-src ${origin} 'wasm-unsafe-eval'; ` +
     // a worker built from a blob runs under this same policy, so it reaches
-    // no network either
-    "worker-src blob:; " +
+    // no network either. Firefox checks the modules a worker imports against
+    // worker-src, not script-src; an opaque origin still cannot start a
+    // worker from a URL
+    `worker-src blob: ${origin}; ` +
     `style-src ${origin} 'unsafe-inline'; ` +
     `img-src ${origin} blob: data:; media-src ${origin} blob: data:; font-src ${origin} data:; ` +
     "connect-src 'none'; " +

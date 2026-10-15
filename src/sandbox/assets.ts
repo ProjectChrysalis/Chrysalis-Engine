@@ -93,7 +93,9 @@ export async function sandboxAsset(name: string): Promise<{ body: Buffer; type: 
 export function sandboxFrameCsp(origin: string): string {
   return (
     "sandbox allow-scripts; default-src 'none'; " +
-    `script-src ${origin}/client/sandbox/ 'wasm-unsafe-eval'; worker-src blob:; ` +
+    // Firefox checks the modules a worker imports against worker-src, not
+    // script-src; an opaque origin still cannot start a worker from a URL
+    `script-src ${origin}/client/sandbox/ 'wasm-unsafe-eval'; worker-src blob: ${origin}/client/sandbox/r/; ` +
     `connect-src ${origin}/client/sandbox/r/ ${origin}/v1/sandbox/proxy ${origin}/v1/sandbox/file; ` +
     "img-src 'none'; style-src 'none'; font-src 'none'; media-src 'none'; " +
     `frame-ancestors ${origin}; base-uri 'none'; form-action 'none'`

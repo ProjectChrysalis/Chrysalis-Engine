@@ -395,3 +395,16 @@ describe("portable sandbox path protections", () => {
     expect(sandboxPathAllowed("apps/a/data/card.json")).toBeNull();
   });
 });
+
+describe("sandbox frame policy", () => {
+  it("lets the runtime's worker import its own modules, and nothing else", async () => {
+    const { sandboxFrameCsp } = await import("../src/sandbox/assets.js");
+    const csp = sandboxFrameCsp("http://localhost:8788");
+    const directive = (name: string) => csp.split(";").map((d) => d.trim()).find((d) => d.startsWith(`${name} `)) ?? "";
+    // Firefox checks the modules a worker imports against worker-src
+    expect(directive("worker-src")).toBe("worker-src blob: http://localhost:8788/client/sandbox/r/");
+    expect(directive("script-src")).toBe("script-src http://localhost:8788/client/sandbox/ 'wasm-unsafe-eval'");
+    expect(directive("connect-src")).toBe("connect-src http://localhost:8788/client/sandbox/r/ http://localhost:8788/v1/sandbox/proxy http://localhost:8788/v1/sandbox/file");
+    expect(csp.startsWith("sandbox allow-scripts;")).toBe(true);
+  });
+});
