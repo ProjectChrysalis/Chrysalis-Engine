@@ -217,14 +217,34 @@ export const CURATED_PROVIDERS: Record<string, CustomProviderDef & { docsUrl: st
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
+/** The catalog model whose endpoint an unlisted ID should use. A provider
+ *  can serve several APIs (an aggregator puts one vendor's models on that
+ *  vendor's own protocol), so the first model says nothing: models from the
+ *  same vendor prefix decide, then whatever most of the catalog uses. */
+function endpointFor(catalog: readonly Model<Api>[], id: string): Model<Api> | undefined {
+  const slash = id.indexOf("/");
+  const siblings = slash > 0 ? catalog.filter((model) => model.id.startsWith(id.slice(0, slash + 1))) : [];
+  const pool = siblings.length ? siblings : catalog;
+  const counts = new Map<string, { model: Model<Api>; n: number }>();
+  for (const model of pool) {
+    const key = model.api + " " + model.baseUrl;
+    const seen = counts.get(key);
+    if (seen) seen.n++; else counts.set(key, { model, n: 1 });
+  }
+  let best: { model: Model<Api>; n: number } | undefined;
+  for (const entry of counts.values()) if (!best || entry.n > best.n) best = entry;
+  return best?.model;
+}
+
 export function withAdditionalModels(provider: Provider, additions: CustomModelDef[]): Provider {
   const getModels = (): Model<Api>[] => {
-    const catalog = new Map(provider.getModels().map((model) => [model.id, model]));
-    const defaults = provider.getModels()[0];
+    const listed = provider.getModels();
+    const catalog = new Map(listed.map((model) => [model.id, model]));
     for (const def of additions) {
       const known = catalog.get(def.id);
+      const defaults = known ? undefined : endpointFor(listed, def.id);
       const api = known?.api ?? defaults?.api ?? CURATED_PROVIDERS[provider.id]?.api;
-      const baseUrl = known?.baseUrl ?? provider.baseUrl ?? defaults?.baseUrl;
+      const baseUrl = known?.baseUrl ?? defaults?.baseUrl ?? provider.baseUrl;
       if (!api || !baseUrl) throw new Error(`provider "${provider.id}" has no model endpoint`);
       catalog.set(def.id, {
         ...(known ?? { id: def.id, name: def.id, provider: provider.id, api, baseUrl, input: ["text"], cost: ZERO_COST, reasoning: false, contextWindow: 0, maxTokens: 0 }),

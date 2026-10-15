@@ -47,6 +47,23 @@ describe("custom models on builtin connections", () => {
     expect(readAuth(paths).google?.key).toBe("test-key");
   });
 
+  it("puts an added ID on the endpoint its vendor's models use, not the first catalog entry's", async () => {
+    const paths = bootstrapUserDir(dataDir, "alice");
+    const models = [
+      { id: "google/unlisted-model", contextWindow: 1000000, maxTokens: 65536 },
+      { id: "anthropic/unlisted-model", contextWindow: 200000, maxTokens: 64000 },
+      { id: "no-vendor-model", contextWindow: 100000, maxTokens: 8000 },
+    ];
+    const parsed = validateConnectionInput({ name: "OpenRouter", providerId: "openrouter", key: "test-key", models });
+    if (!parsed.ok) throw new Error(parsed.error);
+    createConnection(paths, parsed.value);
+    const service = new UserModelService("alice", paths, defaultInstanceConfig());
+    const api = (id: string) => service.models.getModel("openrouter", id)?.api;
+    expect(api("google/unlisted-model")).toBe("openai-completions");
+    expect(api("anthropic/unlisted-model")).toBe("anthropic-messages");
+    expect(api("no-vendor-model")).toBe("openai-completions");
+  });
+
   it("rejects missing limits, duplicate IDs and invalid token values", () => {
     const input = { name: "Google", providerId: "google" };
     for (const models of [[{ id: custom.id }], [{ ...custom, maxTokens: Infinity }], [{ ...custom, contextWindow: 1.5 }], [{ ...custom, id: " " }], [custom, { ...custom }]]) {
