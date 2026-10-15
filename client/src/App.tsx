@@ -1768,7 +1768,7 @@ function AppDetail(props: {
           </p>
           <ul className="flex flex-col gap-0.5 font-mono text-11 text-ink-muted">
             {updates.conflicts.map((x) => (
-              <li key={x.path} className="truncate" title={x.path}>
+              <li key={x.path} className="shrink-0">
                 {x.path} <span className="text-ink-faint">({x.reason})</span>
               </li>
             ))}
