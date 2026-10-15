@@ -17,6 +17,7 @@ import { log } from "./logger.js";
 import { generationError, providerError, withGooglePromptFeedback } from "./providers/errors.js";
 import { supportsOpenRouterRouting, withOpenRouterRouting } from "./providers/openrouter-routing.js";
 import { llmLogRequest, llmLogResult, llmLogError, llmLogTool } from "./llm-logger.js";
+import { reasoningDetailsFetch } from "./providers/reasoning-details.js";
 import type { UserPaths } from "./paths.js";
 import type { InstanceConfig } from "./config.js";
 
@@ -301,6 +302,11 @@ export interface ResolvedPromptFormat {
 }
 
 const FORMAT_DETECT_TTL = 60_000;
+
+/** OpenAI-compatible streams go through the reasoning-signature repair. */
+const signedReasoningFetch = reasoningDetailsFetch();
+const streamFetch = (model: Model<Api>): { fetch?: typeof fetch } =>
+  model.api === "openai-completions" ? { fetch: signedReasoningFetch } : {};
 
 export class UserModelService {
   readonly models: MutableModels;
@@ -1077,6 +1083,7 @@ export class UserModelService {
       roundThinkEnd = 0;
       const stream = this.models.streamSimple(model, context, {
         ...cacheOptions,
+        ...streamFetch(model),
         ...(reasoningLevel && reasoningLevel !== "off" ? { reasoning: reasoningLevel } : {}),
         ...(req.thinkingBudget && req.thinkingBudget > 0 && reasoningLevel && reasoningLevel !== "off"
           ? ({ thinkingBudgets: { [BUDGET_KEY[reasoningLevel ?? ""] ?? "medium"]: req.thinkingBudget } } as never)
@@ -1155,6 +1162,7 @@ export class UserModelService {
     const context: Context = { systemPrompt, messages };
     const stream = this.models.streamSimple(model, context, {
       ...cacheOptions,
+      ...streamFetch(model),
       ...(req.signal ? ({ signal: req.signal } as never) : {}),
       sessionId,
       ...(sessionHeaders ? { headers: sessionHeaders } : {}),
@@ -1243,6 +1251,7 @@ export class UserModelService {
     const sessionHeaders = opencodeSessionHeaders(model, sid);
     const merged = {
       ...options,
+      ...streamFetch(model),
       sessionId: options?.sessionId ?? sid,
       ...(sessionHeaders ? { headers: { ...options?.headers, ...sessionHeaders } } : {}),
     };
