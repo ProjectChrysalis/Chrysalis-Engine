@@ -31,6 +31,7 @@
  *                               once after its code moved between versions
  */
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { PluginSandbox, sandbox, type SandboxResponse } from "./sandbox.js";
 import { JsonFieldStreamDecoder, normalizeStreamDecodeSpec } from "./stream-decode.js";
@@ -783,6 +784,75 @@ async function runPassRequests(
   return results;
 }
 
+// ---------- repeated reads ----------
+// A GET route whose result came only from the request, the plugin's store and
+// files it read is answered again from memory while each of those files and
+// folders stands as it did. The worker withholds the read list from any call
+// that wrote, asked for a model or the network, or read the clock or a random
+// number, so only those results are kept.
+
+function fileSignature(full: string): string {
+  try {
+    const s = fs.statSync(full);
+    return `${s.size}:${s.mtimeMs}:${s.ctimeMs}:${s.ino}`;
+  } catch {
+    return "-";
+  }
+}
+
+function dirSignature(full: string): string {
+  try {
+    return createHash("sha1").update(fs.readdirSync(full).sort().join("\0")).digest("hex");
+  } catch {
+    return "-";
+  }
+}
+
+const unchanged = (reads: [string, string][]): boolean =>
+  reads.every(([at, sig]) => (at.startsWith("d:") ? dirSignature(at.slice(2)) : fileSignature(at.slice(2))) === sig);
+
+interface RememberedRoute {
+  reads: [string, string][];
+  /** null: the plugin has no route for this request. */
+  res: PluginRouteResponse | null;
+  bytes: number;
+}
+
+/** Results kept across all users, oldest dropped first past this size. */
+const ROUTE_MEMO_BYTES = 128 * 1024 * 1024;
+const routeMemo = new Map<string, RememberedRoute>();
+let routeMemoBytes = 0;
+
+function forgetRoute(key: string): void {
+  const e = routeMemo.get(key);
+  if (!e) return;
+  routeMemo.delete(key);
+  routeMemoBytes -= e.bytes;
+}
+
+function recallRoute(key: string): { res: PluginRouteResponse | null } | null {
+  const e = routeMemo.get(key);
+  if (!e) return null;
+  if (!unchanged(e.reads)) {
+    forgetRoute(key);
+    return null;
+  }
+  routeMemo.delete(key);
+  routeMemo.set(key, e);
+  return { res: e.res && { ...e.res, fsWrites: [] } };
+}
+
+function rememberRoute(key: string, reads: [string, string][], res: PluginRouteResponse | null, bytes: number): void {
+  forgetRoute(key);
+  if (bytes > ROUTE_MEMO_BYTES / 2) return;
+  routeMemo.set(key, { reads, res, bytes });
+  routeMemoBytes += bytes;
+  for (const oldest of routeMemo.keys()) {
+    if (routeMemoBytes <= ROUTE_MEMO_BYTES) break;
+    forgetRoute(oldest);
+  }
+}
+
 export async function runPluginRoute(
   plugin: LoadedPlugin,
   req: PluginRouteRequest,
@@ -806,7 +876,9 @@ export async function runPluginRoute(
   // other plugin, and is disposed the moment the import is done.
   const zipBox = zipOk ? new PluginSandbox() : null;
   const box = zipBox ?? sandbox;
-  const zipLimits = zipOk ? { executionTimeoutMs: 120_000, memoryLimitBytes: 512 * 1024 * 1024 } : {};
+  // a route reads the app's data whole, so a large library needs longer than
+  // the 10 s a hook gets; it holds one pool worker meanwhile, not all of them
+  const limits = zipOk ? { executionTimeoutMs: 120_000, memoryLimitBytes: 512 * 1024 * 1024 } : { executionTimeoutMs: 30_000 };
   try {
     // ?siblingtools=1: expose the tool DEFINITIONS a wantsTools:true llm request
     // from this plugin would carry (defs only — execution stays host-side), so a
@@ -816,19 +888,32 @@ export async function runPluginRoute(
       const bridge = await deps.siblingTools(plugin);
       siblingToolDefs = bridge ? [...(bridge.tools ?? [])] : [];
     }
+    const reads = req.method === "GET" || req.method === "HEAD";
+    const fsOk = hasCapAny(plugin, "fs", deps) && !!plugin.fsRoot;
+    const storeOk = hasCapAny(plugin, "store", deps);
+    let storeSnapshot = snapshotOf(plugin, deps);
+    const memoKey = req.method === "GET" && !zipOk && !siblingToolDefs
+      ? createHash("sha1").update(JSON.stringify([plugin.id, plugin.dir, plugin.mtimeMs, plugin.source.length, plugin.fsRoot ?? null, fsOk, storeOk, caps, req.path, req.query, storeSnapshot])).digest("hex")
+      : null;
+    const remembered = memoKey ? recallRoute(memoKey) : null;
+    if (remembered) return remembered.res;
     for (let pass = 0; pass < MAX_ROUTE_PASSES; pass++) {
+      if (pass > 0) storeSnapshot = snapshotOf(plugin, deps);
       const r = await box.eval({
-        ...zipLimits,
+        ...limits,
         source: plugin.source,
         hook: "__route",
         // zipBase64 already rides the message for the host-side zip service —
         // keep the multi-MB string OUT of the guest's ctx (64MB heap)
         ctx: { ...req, zipBase64: undefined, zipEntries: undefined, fsTransaction: undefined, ...(stash ? { stash } : {}) } as unknown as Record<string, unknown>,
-        storeSnapshot: snapshotOf(plugin, deps),
-        storeAllowed: hasCapAny(plugin, "store", deps),
+        storeSnapshot,
+        storeAllowed: storeOk,
         llmAllowed: caps.llm,
-        fsAllowed: hasCapAny(plugin, "fs", deps) && !!plugin.fsRoot,
+        fsAllowed: fsOk,
         fsRoot: plugin.fsRoot ?? null,
+        // GETs read side by side; anything else has the app's folder alone
+        fsShared: reads,
+        trackReads: pass === 0 && !!memoKey,
         fsTransaction: req.fsTransaction,
         zipAllowed: zipOk,
         ...(zipOk ? { zipBase64: req.zipBase64, zipEntries: req.zipEntries } : {}),
@@ -837,7 +922,7 @@ export async function runPluginRoute(
         netResults: results.net,
         embedResults: results.embed,
         ...(siblingToolDefs ? { siblingToolDefs } : {}),
-        retryOnPoison: req.method === "GET" || req.method === "HEAD",
+        retryOnPoison: reads,
       });
       printLogs(plugin, r);
       for (const file of r.fsWrites ?? []) written.add(file);
@@ -856,6 +941,7 @@ export async function runPluginRoute(
       const pending = out?.__llmPending === true || passWants(r, caps);
       if (!pending || pass === MAX_ROUTE_PASSES - 1) {
         if (!out || typeof out !== "object" || (out.json === undefined && out.text === undefined && out.status === undefined)) {
+          if (memoKey && pass === 0 && r.reads) rememberRoute(memoKey, r.reads, null, 0);
           return null; // no route matched
         }
         // Preview routes use the same request key and hook order as a send,
@@ -863,13 +949,15 @@ export async function runPluginRoute(
         if (typeof out.__llmPreview === "string" && caps.llm && out.json && typeof out.json === "object" && !Array.isArray(out.json)) {
           out.json = await applyLlmRequestHooks(plugin, out.__llmPreview, out.json as GenerateRequest, deps);
         }
-        return {
+        const res: PluginRouteResponse = {
           status: typeof out.status === "number" ? out.status : 200,
           fsWrites: [...written],
           ...(out.json !== undefined ? { json: out.json } : {}),
           ...(out.text !== undefined ? { text: String(out.text) } : {}),
           ...(typeof out.contentType === "string" ? { contentType: out.contentType } : {}),
         };
+        if (memoKey && pass === 0 && r.reads && !out.__llmPreview) rememberRoute(memoKey, r.reads, res, r.outBytes ?? 0);
+        return res;
       }
       results = await runPassRequests(plugin, r, deps, caps, "route");
     }
@@ -881,16 +969,15 @@ export async function runPluginRoute(
 
 function snapshotOf(plugin: LoadedPlugin, deps: PluginRuntimeDeps): Record<string, unknown> {
   if (!hasCapAny(plugin, "store", deps)) return {};
-  const ns = deps.store.namespace(plugin.id);
-  const snap: Record<string, unknown> = {};
-  for (const k of ns.keys()) snap[k] = ns.get(k);
-  return snap;
+  return deps.store.namespace(plugin.id).all();
 }
 
-function applyStoreWrites(plugin: LoadedPlugin, r: { storeWrites?: Record<string, unknown> }, deps: PluginRuntimeDeps): void {
-  if (!r.storeWrites || !hasCapAny(plugin, "store", deps)) return;
-  const ns = deps.store.namespace(plugin.id);
-  for (const [k, v] of Object.entries(r.storeWrites)) ns.put(k, v);
+function applyStoreWrites(plugin: LoadedPlugin, r: { storeWrites?: Record<string, unknown>; storeDeletes?: string[] }, deps: PluginRuntimeDeps): void {
+  if (!hasCapAny(plugin, "store", deps)) return;
+  const writes = r.storeWrites ?? {};
+  const deletes = r.storeDeletes ?? [];
+  if (!Object.keys(writes).length && !deletes.length) return;
+  deps.store.namespace(plugin.id).apply(writes, deletes);
 }
 
 

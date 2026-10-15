@@ -22,6 +22,10 @@
  *                                         results in host.net.results next pass
  *   host.fs, host.zip                   → the app's data folder and uploaded
  *                                         zips, when permitted
+ *   host.regex.matches(source, flags, text)
+ *                                       → every match of a pattern, found by
+ *                                         the host's own regex engine:
+ *                                         [{ index, match, groups, named }]
  *   fetch                               → undefined: web requests go through
  *                                         host.net, which the engine runs
  */
@@ -103,6 +107,59 @@ function reply(msg) {
   port.postMessage({ ...msg, heapBytes: heapBytes() });
 }
 
+/** The guest's interpreter walks a backtracking pattern step by step, tens of
+ *  times slower than the host's compiled regex engine; a pattern that rescans
+ *  long text from every position cost seconds per page of text there. The
+ *  host runs the match and hands back plain results; the guest builds its
+ *  own replacement. A runaway pattern holds this worker until the call's
+ *  timeout ends it, as a runaway guest loop does. */
+const REGEX_MAX_TEXT = 4 * 1024 * 1024;
+const REGEX_MAX_MATCHES = 100_000;
+const regexSvc = {
+  matches: (source, flags = "", text = "") => {
+    const input = String(text);
+    if (input.length > REGEX_MAX_TEXT) throw new Error(`regex.matches text exceeds ${REGEX_MAX_TEXT} characters`);
+    const re = new RegExp(String(source), String(flags));
+    const found = re.global ? input.matchAll(re) : [re.exec(input)].filter(Boolean);
+    const out = [];
+    for (const m of found) {
+      out.push({
+        index: m.index,
+        match: m[0],
+        groups: m.slice(1).map((g) => (g === undefined ? null : g)),
+        named: m.groups ? Object.fromEntries(Object.entries(m.groups).map(([k, v]) => [k, v === undefined ? null : v])) : null,
+      });
+      if (out.length >= REGEX_MAX_MATCHES) break;
+    }
+    return out;
+  },
+};
+
+/** A route's own heap. App data is read whole into it, so a library's worth
+ *  of JSON plus the serialized reply must fit. */
+const DEFAULT_MEMORY_LIMIT = 256 * 1024 * 1024;
+
+/** How a file stood when read. A rename-into-place write changes the inode,
+ *  an in-place one the times or the size. "-" is a file that was missing. */
+function fileSignature(full) {
+  try {
+    const s = fs.statSync(full);
+    return `${s.size}:${s.mtimeMs}:${s.ctimeMs}:${s.ino}`;
+  } catch {
+    return "-";
+  }
+}
+
+/** A folder listing by its names, not its times: some filesystems keep folder
+ *  times to the second or coarser. */
+function dirSignature(full) {
+  try {
+    return createHash("sha1").update(fs.readdirSync(full).sort().join("\0")).digest("hex");
+  } catch {
+    return "-";
+  }
+}
+
 /**
  * The harness must not suspend the guest while a large result is live. Any
  * `await` that parks an async frame with a big heap behind it leaves the wasm
@@ -126,12 +183,12 @@ function reply(msg) {
 function harnessCode(hook) {
   // guard.js first: static imports evaluate in order, so `fetch` is already
   // neutralized before the plugin module's top-level code runs
-  const preamble = `import "guard.js";\nimport * as mod from "plugin.js";\n`;
+  const preamble = `import { varied } from "guard.js";\nimport * as mod from "plugin.js";\n`;
   const wrap = (body) => `${preamble}export default (async () => {
 try {
 ${body}
 if (out && typeof out.then === "function") out = await out;
-const json = JSON.stringify({ ok: true, value: out === undefined ? null : out });
+const json = JSON.stringify({ ok: true, value: out === undefined ? null : out, varied: varied() });
 out = null;
 return json;
 } catch (e) {
@@ -158,7 +215,7 @@ if (typeof fn === "function") { out = fn(env.ctx, env.host); }`);
 }
 
 port.on("message", async (msg) => {
-  const { id, source, hook, ctx, storeSnapshot = {}, llmResults = {}, netResults = {}, netAllowed = false, maxStoreBytes = 1024 * 1024, storeAllowed = true, llmAllowed = true, fsAllowed = false, fsRoot = null, fsReadOnly = false, fsTransaction = null, zipAllowed = false, zipBase64 = null, zipEntries: providedEntries = null, siblingToolDefs = null, embedResults = {}, executionTimeoutMs = 10_000, memoryLimitBytes = 64 * 1024 * 1024 } = msg;
+  const { id, source, hook, ctx, storeSnapshot = {}, llmResults = {}, netResults = {}, netAllowed = false, maxStoreBytes = 1024 * 1024, storeAllowed = true, llmAllowed = true, fsAllowed = false, fsRoot = null, fsReadOnly = false, fsTransaction = null, zipAllowed = false, zipBase64 = null, zipEntries: providedEntries = null, siblingToolDefs = null, embedResults = {}, executionTimeoutMs = 10_000, memoryLimitBytes = DEFAULT_MEMORY_LIMIT, trackReads = false } = msg;
   const logs = [];
   const fsWrites = new Set();
   const llmRequests = [];
@@ -166,6 +223,23 @@ port.on("message", async (msg) => {
   const embedRequests = [];
   const store = { ...storeSnapshot };
   let storeBytes = JSON.stringify(store).length;
+  // only the keys this call touched go back: the host writes the store file
+  // once per call that changed it, and a delete reaches the file too
+  const storeTouched = new Set();
+  const storeChanges = () => {
+    const storeWrites = {};
+    const storeDeletes = [];
+    for (const k of storeTouched) {
+      if (Object.hasOwn(store, k)) storeWrites[k] = store[k];
+      else storeDeletes.push(k);
+    }
+    return { storeWrites, storeDeletes };
+  };
+  // what the result depends on, for a host that answers the same read again
+  // without running it: each file and folder read, as it was when read
+  const reads = trackReads ? new Map() : null;
+  let sideEffects = false;
+  const failed = () => ({ logs, ...storeChanges(), llmRequests, netRequests, embedRequests });
 
   try {
     const runSandboxed = await getRun();
@@ -176,10 +250,11 @@ port.on("message", async (msg) => {
             get: (k) => store[k] ?? null,
             put: (k, v) => {
               store[k] = v === undefined ? null : v;
+              storeTouched.add(String(k));
               storeBytes = JSON.stringify(store).length;
               if (storeBytes > maxStoreBytes) throw new Error(`plugin store exceeded ${maxStoreBytes} bytes`);
             },
-            delete: (k) => { delete store[k]; },
+            delete: (k) => { delete store[k]; storeTouched.add(String(k)); },
             keys: () => Object.keys(store),
           }
         : {
@@ -231,8 +306,33 @@ port.on("message", async (msg) => {
     // own module so the harness can import it BEFORE plugin.js: statements
     // prepended to a module body would run after the imports it hoists above
     // them, i.e. after the plugin's own top-level code had already seen fetch.
+    // It also notes whether the plugin read the clock or drew a random number:
+    // such a result can differ on the same data, so no host may answer the
+    // same request again from a remembered copy.
     const guard = `
 try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: false, configurable: false }); } catch (e) {}
+let touched = false;
+export const varied = () => touched;
+const mark = () => { touched = true; };
+const RealDate = Date;
+const now = () => { mark(); return RealDate.now(); };
+globalThis.Date = new Proxy(RealDate, {
+  apply(target, self, args) { mark(); return Reflect.apply(target, self, args); },
+  construct(target, args, newTarget) { if (args.length === 0) mark(); return Reflect.construct(target, args, newTarget); },
+  get(target, key) { return key === "now" ? now : Reflect.get(target, key, target); },
+});
+const random = Math.random;
+Math.random = () => { mark(); return random(); };
+if (globalThis.performance && typeof globalThis.performance.now === "function") {
+  const perf = globalThis.performance.now.bind(globalThis.performance);
+  try { globalThis.performance.now = () => { mark(); return perf(); }; } catch (e) {}
+}
+if (globalThis.crypto) {
+  for (const name of ["getRandomValues", "randomUUID"]) {
+    const fn = globalThis.crypto[name];
+    if (typeof fn === "function") { try { globalThis.crypto[name] = (...args) => { mark(); return fn.apply(globalThis.crypto, args); }; } catch (e) {} }
+  }
+}
 `;
     // Zip service (SPEC-v2 §3, import path): decode base64 zip → entries map
     // { "path": "text content" } for TEXT entries (binary entries listed as
@@ -397,6 +497,11 @@ try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: f
           },
         };
       }
+      const readFile = (rel) => {
+        const full = within(rel);
+        if (reads && !reads.has(`f:${full}`)) reads.set(`f:${full}`, fileSignature(full));
+        return full;
+      };
       const recorded = new Map();
       const beforeWrite = (full) => {
         if (!fsTransaction || recorded.has(full)) return;
@@ -413,7 +518,8 @@ try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: f
           if (!/^[a-zA-Z0-9_-]{1,64}$/.test(String(collection))) throw new Error("invalid lookup collection");
           const name = createHash("sha256").update(String(key).toLowerCase()).digest("hex");
           const rel = "__lookup/" + collection + "/" + name + ".json";
-          if (value === undefined) { try { return JSON.parse(fs.readFileSync(within(rel), "utf8")); } catch { return null; } }
+          if (value === undefined) { try { return JSON.parse(fs.readFileSync(readFile(rel), "utf8")); } catch { return null; } }
+          sideEffects = true;
           const full = withinNewFile(rel);
           const text = JSON.stringify(value);
           if (Buffer.byteLength(text) > 4096) throw new Error("lookup value too large");
@@ -428,6 +534,7 @@ try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: f
           const bytes = Buffer.from(match[2], "base64");
           if (bytes.length > 64 * 1024 * 1024) throw new Error("image exceeds 64 MB");
           const metadata = match[1] === "png" ? pngMetadata(bytes) : {};
+          sideEffects = true;
           return { url: host.fs.media(uri), metadata };
         },
         media: (uri) => {
@@ -449,13 +556,14 @@ try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: f
             bytes = Buffer.concat(chunks);
           }
           const name = createHash("sha256").update(bytes).digest("hex") + "." + match[1];
+          sideEffects = true;
           const full = withinNewFile("__media/" + name);
           fs.mkdirSync(path.dirname(full), { recursive: true });
           if (!fs.existsSync(full)) fs.writeFileSync(full, bytes, { flag: "wx" });
           return "/v1/apps/" + encodeURIComponent(path.basename(path.dirname(fsRoot))) + "/__media/" + name;
         },
-        read: (rel) => { try { return fs.readFileSync(within(rel), "utf8"); } catch (e) { scrub(e, rel); } },
-        readBase64: (rel) => { try { return fs.readFileSync(within(rel)).toString("base64"); } catch (e) { scrub(e, rel); } },
+        read: (rel) => { try { return fs.readFileSync(readFile(rel), "utf8"); } catch (e) { scrub(e, rel); } },
+        readBase64: (rel) => { try { return fs.readFileSync(readFile(rel)).toString("base64"); } catch (e) { scrub(e, rel); } },
         write: (rel, content) => {
           if (typeof content !== "string") throw new Error("fs.write(rel, string)");
           const full = withinNewFile(rel);
@@ -468,7 +576,13 @@ try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: f
             finally { fs.rmSync(temporary, { force: true }); }
           } catch (e) { scrub(e, rel); }
         },
-        list: (rel = ".") => { try { return fs.readdirSync(within(rel)).sort(); } catch (e) { scrub(e, rel); } },
+        list: (rel = ".") => {
+          try {
+            const full = within(rel);
+            if (reads && !reads.has(`d:${full}`)) reads.set(`d:${full}`, dirSignature(full));
+            return fs.readdirSync(full).sort();
+          } catch (e) { scrub(e, rel); }
+        },
         remove: (rel) => {
           const full = within(rel);
           if (full === fsRoot) throw new Error("refusing to remove the data dir itself");
@@ -486,6 +600,7 @@ try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: f
     })();
     host.fs = fsSvc;
     host.zip = zipSvc;
+    host.regex = regexSvc;
     if (siblingToolDefs) host.siblingTools = siblingToolDefs;
 
     // guest console.* joins the capped `logs` collection (host.log's 500-char
@@ -520,7 +635,7 @@ try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: f
       },
     );
     if (!result.ok) {
-      reply({ id, ok: false, error: result.error.message, logs, storeWrites: store, llmRequests, netRequests, embedRequests });
+      reply({ id, ok: false, error: result.error.message, ...failed() });
       return;
     }
     // The guest reports its own failures in the envelope rather than rejecting:
@@ -531,19 +646,23 @@ try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: f
     try {
       envelope = JSON.parse(result.data ?? "null");
     } catch {
-      reply({ id, ok: false, error: "hook returned non-serializable result", logs, storeWrites: store, llmRequests, netRequests, embedRequests });
+      reply({ id, ok: false, error: "hook returned non-serializable result", ...failed() });
       return;
     }
     if (!envelope || envelope.ok !== true) {
       const error = envelope && typeof envelope.error === "string" ? envelope.error : "hook returned non-serializable result";
-      reply({ id, ok: false, error, logs, storeWrites: store, llmRequests, netRequests, embedRequests });
+      reply({ id, ok: false, error, ...failed() });
       return;
     }
-    reply({ id, ok: true, out: envelope.value ?? null, storeWrites: store, llmRequests, netRequests, embedRequests, logs, fsWrites: [...fsWrites] });
+    const repeatable = reads && !envelope.varied && !sideEffects && fsWrites.size === 0 && storeTouched.size === 0;
+    reply({
+      id, ok: true, out: envelope.value ?? null, ...storeChanges(), llmRequests, netRequests, embedRequests, logs, fsWrites: [...fsWrites],
+      ...(repeatable ? { reads: [...reads], outBytes: (result.data ?? "").length } : {}),
+    });
   } catch (e) {
     // wasm abort / load failure — host will terminate+respawn this worker
     try {
-      reply({ id, ok: false, error: `sandbox aborted: ${String(e?.message ?? e).slice(0, 200)}`, logs, storeWrites: store, llmRequests, netRequests, embedRequests });
+      reply({ id, ok: false, error: `sandbox aborted: ${String(e?.message ?? e).slice(0, 200)}`, ...failed() });
     } catch {
       /* port dead — host timeout handles it */
     }

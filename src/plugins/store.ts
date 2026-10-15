@@ -42,6 +42,15 @@ export class PluginStoreService {
         this.write(pluginId, data);
       },
       keys: (): string[] => Object.keys(this.read(pluginId)),
+      all: (): Record<string, unknown> => this.read(pluginId),
+      /** Several sets and deletes, one write; none when nothing changes. */
+      apply: (writes: Record<string, unknown>, deletes: readonly string[] = []): void => {
+        const data = this.read(pluginId);
+        const before = JSON.stringify(data);
+        for (const [k, v] of Object.entries(writes)) data[k] = v ?? null;
+        for (const k of deletes) delete data[k];
+        if (JSON.stringify(data) !== before) this.write(pluginId, data);
+      },
     };
   }
 }

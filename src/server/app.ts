@@ -4968,6 +4968,8 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
 
   // app route dispatch: /v1/apps/<activeAppId>/<rest...> → bundled plugins with
   // routes permission exporting handleRoute(req, host). First non-null wins.
+  const OUT_OF_BAND_SWEEP_MS = 15_000;
+  const outOfBandSweptAt = new Map<string, number>();
   /** Shared app-route dispatch. */
   const dispatchAppRoute = async (
     u: UserRecord,
@@ -4983,11 +4985,14 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
     if (appId === "active" || !readApp(p.apps, appId)) return { status: 404, payload: { error: "app not found" } };
     await retryPendingUpgrade(u, p, appId);
     const deps = getAppDeps(u, appId);
-    // pending changes that predate this route (agent writes, shell edits) —
-    // committed under their own label after the route so a sweep never
-    // attributes out-of-band edits to whatever request happened to fire
+    // pending changes that predate this route (agent writes, shell edits) are
+    // committed under their own label first, so history never attributes them
+    // to whatever request happened to fire. Finding them walks the whole
+    // workspace, so a burst of saves looks once: the route's own commit names
+    // only the files it wrote and leaves anything else pending.
     const tracksWrites = !zipEntries && method !== "GET" && method !== "HEAD";
-    const dirtyBefore = !tracksWrites ? [] : await git.changedPaths(p.root).catch(() => [] as string[]);
+    const sweepDue = tracksWrites && Date.now() - (outOfBandSweptAt.get(p.root) ?? 0) >= OUT_OF_BAND_SWEEP_MS;
+    const dirtyBefore = !sweepDue ? [] : await git.changedPaths(p.root).catch(() => [] as string[]);
     for (const plugin of enabledAppPlugins(p.apps, appId, p.settings)) {
       const payload = body && typeof body === "object" ? (body as { zipBase64?: string }).zipBase64 : undefined;
       const res = await runPluginRoute(plugin, { method, path: rel, query, body, ...(typeof payload === "string" ? { zipBase64: payload } : {}), ...(zipEntries ? { zipEntries, fsTransaction } : {}) }, deps);
@@ -4995,13 +5000,13 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
         // app data writes auto-commit (undo parity); failed routes (500) never
         // commit — a crashing plugin must not sweep unrelated changes in.
         if (tracksWrites && (res.status ?? 200) < 400) {
+          if (sweepDue) outOfBandSweptAt.set(p.root, Date.now());
           if (dirtyBefore.length > 0) {
             const preview = dirtyBefore.slice(0, 3).join(", ") + (dirtyBefore.length > 3 ? ` +${dirtyBefore.length - 3} more` : "");
             await git.commitPaths(p.root, u.username, `out-of-band: ${preview}`, dirtyBefore).catch(() => undefined);
           }
           const written = (res.fsWrites ?? []).map((file) => `apps/${appId}/data/${file}`);
           if (written.length) await git.commitWrittenPaths(p.root, u.username, `app(${appId}): ${method} ${rel}`, written).catch(() => undefined);
-          else await git.commitAll(p.root, u.username, `app(${appId}): ${method} ${rel}`).catch(() => undefined);
         }
         if (res.json !== undefined) return { status: res.status ?? 200, payload: res.json, fsWrites: (res.fsWrites ?? []).map((file) => `apps/${appId}/data/${file}`) };
         return { status: res.status ?? 200, payload: res.text ?? "", ...(res.contentType ? { contentType: res.contentType } : {}) };
