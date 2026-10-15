@@ -74,7 +74,7 @@ describe("plugin sandbox pool", () => {
       return { json: { n: n + 1 } };
     }`);
     const outs = await Promise.all(Array.from({ length: 8 }, () => post(counter)));
-    expect(outs.map((o) => (o?.json as { n: number }).n).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(outs.map((o) => (o?.json as { n: number } | undefined)?.n ?? 0).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(fs.readFileSync(path.join(data, "count.json"), "utf8")).toBe("8");
   }, 30_000);
 });
