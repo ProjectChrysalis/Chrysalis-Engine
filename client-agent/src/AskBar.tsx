@@ -22,32 +22,32 @@ export function AskBar(): ReactNode {
 
   return (
     <div className="agent-ask border-ring/40 bg-card rounded-xl border p-3">
-      <div className="agent-ask-heading">
-        <p className="text-sm font-medium">{ask.question}</p>
-        <button type="button" disabled={pending} aria-label={tr("Dismiss question")} title={tr("Dismiss question")} onClick={() => { setPending(true); void dismiss().finally(() => setPending(false)) }}><X size={16} aria-hidden="true" /></button>
-      </div>
       <div className="agent-ask-content">
+        <div className="agent-ask-heading">
+          <p className="text-sm font-medium">{ask.question}</p>
+          <button type="button" disabled={pending} aria-label={tr("Dismiss question")} title={tr("Dismiss question")} onClick={() => { setPending(true); void dismiss().finally(() => setPending(false)) }}><X size={16} aria-hidden="true" /></button>
+        </div>
         {ask.detail ? (
           <p className="text-muted-foreground mt-1 text-xs whitespace-pre-wrap">{ask.detail}</p>
         ) : null}
-      {ask.options?.length ? (
-        <div className="flex flex-wrap gap-1.5">
-          {ask.options.map((o) => (
-            <button
-              key={o}
-              type="button"
-              disabled={pending}
-              className="border-border hover:bg-accent max-w-full rounded-lg border px-3 py-1.5 text-left text-xs whitespace-normal [overflow-wrap:anywhere]"
-              onClick={() => submit(o)}
-            >
-              {o}
-            </button>
-          ))}
-        </div>
-      ) : null}
+        {ask.options?.length ? (
+          <div className="agent-ask-options">
+            {ask.options.map((o) => (
+              <button
+                key={o}
+                type="button"
+                disabled={pending}
+                className="agent-ask-option border-border hover:bg-accent rounded-lg border px-3 py-1.5 text-left text-xs"
+                onClick={() => submit(o)}
+              >
+                {o}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
       <form
-        className="flex gap-1.5"
+        className="flex shrink-0 gap-1.5"
         onSubmit={(e) => {
           e.preventDefault()
           submit(draft)

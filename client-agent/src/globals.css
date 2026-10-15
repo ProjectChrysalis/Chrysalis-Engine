@@ -232,6 +232,28 @@
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.agent-ask-content > * {
+  flex-shrink: 0;
+}
+.agent-ask-heading p {
+  white-space: pre-wrap;
+}
+.agent-ask-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  min-width: 0;
+}
+.agent-ask-option {
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .agent-message-queue {
   display: flex;
@@ -249,9 +271,6 @@
 .agent-queue-item p {
   white-space: pre-wrap;
 }
-
-.agent-ask-heading { max-height: max(2.25rem, 8dvh); flex-shrink: 0; }
-.agent-ask-heading p { min-height: 0; overflow: auto; }
 
 .aui-thread-viewport-footer { max-height: calc(100dvh - 5rem); }
 .aui-thread-viewport-footer > .agent-ask, .aui-thread-viewport-footer > .agent-message-queue { flex-shrink: 1; min-height: 0; }
