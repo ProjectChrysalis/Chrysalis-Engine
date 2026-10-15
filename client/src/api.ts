@@ -1,10 +1,13 @@
 import { tr } from "./i18n/index"
 import type { AppUpdate, StoreList } from "./types"
+import type { OpenRouterRouting } from "../../src/providers/openrouter-routing"
+export type { OpenRouterRouting } from "../../src/providers/openrouter-routing"
 // Chrysalis engine HTTP client for the launcher shell (auth, settings,
 // connections, apps). The agent chat lives in its own app (client-agent/).
 export interface EngineConnection {
   id: string
   name: string
+  openRouterRouting?: OpenRouterRouting
   providerId?: string
   oauthProvider?: "radius"
   gateway?: string
@@ -132,10 +135,11 @@ export const avatarApi = {
 }
 
 export const connectionsApi = {
+  routingProviders: () => api<{ providers: Array<{ slug: string; name: string }> }>("GET", "/v1/settings/openrouter/providers").then((r) => r.providers),
   list: () => api<{ connections: EngineConnection[] }>("GET", "/v1/settings/connections").then((r) => r.connections ?? []),
-  create: (body: { name: string; providerId?: string; oauthProvider?: "radius"; gateway?: string; api?: EngineConnection["api"]; baseUrl?: string; proxyUrl?: string; models?: unknown; key?: string; promptFormat?: string; promptFormatCustom?: PromptFormat }) =>
+  create: (body: { name: string; providerId?: string; oauthProvider?: "radius"; gateway?: string; api?: EngineConnection["api"]; baseUrl?: string; proxyUrl?: string; models?: unknown; key?: string; promptFormat?: string; promptFormatCustom?: PromptFormat; openRouterRouting?: OpenRouterRouting | null }) =>
     api<{ connection: EngineConnection }>("POST", "/v1/settings/connections", body),
-  update: (id: string, body: { name?: string; baseUrl?: string; key?: string; models?: unknown; promptFormat?: string; promptFormatCustom?: PromptFormat }) =>
+  update: (id: string, body: { name?: string; baseUrl?: string; key?: string; models?: unknown; promptFormat?: string; promptFormatCustom?: PromptFormat; openRouterRouting?: OpenRouterRouting | null }) =>
     api<{ connection: EngineConnection }>("PATCH", `/v1/settings/connections/${encodeURIComponent(id)}`, body),
   remove: (id: string) => api("DELETE", `/v1/settings/connections/${encodeURIComponent(id)}`),
 }

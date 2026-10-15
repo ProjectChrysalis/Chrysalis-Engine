@@ -35,6 +35,8 @@ import {
 import type { Me } from "./types"
 import { AgentSkills } from "./agent-skills"
 import { ServerTab } from "./server-settings"
+import { OpenRouterRoutingEditor } from "./openrouter-routing"
+import { routingDraft, routingBody, isOpenRouterConnection } from "./openrouter-routing-state"
 import { LOCALES, setLocale, tr, useLocale, type Locale } from "./i18n/index"
 
 export const inputClass =
@@ -833,6 +835,7 @@ function EditConnection(props: { connection: EngineConnection; onDone: () => voi
   const [name, setName] = useState(c.name)
   const [baseUrl, setBaseUrl] = useState(c.baseUrl ?? "")
   const [key, setKey] = useState("")
+  const [routing, setRouting] = useState(() => routingDraft(c.openRouterRouting))
   const [err, setErr] = useState("")
   const [busy, setBusy] = useState(false)
   const [format, setFormat] = useState<FormatChoice>({ id: c.promptFormat ?? "auto", custom: c.promptFormatCustom ?? EMPTY_FORMAT })
@@ -848,7 +851,7 @@ function EditConnection(props: { connection: EngineConnection; onDone: () => voi
   )
 
   const modelDefs = () =>
-    modelsMode === "auto"
+    (c.providerId ? !models.some((model) => model.id.trim()) : modelsMode === "auto")
       ? ("auto" as const)
       : models
           .filter((m) => m.id.trim())
@@ -856,7 +859,7 @@ function EditConnection(props: { connection: EngineConnection; onDone: () => voi
             id: m.id.trim(),
             ...(m.contextWindow.trim() && Number(m.contextWindow) > 0 ? { contextWindow: Number(m.contextWindow) } : {}),
             ...(m.maxTokens.trim() && Number(m.maxTokens) > 0 ? { maxTokens: Number(m.maxTokens) } : {}),
-            ...(m.reasoning ? { reasoning: true } : {}),
+            reasoning: m.reasoning,
           }))
 
   const submit = async () => {
@@ -867,8 +870,9 @@ function EditConnection(props: { connection: EngineConnection; onDone: () => voi
         name: name.trim(),
         ...(!c.providerId && baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
         ...(key.trim() ? { key: key.trim() } : {}),
-        ...(isCustom() ? { models: modelDefs() as never } : {}),
+        ...(!c.oauthProvider ? { models: modelDefs() } : {}),
         ...(c.api === "openai-text" ? formatBody(format) : {}),
+        ...(isOpenRouterConnection({ ...c, baseUrl }) || c.openRouterRouting ? { openRouterRouting: isOpenRouterConnection({ ...c, baseUrl }) ? routingBody(routing, tr("Price caps must be non-negative numbers.")) : null } : {}),
       })
       props.onDone()
     } catch (e: any) {
@@ -893,8 +897,9 @@ function EditConnection(props: { connection: EngineConnection; onDone: () => voi
           {tr("Base URL")}
           <input className={inputClass} placeholder="https://…/v1" value={baseUrl} onChange={(e) => setBaseUrl(e.currentTarget.value)} />
         </label>
-        <ModelsEditor mode={modelsMode} setMode={setModelsMode} models={models} setModels={setModels} />
         {c.api === "openai-text" ? <PromptFormatEditor value={format} onChange={setFormat} /> : null}</>: null}
+      {!c.oauthProvider ? <ModelsEditor builtin={!!c.providerId} mode={modelsMode} setMode={setModelsMode} models={models} setModels={setModels} /> : null}
+      {isOpenRouterConnection({ ...c, baseUrl }) ? <OpenRouterRoutingEditor value={routing} onChange={setRouting} inputClass={inputClass} /> : null}
       <label className="flex flex-col gap-1 text-12 text-ink-muted">
         {c.credentialType === "oauth"
           ? tr("Signed in with a subscription (OAuth), no key needed")
@@ -1222,6 +1227,7 @@ function ProviderForm(props: { provider: ProviderPick; onBack: () => void; onDon
   const [name, setName] = useState(props.provider.label)
   const [baseUrl, setBaseUrl] = useState(props.provider.baseUrl ?? "")
   const [key, setKey] = useState("")
+  const [routing, setRouting] = useState(() => routingDraft())
   const [err, setErr] = useState("")
   const [busy, setBusy] = useState(false)
   const [modelsMode, setModelsMode] = useState<"auto" | "manual">("auto")
@@ -1232,7 +1238,7 @@ function ProviderForm(props: { provider: ProviderPick; onBack: () => void; onDon
   const [proxyOpen, setProxyOpen] = useState(false)
 
   const modelDefs = () =>
-    modelsMode === "auto"
+    (isBuiltin() && !usingProxy() ? !models.some((model) => model.id.trim()) : modelsMode === "auto")
       ? ("auto" as const)
       : models
           .filter((m) => m.id.trim())
@@ -1240,7 +1246,7 @@ function ProviderForm(props: { provider: ProviderPick; onBack: () => void; onDon
             id: m.id.trim(),
             ...(m.contextWindow.trim() && Number(m.contextWindow) > 0 ? { contextWindow: Number(m.contextWindow) } : {}),
             ...(m.maxTokens.trim() && Number(m.maxTokens) > 0 ? { maxTokens: Number(m.maxTokens) } : {}),
-            ...(m.reasoning ? { reasoning: true } : {}),
+            reasoning: m.reasoning,
           }))
 
   const usingProxy = () => isBuiltin() && /^https?:\/\/.+/.test(proxyUrl.trim())
@@ -1264,8 +1270,9 @@ function ProviderForm(props: { provider: ProviderPick; onBack: () => void; onDon
                 proxyUrl: proxyUrl.trim(),
                 ...(modelsMode === "manual" ? { models: modelDefs() as never } : {}),
               }
-            : { providerId: props.provider.id }),
+            : { providerId: props.provider.id, models: modelDefs() }),
         ...(key.trim() ? { key: key.trim() } : {}),
+        ...(isOpenRouterConnection({ providerId: props.provider.id, baseUrl, api: isCustom() ? customApi() : undefined }) ? { openRouterRouting: routingBody(routing, tr("Price caps must be non-negative numbers.")) } : {}),
       })
       props.onDone()
     } catch (e: any) {
@@ -1305,7 +1312,8 @@ function ProviderForm(props: { provider: ProviderPick; onBack: () => void; onDon
         {usingProxy() ? tr("Proxy password / API key") : isCustom() ? tr("API key (optional)") : tr("API key")}
         <input className={inputClass} type="password" placeholder={isCustom() ? tr("leave empty if the server has none") : tr("paste key")} autoComplete="off" value={key} onChange={(e) => setKey(e.currentTarget.value)} />
       </label>
-      {isCustom() ? <ModelsEditor mode={modelsMode} setMode={setModelsMode} models={models} setModels={setModels} /> : null}
+      {isCustom() || !usingProxy() ? <ModelsEditor builtin={isBuiltin()} mode={modelsMode} setMode={setModelsMode} models={models} setModels={setModels} /> : null}
+      {isOpenRouterConnection({ providerId: props.provider.id, baseUrl, api: isCustom() ? customApi() : undefined }) ? <OpenRouterRoutingEditor value={routing} onChange={setRouting} inputClass={inputClass} /> : null}
       {isCustom() && customApi() === "openai-text" ? <PromptFormatEditor value={format} onChange={setFormat} /> : null}
       {isBuiltin() ? <div className="flex flex-col gap-1.5">
           <button
@@ -1416,6 +1424,7 @@ function PromptFormatEditor(props: { value: FormatChoice; onChange: (v: FormatCh
 }
 
 function ModelsEditor(props: {
+  builtin?: boolean
   mode: "auto" | "manual"
   setMode: (m: "auto" | "manual") => void
   models: Array<{ id: string; contextWindow: string; maxTokens: string; reasoning: boolean }>
@@ -1426,8 +1435,8 @@ function ModelsEditor(props: {
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-line p-2.5">
       <div className="flex items-center gap-2">
-        <span className="flex-1 text-12 font-medium text-ink">{tr("Models")}</span>
-        <Select
+        <span className="flex-1 text-12 font-medium text-ink">{props.builtin ? tr("Custom models") : tr("Models")}</span>
+        {!props.builtin ? <Select
           appearance="inline"
           className="w-[180px]"
           options={["auto", "manual"] as Array<"auto" | "manual">}
@@ -1435,40 +1444,52 @@ function ModelsEditor(props: {
           value={(x) => x}
           label={(x) => (x === "auto" ? tr("Auto-discover (/models)") : tr("Manual list"))}
           onSelect={(x) => props.setMode(x ?? "auto")}
-        />
+        /> : null}
       </div>
-      {props.mode === "auto" ? <p className="text-11 leading-4 text-ink-faint">
-          {tr("Models are discovered from the endpoint. Pick Manual if the list is wrong or to set context windows.")}
+      {!props.builtin && props.mode === "auto" ? <p className="text-11 leading-4 text-ink-faint">
+          {tr("Models are discovered from the endpoint. Pick Manual to set model IDs and limits.")}
         </p> : null}
-      {props.mode === "manual" ? <div className="flex flex-col gap-1.5">
+      {props.builtin || props.mode === "manual" ? <div className="flex flex-col gap-1.5">
           {props.models.map((m, i) => (
               <div key={i} className={row}>
                 <input
                   className="min-w-[140px] flex-1 rounded-md border border-line bg-panel px-2 py-1 text-12 outline-none focus:border-line-focus"
                   placeholder={tr("model id (e.g. my-model-v2)")}
                   value={m.id}
-                  onChange={(e) => props.setModels((prev) => prev.map((x, j) => (j === i ? { ...x, id: e.currentTarget.value } : x)))}
+                  onChange={(e) => {
+                    const value = e.currentTarget.value
+                    props.setModels((prev) => prev.map((x, j) => (j === i ? { ...x, id: value } : x)))
+                  }}
                 />
                 <input
                   className={cell}
                   inputMode="numeric"
                   placeholder={tr("context (tok)")}
                   value={m.contextWindow}
-                  onChange={(e) => props.setModels((prev) => prev.map((x, j) => (j === i ? { ...x, contextWindow: e.currentTarget.value.replace(/[^\d]/g, "") } : x)))}
+                  onChange={(e) => {
+                    const value = e.currentTarget.value.replace(/[^\d]/g, "")
+                    props.setModels((prev) => prev.map((x, j) => (j === i ? { ...x, contextWindow: value } : x)))
+                  }}
                 />
                 <input
                   className={cell}
                   inputMode="numeric"
                   placeholder={tr("max out (tok)")}
                   value={m.maxTokens}
-                  onChange={(e) => props.setModels((prev) => prev.map((x, j) => (j === i ? { ...x, maxTokens: e.currentTarget.value.replace(/[^\d]/g, "") } : x)))}
+                  onChange={(e) => {
+                    const value = e.currentTarget.value.replace(/[^\d]/g, "")
+                    props.setModels((prev) => prev.map((x, j) => (j === i ? { ...x, maxTokens: value } : x)))
+                  }}
                 />
                 <label className="flex items-center gap-1 text-11 text-ink-muted" title={tr("Model supports reasoning/thinking")}>
                   <input
                     type="checkbox"
                     className="size-3.5"
                     checked={m.reasoning}
-                    onChange={(e) => props.setModels((prev) => prev.map((x, j) => (j === i ? { ...x, reasoning: e.currentTarget.checked } : x)))}
+                    onChange={(e) => {
+                      const checked = e.currentTarget.checked
+                      props.setModels((prev) => prev.map((x, j) => (j === i ? { ...x, reasoning: checked } : x)))
+                    }}
                   />
                   {tr("thinking")}
                 </label>
@@ -1488,7 +1509,7 @@ function ModelsEditor(props: {
             {tr("+ Add model")}
           </button>
           <p className="text-11 leading-4 text-ink-faint">
-            {tr("Context window powers auto-compact thresholds and token estimates. Set it when the endpoint reports wrong defaults.")}
+            {props.builtin ? tr("Keeps the provider catalog. New IDs need context and max output tokens.") : tr("Context window sets the auto-compact threshold.")}
           </p>
         </div> : null}
     </div>

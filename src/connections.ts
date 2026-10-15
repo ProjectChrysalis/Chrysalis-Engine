@@ -19,9 +19,11 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { UserPaths } from "./paths.js";
 import { CURATED_PROVIDERS, keyBoundTo, reservedProviderIds } from "./providers/custom.js";
 import { parsePromptFormat, promptFormatById, type PromptFormat } from "./providers/prompt-formats.js";
+import { supportsOpenRouterRouting, validateOpenRouterRouting, type OpenRouterRouting } from "./providers/openrouter-routing.js";
 
 export interface ConnectionDef {
   name: string;
+  openRouterRouting?: OpenRouterRouting;
   /** builtin pi-ai provider id (mutually exclusive with api+baseUrl) */
   providerId?: string;
   /** Radius gateway sign-in (OAuth connection kind; needs `gateway`) */
@@ -33,7 +35,7 @@ export interface ConnectionDef {
    * proxy: custom-shaped def + display origin. The key is
    * bound to the proxy endpoint, never sent to the official one. */
   proxyOf?: string;
-  /** custom only: explicit model list (per-model overrides), or "auto" to discover from GET {baseUrl}/models */
+  /** Builtins: additions/overrides to the catalog. Custom endpoints: explicit list or discovery. */
   models?: Array<{ id: string; name?: string; contextWindow?: number; maxTokens?: number; reasoning?: boolean }> | "auto";
   /** openai-text only: "auto" (match the loaded model), a format id, or
    *  "custom" with `promptFormatCustom`. */
@@ -69,6 +71,27 @@ export interface ConnectionInfo extends ConnectionDef {
 }
 
 const NAME_MAX = 60;
+
+function validateConnectionModels(input: unknown):
+  | { ok: true; value: NonNullable<ConnectionDef["models"]> }
+  | { ok: false; error: string } {
+  if (input === undefined || input === "auto") return { ok: true, value: "auto" };
+  if (!Array.isArray(input) || input.length === 0) return { ok: false, error: "models must be a non-empty list or \"auto\"" };
+  const ids = new Set<string>();
+  for (const model of input) {
+    if (!model || typeof model !== "object" || typeof model.id !== "string" || !model.id.trim() || ids.has(model.id.trim())) {
+      return { ok: false, error: "each model needs a unique model ID" };
+    }
+    ids.add(model.id.trim());
+    if (!Object.entries(model).every(([key, value]) =>
+      ((key === "id" || key === "name") && typeof value === "string") ||
+      ((key === "contextWindow" || key === "maxTokens") && typeof value === "number" && Number.isSafeInteger(value) && value > 0) ||
+      (key === "reasoning" && typeof value === "boolean"))) {
+      return { ok: false, error: "models need positive integer token limits and valid name or thinking fields" };
+    }
+  }
+  return { ok: true, value: input.map((model) => ({ ...model, id: model.id.trim() })) };
+}
 
 function connectionsPath(p: UserPaths): string {
   return p.connections;
@@ -176,6 +199,7 @@ export function validateConnectionInput(input: {
   key?: unknown;
   promptFormat?: unknown;
   promptFormatCustom?: unknown;
+  openRouterRouting?: unknown;
 }):
   | { ok: true; value: ConnectionInput }
   | { ok: false; error: string } {
@@ -183,6 +207,13 @@ export function validateConnectionInput(input: {
   if (!name || name.length > NAME_MAX) return { ok: false, error: `name must be 1-${NAME_MAX} characters` };
   const key = typeof input.key === "string" ? input.key.trim() : undefined;
   if (key !== undefined && (!key || key.length > 4096)) return { ok: false, error: "key must be a non-empty string" };
+  let routing: OpenRouterRouting | null = null;
+  if (input.openRouterRouting !== undefined) {
+    const checked = validateOpenRouterRouting(input.openRouterRouting);
+    if (!checked.ok) return checked;
+    routing = checked.value;
+    if (routing && !supportsOpenRouterRouting(input)) return { ok: false, error: "routing controls require an OpenRouter connection" };
+  }
 
   if (typeof input.providerId === "string" && input.providerId) {
     const builtin = builtins.find((b) => b.id === input.providerId);
@@ -202,17 +233,23 @@ export function validateConnectionInput(input: {
     const proxyUrl = typeof input.proxyUrl === "string" ? input.proxyUrl.trim() : "";
     if (proxyUrl) {
       if (!/^https?:\/\/.{3,}/.test(proxyUrl)) return { ok: false, error: "reverse proxy must be an http(s) URL" };
-      let models: ConnectionDef["models"] = "auto";
-      if (Array.isArray(input.models)) {
-        if (input.models.length === 0 || !input.models.every((m) => m && typeof (m as { id?: unknown }).id === "string")) {
-          return { ok: false, error: "models must be a non-empty list of {id} objects or \"auto\"" };
-        }
-        models = input.models as ConnectionDef["models"];
-      }
+      const checked = validateConnectionModels(input.models);
+      if (!checked.ok) return checked;
+      const models = checked.value;
       const proxyApi: ConnectionDef["api"] = builtin.id === "anthropic" ? "anthropic-messages" : "openai-completions";
-      return { ok: true, value: { name, api: proxyApi, baseUrl: proxyUrl, proxyOf: builtin.id, models, ...(key ? { key } : {}) } };
+      return { ok: true, value: { name, api: proxyApi, baseUrl: proxyUrl, proxyOf: builtin.id, models, ...(routing ? { openRouterRouting: routing } : {}), ...(key ? { key } : {}) } };
     }
-    return { ok: true, value: { name, providerId: builtin.id, ...(key ? { key } : {}) } };
+    const checked = validateConnectionModels(input.models);
+    if (!checked.ok) return checked;
+    if (Array.isArray(checked.value)) {
+      const catalog = builtinProviders().find((provider) => provider.id === builtin.id)?.getModels() ?? [];
+      for (const model of checked.value) {
+        if (!catalog.some((m) => m.id === model.id) && (!model.contextWindow || !model.maxTokens)) {
+          return { ok: false, error: `model "${model.id}" needs a context window and max output tokens` };
+        }
+      }
+    }
+    return { ok: true, value: { name, providerId: builtin.id, ...(input.models !== undefined ? { models: checked.value } : {}), ...(routing ? { openRouterRouting: routing } : {}), ...(key ? { key } : {}) } };
   }
 
   // Radius gateway: OAuth-only connection kind
@@ -233,35 +270,15 @@ export function validateConnectionInput(input: {
   }
   const baseUrl = typeof input.baseUrl === "string" ? input.baseUrl.trim() : "";
   if (!/^https?:\/\/.{3,}/.test(baseUrl)) return { ok: false, error: "baseUrl must be an http(s) URL" };
-  let models: ConnectionDef["models"] = "auto";
-  if (Array.isArray(input.models)) {
-    if (
-      input.models.length === 0 ||
-      !input.models.every(
-        (m) =>
-          m && typeof m === "object" && typeof (m as { id?: unknown }).id === "string" && (m as { id?: unknown }).id &&
-          Object.entries(m as Record<string, unknown>).every(
-            ([k, v]) =>
-              (k === "id" && typeof v === "string") ||
-              (k === "name" && typeof v === "string") ||
-              (k === "contextWindow" && typeof v === "number" && v > 0) ||
-              (k === "maxTokens" && typeof v === "number" && v > 0) ||
-              (k === "reasoning" && typeof v === "boolean"),
-          ),
-      )
-    ) {
-      return { ok: false, error: "models must be a non-empty list of {id, name?, contextWindow?, maxTokens?, reasoning?} or \"auto\"" };
-    }
-    models = input.models as ConnectionDef["models"];
-  } else if (input.models !== undefined && input.models !== "auto") {
-    return { ok: false, error: "models must be a list or \"auto\"" };
-  }
+  const checked = validateConnectionModels(input.models);
+  if (!checked.ok) return checked;
+  const models = checked.value;
   if (input.api === "openai-text") {
     const format = validatePromptFormatInput(input.promptFormat, input.promptFormatCustom);
     if (!format.ok) return format;
     return { ok: true, value: { name, api: input.api, baseUrl, models, ...format.value, ...(key ? { key } : {}) } };
   }
-  return { ok: true, value: { name, api: input.api as ConnectionDef["api"], baseUrl, models, ...(key ? { key } : {}) } };
+  return { ok: true, value: { name, api: input.api as ConnectionDef["api"], baseUrl, models, ...(routing ? { openRouterRouting: routing } : {}), ...(key ? { key } : {}) } };
 }
 
 export function listConnections(p: UserPaths): ConnectionInfo[] {
@@ -276,7 +293,7 @@ export function listConnections(p: UserPaths): ConnectionInfo[] {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-type ConnectionInput = Pick<ConnectionDef, "providerId" | "oauthProvider" | "gateway" | "api" | "baseUrl" | "proxyOf" | "models" | "promptFormat" | "promptFormatCustom"> & { name: string; key?: string };
+type ConnectionInput = Pick<ConnectionDef, "providerId" | "oauthProvider" | "gateway" | "api" | "baseUrl" | "proxyOf" | "models" | "promptFormat" | "promptFormatCustom" | "openRouterRouting"> & { name: string; key?: string };
 
 export function createConnection(p: UserPaths, value: ConnectionInput): ConnectionInfo {
   const file = readConnections(p);
@@ -285,7 +302,7 @@ export function createConnection(p: UserPaths, value: ConnectionInput): Connecti
   const def: ConnectionDef = value.oauthProvider
     ? { name: value.name, oauthProvider: value.oauthProvider, gateway: value.gateway! }
     : value.providerId
-      ? { name: value.name, providerId: value.providerId }
+      ? { name: value.name, providerId: value.providerId, ...(value.models !== undefined ? { models: value.models } : {}) }
       : {
           name: value.name,
           api: value.api!,
@@ -294,6 +311,7 @@ export function createConnection(p: UserPaths, value: ConnectionInput): Connecti
           ...(value.proxyOf ? { proxyOf: value.proxyOf } : {}),
           ...(value.api === "openai-text" ? { promptFormat: value.promptFormat ?? "auto", ...(value.promptFormatCustom ? { promptFormatCustom: value.promptFormatCustom } : {}) } : {}),
         };
+  if (value.openRouterRouting) def.openRouterRouting = value.openRouterRouting;
   file.connections[id] = def;
   writeConnections(p, file);
   if (value.key) {
@@ -309,7 +327,7 @@ export function createConnection(p: UserPaths, value: ConnectionInput): Connecti
 export function updateConnection(
   p: UserPaths,
   id: string,
-  patch: { name?: string; baseUrl?: string; key?: string; models?: ConnectionDef["models"]; promptFormat?: string; promptFormatCustom?: PromptFormat },
+  patch: { name?: string; baseUrl?: string; key?: string; models?: ConnectionDef["models"]; promptFormat?: string; promptFormatCustom?: PromptFormat; openRouterRouting?: OpenRouterRouting | null },
 ): ConnectionInfo | null {
   const file = readConnections(p);
   const def = file.connections[id];
@@ -317,9 +335,14 @@ export function updateConnection(
   if (patch.name !== undefined) def.name = patch.name.trim().slice(0, NAME_MAX) || def.name;
   const oldEndpoint = connectionEndpoint(def);
   if (patch.baseUrl !== undefined && !def.providerId && /^https?:\/\/.{3,}/.test(patch.baseUrl)) def.baseUrl = patch.baseUrl.trim();
-  if (patch.models !== undefined && !def.providerId) {
+  if (patch.models !== undefined) {
     def.models = patch.models === "auto" || (Array.isArray(patch.models) && patch.models.length > 0) ? patch.models : def.models;
   }
+  if (patch.openRouterRouting !== undefined) {
+    if (patch.openRouterRouting) def.openRouterRouting = patch.openRouterRouting;
+    else delete def.openRouterRouting;
+  }
+  if (!supportsOpenRouterRouting(def)) delete def.openRouterRouting;
   if (patch.promptFormat !== undefined && def.api === "openai-text") {
     def.promptFormat = patch.promptFormat;
     if (patch.promptFormat === "custom" && patch.promptFormatCustom) def.promptFormatCustom = patch.promptFormatCustom;

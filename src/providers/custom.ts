@@ -217,6 +217,35 @@ export const CURATED_PROVIDERS: Record<string, CustomProviderDef & { docsUrl: st
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
+export function withAdditionalModels(provider: Provider, additions: CustomModelDef[]): Provider {
+  const getModels = (): Model<Api>[] => {
+    const catalog = new Map(provider.getModels().map((model) => [model.id, model]));
+    const defaults = provider.getModels()[0];
+    for (const def of additions) {
+      const known = catalog.get(def.id);
+      const api = known?.api ?? defaults?.api ?? CURATED_PROVIDERS[provider.id]?.api;
+      const baseUrl = known?.baseUrl ?? provider.baseUrl ?? defaults?.baseUrl;
+      if (!api || !baseUrl) throw new Error(`provider "${provider.id}" has no model endpoint`);
+      catalog.set(def.id, {
+        ...(known ?? { id: def.id, name: def.id, provider: provider.id, api, baseUrl, input: ["text"], cost: ZERO_COST, reasoning: false, contextWindow: 0, maxTokens: 0 }),
+        ...(def.name !== undefined ? { name: def.name } : {}),
+        ...(def.contextWindow !== undefined ? { contextWindow: def.contextWindow } : {}),
+        ...(def.maxTokens !== undefined ? { maxTokens: def.maxTokens } : {}),
+        ...(def.reasoning !== undefined ? { reasoning: def.reasoning } : {}),
+      });
+    }
+    return [...catalog.values()];
+  };
+  return {
+    ...provider,
+    getModels,
+    getAllModels: () => [
+      ...(provider.getAllModels?.() ?? []).filter((model) => model.type && model.type !== "chat"),
+      ...getModels(),
+    ],
+  };
+}
+
 /** Sent as the bearer of an endpoint saved without a key. The client library
  *  refuses to build a request without one; a server that runs keyless ignores
  *  it and one that wants a key answers 401, which is the error to show. */

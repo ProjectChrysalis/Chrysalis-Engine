@@ -44,6 +44,8 @@ import { curatedProviders, loadCustomProviders, reservedProviderIds } from "../p
 import { UserAgent, instructionDocsStamp, listSessions, renameSession, archiveSession, sessionDir, isReasoningLevel, type AgentStreamEvent, type ReasoningLevel, type SessionCompactRecord } from "../agent/agent.js";
 import { compactionCut, fileActivity, lastSessionModel, summarizeMessages, type FileActivity } from "../agent/compact.js";
 import { listConnections, createConnection, updateConnection, deleteConnection, validateConnectionInput, validatePromptFormatInput, readConnections, connectionKeyUsable, type ConnectionInfo } from "../connections.js";
+import { supportsOpenRouterRouting, validateOpenRouterRouting, type OpenRouterRouting } from "../providers/openrouter-routing.js";
+import { createRoutingCatalog } from "../providers/openrouter-catalog.js";
 import { PROMPT_FORMATS, type PromptFormat } from "../providers/prompt-formats.js";
 import {
   EDGE_FORMATS, EDGE_VOICES, createSpeechEndpoint, deleteSpeechEndpoint, edgeSpeakFmt,
@@ -2911,6 +2913,12 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       .then(() => bus.emit(u.username, "connections_changed", { id }));
   };
 
+  const routingCatalog = createRoutingCatalog();
+  app.get("/v1/settings/openrouter/providers", async (c) => {
+    try { return c.json({ providers: await routingCatalog() }); }
+    catch (error) { return c.json({ error: error instanceof Error ? error.message : "OpenRouter provider catalog failed" }, 502); }
+  });
+
   app.get("/v1/settings/connections", (c) => {
     return c.json({ connections: listConnections(c.get("paths")) });
   });
@@ -2953,7 +2961,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   app.patch("/v1/settings/connections/:id", async (c) => {
     const u = c.get("user");
     const p = c.get("paths");
-    const body = await c.req.json<{ name?: string; baseUrl?: string; key?: string; models?: unknown; promptFormat?: unknown; promptFormatCustom?: unknown }>().catch(() => null) ?? {};
+    const body = await c.req.json<{ name?: string; baseUrl?: string; key?: string; models?: unknown; promptFormat?: unknown; promptFormatCustom?: unknown; openRouterRouting?: unknown }>().catch(() => null) ?? {};
     let baseUrl: string | undefined;
     if (body.baseUrl !== undefined) {
       const check = validateConnectionInput({ name: "x", api: "openai-completions", baseUrl: body.baseUrl });
@@ -2962,7 +2970,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     }
     let models: import("../connections.js").ConnectionDef["models"] | undefined;
     if (body.models !== undefined) {
-      const check = validateConnectionInput({ name: "x", api: "openai-completions", baseUrl: "http://x.example", models: body.models });
+      const def = readConnections(p).connections[c.req.param("id")];
+      const check = validateConnectionInput({ name: "x", ...(def?.providerId ? { providerId: def.providerId } : { api: "openai-completions", baseUrl: "http://x.example" }), models: body.models });
       if (!check.ok) return c.json({ error: check.error }, 400);
       models = check.value.models;
     }
@@ -2972,12 +2981,24 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       if (!check.ok) return c.json({ error: check.error }, 400);
       format = check.value;
     }
+    let routing: { openRouterRouting?: OpenRouterRouting | null } = {};
+    if (body.openRouterRouting !== undefined) {
+      const checked = validateOpenRouterRouting(body.openRouterRouting);
+      if (!checked.ok) return c.json({ error: checked.error }, 400);
+      const def = readConnections(p).connections[c.req.param("id")];
+      if (!def) return c.json({ error: "connection not found" }, 404);
+      if (checked.value && !supportsOpenRouterRouting({ ...def, ...(baseUrl !== undefined ? { baseUrl } : {}) })) {
+        return c.json({ error: "routing controls require an OpenRouter connection" }, 400);
+      }
+      routing = { openRouterRouting: checked.value };
+    }
     const updated = updateConnection(p, c.req.param("id"), {
       ...(typeof body.name === "string" ? { name: body.name } : {}),
       ...(baseUrl !== undefined ? { baseUrl } : {}),
       ...(typeof body.key === "string" ? { key: body.key } : {}),
       ...(models !== undefined ? { models } : {}),
       ...format,
+      ...routing,
     });
     if (!updated) return c.json({ error: "connection not found" }, 404);
     connectionsMutated(u, updated.id);

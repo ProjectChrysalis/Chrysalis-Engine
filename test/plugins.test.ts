@@ -49,6 +49,25 @@ describe("plugin discovery", () => {
   });
 });
 
+it("previews the request hook pipeline without generating a reply", async () => {
+  writePlugin("previewer", { name: "Previewer", version: "1.0.0", permissions: ["routes", "llm"], origin: "local" }, `
+    export function handleRoute(req) {
+      return { status: 200, __llmPreview: "reply", json: { messages: [{role:"user",content:"original"}], presetName:"Saved preset" } };
+    }
+  `);
+  writePlugin("patcher", { name: "Patcher", version: "1.0.0", permissions: ["hooks", "llm"], origin: "local" }, `
+    export function llmRequest(ctx) {
+      if (ctx.key !== "reply") throw new Error("wrong request key");
+      return { messages: [{role:"user",content:ctx.request.messages[0].content + " patched"}] };
+    }
+  `);
+  const plugins = discoverPlugins(path.join(dir, "plugins"));
+  const previewer = plugins.find(p => p.id === "previewer")!;
+  const runtime = { ...deps(), llmHooks: (self: LoadedPlugin) => collectSiblingLlmHooks(plugins, self, deps()) };
+  const result = await runPluginRoute(previewer, { method: "POST", path: "/preview", query: {}, body: {} }, runtime);
+  expect(result?.json).toEqual({ messages: [{ role: "user", content: "original patched" }], presetName: "Saved preset" });
+});
+
 describe("plugin sandbox execution", () => {
   it("runs an uiPanel hook that mutates the prompt", async () => {
     writePlugin(

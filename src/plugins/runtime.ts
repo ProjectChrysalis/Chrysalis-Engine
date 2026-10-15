@@ -858,6 +858,11 @@ export async function runPluginRoute(
         if (!out || typeof out !== "object" || (out.json === undefined && out.text === undefined && out.status === undefined)) {
           return null; // no route matched
         }
+        // Preview routes use the same request key and hook order as a send,
+        // without calling the model. The route's JSON is its request envelope.
+        if (typeof out.__llmPreview === "string" && caps.llm && out.json && typeof out.json === "object" && !Array.isArray(out.json)) {
+          out.json = await applyLlmRequestHooks(plugin, out.__llmPreview, out.json as GenerateRequest, deps);
+        }
         return {
           status: typeof out.status === "number" ? out.status : 200,
           fsWrites: [...written],

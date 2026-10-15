@@ -9,12 +9,13 @@ import { createModels, getSupportedThinkingLevels, uuidv7, type Api, type Assist
 import type { AuthOperationOptions, CredentialStore } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { radiusProvider } from "@earendil-works/pi-ai/providers/radius";
-import { loadCustomProviders, curatedProviders, buildProvider, reservedProviderIds, isLocalEndpoint, abortLocalGeneration, type CredentialWithBinding } from "./providers/custom.js";
+import { loadCustomProviders, curatedProviders, buildProvider, withAdditionalModels, reservedProviderIds, isLocalEndpoint, abortLocalGeneration, type CredentialWithBinding } from "./providers/custom.js";
 import { readConnections, authTarget, connectionKeyUsable, readAuth } from "./connections.js";
 import { formatFromModelName, formatFromTemplate, parsePromptFormat, promptFormatById, renderPrompt, stopStrings, type PromptFormat } from "./providers/prompt-formats.js";
 import { cacheStreamOptions, type CacheRequest } from "./providers/prompt-cache.js";
 import { log } from "./logger.js";
-import { generationError, providerError } from "./providers/errors.js";
+import { generationError, providerError, withGooglePromptFeedback } from "./providers/errors.js";
+import { supportsOpenRouterRouting, withOpenRouterRouting } from "./providers/openrouter-routing.js";
 import { llmLogRequest, llmLogResult, llmLogError, llmLogTool } from "./llm-logger.js";
 import type { UserPaths } from "./paths.js";
 import type { InstanceConfig } from "./config.js";
@@ -318,12 +319,16 @@ export class UserModelService {
     for (const provider of curatedProviders()) models.setProvider(provider);
     for (const provider of loadCustomProviders(paths.root + "/providers.json", readCredential)) models.setProvider(provider);
     // named connections (connections.json + key in auth.json) — user-named
-    // providers/endpoints selectable across every app. Builtin-kind connections
-    // only LABEL an existing provider; custom ones register a c_* provider.
+    // providers/endpoints selectable across every app. Builtin connections
+    // extend their provider catalog; custom ones register a c_* provider.
     const conns = readConnections(paths);
     const reserved = reservedProviderIds();
     for (const [id, def] of Object.entries(conns.connections)) {
-      if (def.providerId) continue; // builtin: provider already registered above
+      if (def.providerId) {
+        const provider = models.getProvider(def.providerId);
+        if (provider && Array.isArray(def.models)) models.setProvider(withAdditionalModels(provider, def.models));
+        continue;
+      }
       if (def.oauthProvider === "radius" && def.gateway) {
         // Radius gateway (OAuth): dedicated pi-ai provider bound to the user's
         // gateway — only the one the sign-in was made against
@@ -354,6 +359,13 @@ export class UserModelService {
       } catch (e) {
         log.warn(`[connection:${id}] failed: ${(e as Error).message}`);
       }
+    }
+    const connectionDefs = new Map(Object.entries(conns.connections).map(([id, def]) => [def.providerId ?? id, def]));
+    for (const provider of models.getProviders()) {
+      const def = connectionDefs.get(provider.id);
+      const routed = def?.openRouterRouting && supportsOpenRouterRouting(def)
+        ? withOpenRouterRouting(provider, def.openRouterRouting) : provider;
+      models.setProvider(withGooglePromptFeedback(routed));
     }
     this.connectionNames = new Map(
       Object.entries(conns.connections).map(([id, def]) => [def.oauthProvider === "radius" ? "radius" : def.providerId ?? id, def.name]),
