@@ -211,7 +211,7 @@ export const personaApi = {
 }
 
 export const mcpApi = {
-  list: () => api<{ servers: Array<{ id: string; type: string; connected: boolean; enabled: boolean; share: "all" | "agent"; tools?: number; error?: string }> }>("GET", "/v1/mcp").then((r) => r.servers ?? []),
+  list: () => api<{ servers: Array<{ id: string; type: string; connected: boolean; connecting?: boolean; enabled: boolean; share: "all" | "agent"; tools?: number; error?: string }> }>("GET", "/v1/mcp").then((r) => r.servers ?? []),
   upsert: (id: string, cfg: Record<string, unknown>) => api("PUT", `/v1/mcp/${encodeURIComponent(id)}`, cfg),
   remove: (id: string) => api("DELETE", `/v1/mcp/${encodeURIComponent(id)}`),
   reconnect: (id: string) => api<{ ok: boolean }>("POST", `/v1/mcp/${encodeURIComponent(id)}/reconnect`),

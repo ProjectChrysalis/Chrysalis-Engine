@@ -35,6 +35,7 @@ const dict = {
   " · needs key": " · 需要密钥",
   " · off": " · 关闭",
   " · offline": " · 离线",
+  " · connecting": " · 连接中",
   " · subscription": " · 订阅",
   "(changed since, rebuilds on open)": "（此后有改动，打开时重新构建）",
   "(you)": "（你）",

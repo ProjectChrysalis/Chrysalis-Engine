@@ -35,6 +35,7 @@ const dict = {
   " · needs key": " · キーが必要",
   " · off": " · オフ",
   " · offline": " · オフライン",
+  " · connecting": " · 接続中",
   " · subscription": " · サブスク",
   "(changed since, rebuilds on open)": "（その後変更あり、開くと再ビルド）",
   "(you)": "（あなた）",

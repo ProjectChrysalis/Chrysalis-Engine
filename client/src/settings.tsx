@@ -1572,6 +1572,14 @@ const mcpAccessLabel = (a: McpAccess) => (a === "all" ? tr("All apps") : a === "
 
 function McpTab() {
   const servers = useResource(() => mcpApi.list())
+  // the list answers at once; a server still coming up shows as connecting
+  // and the list asks again until it has settled
+  const settling = (servers.data ?? []).some((s) => s.connecting)
+  useEffect(() => {
+    if (!settling) return
+    const timer = setTimeout(() => void servers.refetch(), 1500)
+    return () => clearTimeout(timer)
+  }, [settling, servers.data])
   const [id, setId] = useState("")
   const [type, setType] = useState<"stdio" | "http" | "sse">("stdio")
   const [command, setCommand] = useState("")
@@ -1648,7 +1656,7 @@ function McpTab() {
                 <span className="block truncate">{s.id}</span>
                 <span className="block truncate text-11 text-ink-faint" title={s.error ?? ""}>
                   {s.type}
-                  {s.connected ? " · " + (s.tools === 1 ? tr("{n} tool", { n: 1 }) : tr("{n} tools", { n: s.tools ?? 0 })) : s.error ? ` · ${s.error}` : s.enabled ? tr(" · offline") : tr(" · off")}
+                  {s.connected ? " · " + (s.tools === 1 ? tr("{n} tool", { n: 1 }) : tr("{n} tools", { n: s.tools ?? 0 })) : s.connecting ? tr(" · connecting") : s.error ? ` · ${s.error}` : s.enabled ? tr(" · offline") : tr(" · off")}
                 </span>
               </span>
               <Select<McpAccess>

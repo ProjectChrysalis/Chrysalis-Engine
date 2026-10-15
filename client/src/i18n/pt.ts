@@ -35,6 +35,7 @@ const dict = {
   " · needs key": " · falta chave",
   " · off": " · desligado",
   " · offline": " · offline",
+  " · connecting": " · conectando",
   " · subscription": " · assinatura",
   "(changed since, rebuilds on open)": "(mudou desde então, recompila ao abrir)",
   "(you)": "(você)",

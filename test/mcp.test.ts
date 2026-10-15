@@ -68,7 +68,7 @@ describe("McpRegistry (real stdio server e2e)", () => {
     expect(result.ok).toBe(true);
     expect(result.text).toMatch(/^rolled: \d+, \d+ \(total \d+\)$/);
 
-    expect(registry.status()).toEqual([{ id: "dice", type: "stdio", connected: true, enabled: true, share: "all", tools: 1 }]);
+    expect(registry.status()).toEqual([{ id: "dice", type: "stdio", connected: true, connecting: false, enabled: true, share: "all", tools: 1 }]);
     await registry.dispose();
   }, 30_000);
 
@@ -78,6 +78,26 @@ describe("McpRegistry (real stdio server e2e)", () => {
     expect(await registry.listTools()).toEqual([]);
     const call = await registry.callTool("mcp_dead_anything", {});
     expect(call.ok).toBe(false);
+    await registry.dispose();
+  }, 30_000);
+
+  it("a server that never answers holds up neither the others nor the status view", async () => {
+    const serverFile = writeDiceServer();
+    const silent = path.join(dataDir, "silent.mjs");
+    fs.writeFileSync(silent, "setInterval(() => {}, 1000);\n");
+    const registry = new McpRegistry(mcpJson, undefined, undefined, () => true);
+    registry.upsertServer("silent", { type: "stdio", command: process.execPath, args: [silent] });
+    registry.upsertServer("dice", stdioDice(serverFile));
+
+    const started = performance.now();
+    await registry.warmForStatus(["silent", "dice"], 400);
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(registry.status().find((s) => s.id === "silent")?.connecting).toBe(true);
+    // the dice server comes up beside it rather than after its timeout
+    const deadline = Date.now() + 10_000;
+    while (!registry.status().find((s) => s.id === "dice")?.connected && Date.now() < deadline) await Bun.sleep(100);
+    expect(registry.status().find((s) => s.id === "dice")?.connected).toBe(true);
+    expect(registry.status().find((s) => s.id === "silent")?.connected).toBe(false);
     await registry.dispose();
   }, 30_000);
 

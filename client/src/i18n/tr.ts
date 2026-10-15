@@ -35,6 +35,7 @@ const dict = {
   " · needs key": " · anahtar gerekli",
   " · off": " · kapalı",
   " · offline": " · çevrimdışı",
+  " · connecting": " · bağlanıyor",
   " · subscription": " · abonelik",
   "(changed since, rebuilds on open)": "(o zamandan beri değişti, açılışta yeniden derlenir)",
   "(you)": "(sen)",

@@ -63,6 +63,7 @@ const en = {
   " · needs key": "",
   " · off": "",
   " · offline": "",
+  " · connecting": "",
   " · subscription": "",
   "(changed since, rebuilds on open)": "",
   "(you)": "",

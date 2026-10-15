@@ -358,12 +358,14 @@ export class McpRegistry {
   }
 
   /** List tools from all enabled servers (lazy-connects; failed servers are
-   *  skipped). */
+   *  skipped). Servers connect side by side: one that hangs until its
+   *  timeout holds up the list once, not once per server. */
   async listTools(): Promise<McpToolInfo[]> {
+    const ids = Object.entries(this.readConfig().servers).filter(([, cfg]) => cfg.enabled !== false).map(([id]) => id);
+    const conns = await Promise.all(ids.map((id) => this.ensure(id).catch(() => null)));
     const out: McpToolInfo[] = [];
-    for (const [id, cfg] of Object.entries(this.readConfig().servers)) {
-      if (cfg.enabled === false) continue;
-      const conn = await this.ensure(id);
+    for (const [i, id] of ids.entries()) {
+      const conn = conns[i];
       if (!conn) continue;
       for (const t of conn.tools) {
         out.push({
@@ -429,13 +431,14 @@ export class McpRegistry {
     }));
   }
 
-  status(): { id: string; type: string; connected: boolean; enabled: boolean; share: "all" | "agent"; tools?: number; error?: string }[] {
+  status(): { id: string; type: string; connected: boolean; connecting: boolean; enabled: boolean; share: "all" | "agent"; tools?: number; error?: string }[] {
     return Object.entries(this.readConfig().servers).map(([id, cfg]) => {
       const conn = this.connected.get(id);
       return {
         id,
         type: cfg.type,
         connected: this.connected.has(id),
+        connecting: !conn && cfg.enabled !== false && (this.connecting.has(id) || this.retrying.has(id)),
         enabled: cfg.enabled !== false,
         share: cfg.share ?? "all",
         ...(conn ? { tools: conn.tools.length } : {}),
@@ -448,6 +451,19 @@ export class McpRegistry {
    *  status; failures are the caller's to render, not to throw. */
   async warm(ids: readonly string[]): Promise<void> {
     await Promise.all(ids.map((id) => this.ensure(id).catch(() => null)));
+  }
+
+  /** Bring the listed servers up for a status view. Only servers with no
+   *  outcome yet are waited for, and at most `waitMs`: a server that already
+   *  failed retries in the background and reports `connecting` meanwhile. */
+  async warmForStatus(ids: readonly string[], waitMs: number): Promise<void> {
+    const fresh = ids.filter((id) => !this.connected.has(id) && !this.lastError.has(id));
+    const all = this.warm(ids);
+    if (!fresh.length) return;
+    await Promise.race([
+      fresh.length === ids.length ? all : this.warm(fresh),
+      new Promise((resolve) => setTimeout(resolve, waitMs)),
+    ]);
   }
 
   async dispose(): Promise<void> {

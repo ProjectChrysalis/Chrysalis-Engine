@@ -3051,12 +3051,10 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
 
   app.get("/v1/mcp", async (c) => {
     const registry = getMcp(c.get("user"));
-    // connections are lazy; give them a bounded head start so a fresh boot
-    // doesn't report "not connected" until something happens to warm them
-    await Promise.race([
-      registry.listTools().catch(() => undefined),
-      new Promise((resolve) => setTimeout(resolve, 2500)),
-    ]);
+    // connections are lazy; servers never tried get a bounded head start so
+    // a fresh boot doesn't report "not connected" before anything warmed them
+    const enabled = registry.status().filter((s) => s.enabled).map((s) => s.id);
+    await registry.warmForStatus(enabled, 2500);
     return c.json({ servers: registry.status() });
   });
   app.put("/v1/mcp/:id", async (c) => {
@@ -3113,7 +3111,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const registry = getMcp(u);
     const shared = registry.sharedServers();
     const opted = new Set(appMcpOptIns(u.username, appId));
-    await Promise.race([registry.warm(shared), new Promise((resolve) => setTimeout(resolve, 2500))]);
+    await registry.warmForStatus(shared, 2500);
     const servers = registry.status()
       .filter((srv) => shared.includes(srv.id))
       .map((srv) => ({ ...srv, use: opted.has(srv.id) }));
