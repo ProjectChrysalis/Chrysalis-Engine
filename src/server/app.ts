@@ -3452,7 +3452,9 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const settings = JSON.parse(fs.readFileSync(p.settings, "utf8")) as { activeApp?: string | null };
     settings.activeApp = id;
     fs.writeFileSync(p.settings, JSON.stringify(settings, null, 2) + "\n", "utf8");
-    await git.commitAll(p.root, u.username, `app(${id}): activated`);
+    // only the settings file changed: walking the whole folder for a commit
+    // took seconds on a large library, every time an app opened
+    await git.commitWrittenPaths(p.root, u.username, `app(${id}): activated`, [path.relative(p.root, p.settings)]);
     bus.emit(u.username, "app_changed", { app: id });
     return c.json({ ok: true, activeApp: id });
   });
