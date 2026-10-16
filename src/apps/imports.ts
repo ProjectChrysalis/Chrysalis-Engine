@@ -9,7 +9,12 @@ export const IMPORT_CHUNK_BYTES = 8 * 1024 * 1024;
 export const IMPORT_MAX_BYTES = 32 * 1024 ** 3;
 const MAX_EXPANDED = 256 * 1024 ** 3;
 const MAX_ENTRY = 64 * 1024 ** 2;
-const BATCH_BYTES = 8 * 1024 ** 2;
+/** Entries reach the app's sandbox heap whole, except PNG images: the host
+ *  decodes those and only their metadata reaches the guest, so they can
+ *  fill more of a batch. */
+const BATCH_GUEST_BYTES = 8 * 1024 ** 2;
+const BATCH_BYTES = 32 * 1024 ** 2;
+const TEXT_ENTRY = /\.(json|jsonl|txt|md|js|css|html|yml|yaml|csv)$/i;
 const BATCH_ENTRIES = 128;
 /** `include` limits the import to some collections; entries outside them are
  *  never read. `selected` and `processed` count entries inside them, so
@@ -138,12 +143,15 @@ export class AppImports {
         for await (const chunk of stream as AsyncIterable<Buffer>) { bytes += chunk.length; if (bytes > MAX_ENTRY) throw new Error("entry exceeds 64 MB"); crc = crc32(chunk, crc); chunks.push(chunk); }
         if (crc !== entry.crc32) throw new Error("archive entry checksum failed: " + row.name);
         const data = Buffer.concat(chunks);
-        return /\.(json|jsonl|txt|md|js|css|html|yml|yaml|csv)$/i.test(row.name) ? data.toString("utf8") : { __b64__: true, base64: data.toString("base64"), size: data.length };
+        return TEXT_ENTRY.test(row.name) ? data.toString("utf8") : { __b64__: true, base64: data.toString("base64"), size: data.length };
       };
       let next = rows.length < BATCH_ENTRIES ? state.files : cursor;
+      let guest = 0;
       for (const row of rows) {
-        if (used && size + row.size > BATCH_BYTES) { next = rows[used - 1]!.ordinal; break; }
+        const inGuest = !/\.png$/i.test(row.name);
+        if (used && (size + row.size > BATCH_BYTES || (inGuest && guest + row.size > BATCH_GUEST_BYTES))) { next = rows[used - 1]!.ordinal; break; }
         entries[row.name] = await read(row); size += row.size; used++;
+        if (inGuest) guest += row.size;
         if (rows.length === BATCH_ENTRIES) next = row.ordinal;
         if (/(^|\/)card\.json$/i.test(row.name) && typeof entries[row.name] === "string") {
           const card = JSON.parse(entries[row.name] as string) as { assets?: { uri?: string }[]; data?: { assets?: { uri?: string }[] } };
@@ -216,11 +224,14 @@ export class AppImports {
   }
   transactionDir(id: string): string { return path.join(this.dir(id), "transaction"); }
   recover(id: string, dataRoot: string): void {
-    const dir = this.transactionDir(id), journal = path.join(dir, "journal.json");
-    if (!fs.existsSync(journal)) { fs.rmSync(dir, { recursive: true, force: true }); return; }
+    const dir = this.transactionDir(id), journal = path.join(dir, "journal.jsonl"), older = path.join(dir, "journal.json");
+    if (!fs.existsSync(journal) && !fs.existsSync(older)) { fs.rmSync(dir, { recursive: true, force: true }); return; }
     const checkpoint = path.join(dir, "cursor");
     if (fs.existsSync(checkpoint) && JSON.parse(fs.readFileSync(path.join(this.dir(id), "state.json"), "utf8")).cursor !== Number(fs.readFileSync(checkpoint, "utf8"))) { this.commit(id); return; }
-    const records = JSON.parse(fs.readFileSync(journal, "utf8")) as { rel: string; backup: string | null }[];
+    // a line cut short by a crash is a write that never started
+    const records = (fs.existsSync(journal)
+      ? fs.readFileSync(journal, "utf8").split("\n").flatMap((line) => { try { return line.trim() ? [JSON.parse(line)] : []; } catch { return []; } })
+      : JSON.parse(fs.readFileSync(older, "utf8"))) as { rel: string; backup: string | null }[];
     for (const record of records.reverse()) {
       const full = path.resolve(dataRoot, record.rel);
       if (!full.startsWith(path.resolve(dataRoot) + path.sep) || record.rel.split(/[\\/]/).includes("..")) throw new Error("invalid import recovery path");
@@ -241,7 +252,7 @@ export class AppImports {
     this.recover(id, dataRoot);
     const dir = this.transactionDir(id);
     fs.mkdirSync(dir);
-    fs.writeFileSync(path.join(dir, "journal.json"), "[]");
+    fs.writeFileSync(path.join(dir, "journal.jsonl"), "");
     fs.writeFileSync(path.join(dir, "cursor"), String(this.state(id).cursor));
     return dir;
   }

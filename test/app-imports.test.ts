@@ -75,14 +75,22 @@ it("restores interrupted batch writes and preserves writes after the cursor comm
   fs.writeFileSync(path.join(root, "existing.json"), "old");
   let journal = service.begin(state.id, root);
   fs.writeFileSync(path.join(journal, "0"), "old");
-  fs.writeFileSync(path.join(journal, "journal.json"), JSON.stringify([{ rel: "existing.json", backup: "0" }, { rel: "new.json", backup: null }]));
+  // the last line was cut short by a crash: that write never started
+  fs.writeFileSync(path.join(journal, "journal.jsonl"), [{ rel: "existing.json", backup: "0" }, { rel: "new.json", backup: null }].map((r) => JSON.stringify(r) + "\n").join("") + '{"rel":"ne');
   fs.writeFileSync(path.join(root, "existing.json"), "changed"); fs.writeFileSync(path.join(root, "new.json"), "new");
   service.recover(state.id, root);
   expect(fs.readFileSync(path.join(root, "existing.json"), "utf8")).toBe("old"); expect(fs.existsSync(path.join(root, "new.json"))).toBe(false);
   journal = service.begin(state.id, root);
-  fs.writeFileSync(path.join(journal, "journal.json"), JSON.stringify([{ rel: "new.json", backup: null }]));
+  fs.writeFileSync(path.join(journal, "journal.jsonl"), JSON.stringify({ rel: "new.json", backup: null }) + "\n");
   fs.writeFileSync(path.join(root, "new.json"), "committed");
   service.advance(state.id, 0, 1, {});
   service.recover(state.id, root);
   expect(fs.readFileSync(path.join(root, "new.json"), "utf8")).toBe("committed");
+  // a batch an older engine left half done still rolls back
+  journal = service.begin(state.id, root);
+  fs.rmSync(path.join(journal, "journal.jsonl"));
+  fs.writeFileSync(path.join(journal, "journal.json"), JSON.stringify([{ rel: "older.json", backup: null }]));
+  fs.writeFileSync(path.join(root, "older.json"), "half");
+  service.recover(state.id, root);
+  expect(fs.existsSync(path.join(root, "older.json"))).toBe(false);
 });

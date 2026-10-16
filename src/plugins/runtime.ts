@@ -874,7 +874,7 @@ export async function runPluginRoute(
   // one or the other and the import reported nothing but a sandbox error.
   // It gets a sandbox of its own so the extra room is not on loan to every
   // other plugin, and is disposed the moment the import is done.
-  const zipBox = zipOk ? new PluginSandbox() : null;
+  const zipBox = zipOk ? importSandbox(req.fsTransaction) : null;
   const box = zipBox ?? sandbox;
   // a route reads the app's data whole, so a large library needs longer than
   // the 10 s a hook gets; it holds one pool worker meanwhile, not all of them
@@ -963,8 +963,32 @@ export async function runPluginRoute(
     }
     return null;
   } finally {
-    if (zipBox) await zipBox.dispose();
+    if (zipBox) await releaseImportSandbox(zipBox, req.fsTransaction);
   }
+}
+
+/** An archive import runs batch after batch with the same transaction
+ *  folder; its sandbox stays up between batches instead of starting a worker
+ *  for each, and goes once the import has been idle a while. */
+const IMPORT_SANDBOX_IDLE_MS = 15_000;
+const importSandboxes = new Map<string, { box: PluginSandbox; idle?: ReturnType<typeof setTimeout> }>();
+function importSandbox(transaction: string | undefined): PluginSandbox {
+  if (!transaction) return new PluginSandbox();
+  const held = importSandboxes.get(transaction);
+  if (held) { clearTimeout(held.idle); held.idle = undefined; return held.box; }
+  const box = new PluginSandbox();
+  importSandboxes.set(transaction, { box });
+  return box;
+}
+async function releaseImportSandbox(box: PluginSandbox, transaction: string | undefined): Promise<void> {
+  const held = transaction ? importSandboxes.get(transaction) : undefined;
+  if (!held || held.box !== box) { await box.dispose(); return; }
+  held.idle = setTimeout(() => {
+    if (importSandboxes.get(transaction!) !== held) return;
+    importSandboxes.delete(transaction!);
+    void box.dispose();
+  }, IMPORT_SANDBOX_IDLE_MS);
+  held.idle.unref?.();
 }
 
 function snapshotOf(plugin: LoadedPlugin, deps: PluginRuntimeDeps): Record<string, unknown> {

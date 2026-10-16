@@ -36,6 +36,16 @@ import { createHash, randomUUID } from "node:crypto";
 import { unzipSync } from "fflate";
 import { inflateSync } from "node:zlib";
 
+/** PNG text fields that hold base64 (card data is base64 JSON), decoded:
+ *  the guest would otherwise decode them itself, tens of milliseconds a card. */
+function pngText(metadata) {
+  const text = Object.create(null);
+  for (const [key, value] of Object.entries(metadata)) {
+    const trimmed = value.trim();
+    if (trimmed && trimmed.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(trimmed)) text[key] = Buffer.from(trimmed, "base64").toString("utf8");
+  }
+  return text;
+}
 function pngMetadata(bytes) {
   if (!bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error("invalid PNG");
   const metadata = Object.create(null);
@@ -183,7 +193,23 @@ function dirSignature(full) {
 function harnessCode(hook) {
   // guard.js first: static imports evaluate in order, so `fetch` is already
   // neutralized before the plugin module's top-level code runs
-  const preamble = `import { varied } from "guard.js";\nimport * as mod from "plugin.js";\n`;
+  // env reaches the guest as host objects. A method call on one
+  // (host.fs.read(...)) carries its object along as \`this\`, which is
+  // serialized again on every call: about a millisecond each, so a route
+  // reading a thousand files spent a second on that alone. The guest gets
+  // its own copy, whose functions call the host's without a receiver.
+  const preamble = `import { varied } from "guard.js";\nimport * as mod from "plugin.js";
+const local = (v, depth) => {
+  if (typeof v === "function") return (...args) => v(...args);
+  if (v === null || typeof v !== "object" || depth > 6) return v;
+  if (Array.isArray(v)) return v.map((x) => local(x, depth + 1));
+  const o = {};
+  for (const k of Object.keys(v)) o[k] = local(v[k], depth + 1);
+  return o;
+};
+const host = local(env.host, 0);
+const ctx = local(env.ctx, 0);
+`;
   const wrap = (body) => `${preamble}export default (async () => {
 try {
 ${body}
@@ -203,15 +229,15 @@ return JSON.stringify({ ok: false, error: String((e && e.message) || e) });
   }
   if (hook === "__tool") {
     return wrap(`let out;
-if (typeof mod.handleTool === "function") { out = mod.handleTool(env.ctx.name, env.ctx.args, env.host); }`);
+if (typeof mod.handleTool === "function") { out = mod.handleTool(ctx.name, ctx.args, host); }`);
   }
   if (hook === "__route") {
     return wrap(`let out;
-if (typeof mod.handleRoute === "function") { out = mod.handleRoute(env.ctx, env.host); }`);
+if (typeof mod.handleRoute === "function") { out = mod.handleRoute(ctx, host); }`);
   }
   return wrap(`const fn = mod[${JSON.stringify(hook)}];
 let out;
-if (typeof fn === "function") { out = fn(env.ctx, env.host); }`);
+if (typeof fn === "function") { out = fn(ctx, host); }`);
 }
 
 port.on("message", async (msg) => {
@@ -356,7 +382,7 @@ if (globalThis.crypto) {
           const bytes = Buffer.from(entry.base64, "base64");
           if (!bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error("invalid PNG");
           const metadata = pngMetadata(bytes);
-          return { url: host.fs.media("data:image/png;base64," + entry.base64), metadata };
+          return { url: host.fs.media("data:image/png;base64," + entry.base64), metadata, text: pngText(metadata) };
         },
       };
       function zipEntries() {
@@ -509,9 +535,9 @@ if (globalThis.crypto) {
         const backup = fs.existsSync(full) ? String(recorded.size) : null;
         if (backup) fs.copyFileSync(full, path.join(fsTransaction, backup), fs.constants.COPYFILE_FICLONE);
         recorded.set(full, { rel, backup });
-        const journal = path.join(fsTransaction, "journal.json");
-        fs.writeFileSync(journal + ".tmp", JSON.stringify([...recorded.values()]));
-        fs.renameSync(journal + ".tmp", journal);
+        // one line per file, before the file is touched: rewriting the whole
+        // list on each write made a batch of a thousand writes quadratic
+        fs.appendFileSync(path.join(fsTransaction, "journal.jsonl"), JSON.stringify({ rel, backup }) + "\n");
       };
       return {
         lookup: (collection, key, value) => {
@@ -535,7 +561,7 @@ if (globalThis.crypto) {
           if (bytes.length > 64 * 1024 * 1024) throw new Error("image exceeds 64 MB");
           const metadata = match[1] === "png" ? pngMetadata(bytes) : {};
           sideEffects = true;
-          return { url: host.fs.media(uri), metadata };
+          return { url: host.fs.media(uri), metadata, text: pngText(metadata) };
         },
         media: (uri) => {
           const match = /^data:image\/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=]+)$/.exec(String(uri));
@@ -563,6 +589,13 @@ if (globalThis.crypto) {
           return "/v1/apps/" + encodeURIComponent(path.basename(path.dirname(fsRoot))) + "/__media/" + name;
         },
         read: (rel) => { try { return fs.readFileSync(readFile(rel), "utf8"); } catch (e) { scrub(e, rel); } },
+        // many files in one call: a folder of thousands of small files paid
+        // the crossing into the guest once per file. A file that cannot be
+        // read comes back null.
+        readMany: (rels) => {
+          if (!Array.isArray(rels) || rels.length > 20000) throw new Error("fs.readMany(paths) takes up to 20000 paths");
+          return rels.map((rel) => { try { return fs.readFileSync(readFile(String(rel)), "utf8"); } catch { return null; } });
+        },
         readBase64: (rel) => { try { return fs.readFileSync(readFile(rel)).toString("base64"); } catch (e) { scrub(e, rel); } },
         write: (rel, content) => {
           if (typeof content !== "string") throw new Error("fs.write(rel, string)");

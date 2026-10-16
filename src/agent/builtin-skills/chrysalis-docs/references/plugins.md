@@ -18,7 +18,7 @@ Declare only needed permissions. Local plugins are trusted for declared capabili
 
 | Host API | Permission | Behavior |
 | --- | --- | --- |
-| `host.fs.read/readBase64/write/list/remove` | `fs` | Scoped file access; bundled plugins access their app's `data/`. |
+| `host.fs.read/readMany/readBase64/write/list/remove` | `fs` | Scoped file access; bundled plugins access their app's `data/`. `readMany(paths)` reads many files in one call (null for any it cannot read). |
 | `host.store.get/put/delete/keys` | `store` | Persistent values in the plugin's namespace. |
 | `host.llm.request/results` | `llm` | Model requests through the account's connections. |
 | `host.llm.embed/embedResults` | `llm` | Embedding requests and their next-pass results. |
