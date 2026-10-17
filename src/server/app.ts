@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import nodeCrypto from "node:crypto";
 import { PluginStoreService } from "../plugins/store.js";
-import { discoverPlugins, discoverAppPlugins, runPluginHook, runPluginHookOutcome, runPluginRoute, runPluginTool, readPluginExport, syncSchedules, stopSchedules, invalidatePluginCache, collectSiblingTools, collectSiblingLlmHooks, mergeToolBridges, type LoadedPlugin, type PluginRuntimeDeps, type PluginToolBridge } from "../plugins/runtime.js";
+import { discoverPlugins, discoverAppPlugins, runPluginHook, runPluginHookOutcome, runPluginRoute, runPluginTool, readPluginExport, syncSchedules, stopSchedules, invalidatePluginCache, collectSiblingTools, collectSiblingLlmHooks, mergeToolBridges, pluginMentions, type LoadedPlugin, type PluginRuntimeDeps, type PluginToolBridge } from "../plugins/runtime.js";
 import { ServiceManager, serviceApproved, servicePorts, writeServiceApproval, type ServiceTarget } from "../apps/service.js";
 import { McpRegistry, WEB_SEARCH_PRESET, readStdioApprovals, stdioFingerprint, writeStdioApproval, type CredentialMap, type McpServerConfig } from "../mcp/registry.js";
 import { listApps, readApp, createAppSkeleton, renameAppDir, appTree, validateAppManifest, hashAppTree, type AppInfo } from "../apps/manager.js";
@@ -4041,7 +4041,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const failed: { plugin: string; error: string }[] = [];
     for (const plugin of enabledAppPlugins(p.apps, appId, p.settings)) {
       const since = pending[plugin.id] ?? from;
-      if (since === null || !plugin.source.includes("onAppUpdate")) continue;
+      if (since === null || !pluginMentions(plugin, "onAppUpdate")) continue;
       const outcome = await runPluginHookOutcome(plugin, "onAppUpdate", { from: since, to }, deps, UPGRADE_LIMITS);
       if (outcome.ok) continue;
       stillPending[plugin.id] = since;

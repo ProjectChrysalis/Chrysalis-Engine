@@ -144,6 +144,12 @@ function pluginModuleFiles(dir: string): Array<{ rel: string; mtimeMs: number; s
   return out.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
 }
 
+/** Cheap pre-check before a sandbox eval: does any of the plugin's code
+ *  mention this name at all? */
+export function pluginMentions(plugin: LoadedPlugin, name: string): boolean {
+  return plugin.source.includes(name) || Object.values(plugin.modules ?? {}).some((m) => m.includes(name));
+}
+
 const discoveryCache = new Map<string, { plugins: LoadedPlugin[]; key: string }>();
 
 export function discoverPlugins(pluginsDir: string): LoadedPlugin[] {
@@ -395,7 +401,7 @@ export async function collectSiblingLlmHooks(
     if (sibling.id === self.id) continue;
     if (!hasCapAny(sibling, "hooks", deps) || !hasCapAny(sibling, "llm", deps)) continue;
     // cheap pre-check before paying for a sandbox eval: no name, no export
-    if (!sibling.source.includes(exportName) && !Object.values(sibling.modules ?? {}).some((m) => m.includes(exportName))) continue;
+    if (!pluginMentions(sibling, exportName)) continue;
     hooks.push({
       plugin: sibling,
       priority: typeof sibling.manifest.priority === "number" ? sibling.manifest.priority : 0,
