@@ -64,7 +64,7 @@ import { log } from "../logger.js";
 import type { EventBus } from "./ws.js";
 import { ensureLookWatcher, stopLookWatcher } from "./look-watch.js";
 import { assertPublicHost } from "../net-guard.js";
-import { installApp, hasPackages, packagesBusy } from "../apps/packages.js";
+import { installApp, hasPackages, packagesBusy, repairPackages } from "../apps/packages.js";
 import { appFsOps, checkOutput, leaseHolder, MAX_BATCH_OPS, readBuildStatus, readDevMeta, sourceRev, takeLease, writeClientErrors, writeClientLogs, writeOutput } from "../builder/server.js";
 import { builderAsset, builderFrameCsp, builderVersion } from "../builder/assets.js";
 import type { FsOp } from "../builder/fs.js";
@@ -4743,6 +4743,16 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       return c.json({ error: `writing the build failed: ${(e as Error).message}` }, 500);
     }
     if (!out.ok) log.warn(`[build] ${u.username}/${a.id} failed: ${out.errors[0]?.text ?? "unknown error"}`);
+    // a build that fails inside node_modules may be reading damaged package
+    // files; a clean reinstall fixes those, and the page rebuilds after it
+    const inPackages = out.errors.map((e) => e.file ?? "").filter((f) => f.startsWith("node_modules/"));
+    if (!out.ok && inPackages.length && config.apps.packageDownloads) {
+      void repairPackages(a.dir, inPackages).then((fixed) => {
+        if (!fixed) return;
+        log.info(`[apps] reinstalled damaged packages for ${u.username}/${a.id}`);
+        bus.emit(u.username, "build_needed", { app: a.id, paths: ["package.json"] });
+      });
+    }
     bus.emit(u.username, "app_built", {
       app: a.id,
       kind: out.hot ? "hot" : "full",

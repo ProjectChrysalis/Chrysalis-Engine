@@ -3,6 +3,7 @@
 // are off, and the builder that reads node_modules runs in the browser's
 // sandbox (src/builder). The engine only downloads files.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { abortable } from "../cancellation.js";
@@ -61,13 +62,13 @@ export function hasPackages(appDir: string): boolean {
  *  from source it is the bun that runs the engine, and a compiled engine
  *  acts as the full Bun CLI when BUN_BE_BUN is set. Nobody has to install
  *  Bun separately, and no shell ever sees the package names. */
-function runBun(appDir: string, args: string[], signal?: AbortSignal): Promise<InstallResult> {
+function runBun(appDir: string, args: string[], signal?: AbortSignal, env: NodeJS.ProcessEnv = {}): Promise<InstallResult> {
   return new Promise((resolve) => {
     signal?.throwIfAborted();
     const started = Date.now();
     const child = spawn(process.execPath, args, {
       cwd: appDir,
-      env: { ...scrubEnv(), BUN_BE_BUN: "1" },
+      env: { ...scrubEnv(), ...env, BUN_BE_BUN: "1" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     const cancel = () => child.kill("SIGKILL");
@@ -98,7 +99,99 @@ export function installApp(appDir: string, signal?: AbortSignal): Promise<Instal
   if (!hasPackages(appDir)) return Promise.resolve({ ok: false, log: "no package.json in this app", ms: 0 });
   // `bun install` does NOT remove packages taken out of package.json —
   // uninstallApp does that.
-  return abortable(exclusive(appDir, () => runBun(appDir, ["install", "--ignore-scripts", ...LINK_BACKEND], signal)), signal);
+  return abortable(exclusive(appDir, async () => {
+    const r = await runBun(appDir, ["install", "--ignore-scripts", ...LINK_BACKEND], signal);
+    if (!r.ok || !damagedPackages(appDir).length) return r;
+    repaired.add(path.resolve(appDir));
+    return reinstallClean(appDir, signal);
+  }), signal);
+}
+
+/**
+ * Installed packages that cannot be what they claim: a package.json that
+ * does not parse, or one of `suspects` (app-relative files a build failed
+ * on) starting with a control byte. Packages are linked out of a download
+ * cache that lives outside the engine's folders, so one bad cache entry
+ * damages every install of that package until the cache is bypassed.
+ */
+export function damagedPackages(appDir: string, suspects: readonly string[] = []): string[] {
+  const root = path.join(appDir, "node_modules");
+  const out = new Set<string>();
+  const check = (name: string) => {
+    const file = path.join(root, name, "package.json");
+    let text: string;
+    try {
+      text = fs.readFileSync(file, "utf8");
+    } catch {
+      return; // folders without a manifest (a scope's leftovers) are not packages
+    }
+    try {
+      JSON.parse(text.replace(/^\uFEFF/, ""));
+    } catch {
+      out.add(name);
+    }
+  };
+  let top: fs.Dirent[] = [];
+  try {
+    top = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  for (const e of top) {
+    if (e.name.startsWith(".") || !e.isDirectory()) continue;
+    if (!e.name.startsWith("@")) { check(e.name); continue; }
+    try {
+      for (const inner of fs.readdirSync(path.join(root, e.name), { withFileTypes: true })) {
+        if (inner.isDirectory()) check(`${e.name}/${inner.name}`);
+      }
+    } catch { /* scope folder vanished */ }
+  }
+  for (const rel of suspects) {
+    const m = /^node_modules\/((?:@[^/]+\/)?[^/]+)\//.exec(rel.replace(/\\/g, "/"));
+    if (!m) continue;
+    try {
+      const fd = fs.openSync(path.join(appDir, rel), "r");
+      const head = Buffer.alloc(1);
+      const n = fs.readSync(fd, head, 0, 1, 0);
+      fs.closeSync(fd);
+      // a control byte no text file starts with (tab, newline and CR do)
+      const b = head[0] ?? 0x20;
+      if (n === 1 && b < 0x20 && b !== 0x09 && b !== 0x0a && b !== 0x0d) out.add(m[1]!);
+    } catch { /* missing files are a resolve error, not damage */ }
+  }
+  return [...out];
+}
+
+/** Apps whose packages were reinstalled clean during this run: a second
+ *  damaged result means the damage is not in the cache, and repeating the
+ *  download would loop. */
+const repaired = new Set<string>();
+
+/** node_modules from scratch, with a download cache of its own that is
+ *  thrown away after: nothing comes from the shared cache, and files are
+ *  copied, not linked, so none of them shares its bytes with a cache file. */
+async function reinstallClean(appDir: string, signal?: AbortSignal): Promise<InstallResult> {
+  fs.rmSync(path.join(appDir, "node_modules"), { recursive: true, force: true });
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), "chrysalis-packages-"));
+  try {
+    return await runBun(appDir, ["install", "--ignore-scripts", "--force", "--backend=copyfile"], signal, { BUN_INSTALL_CACHE_DIR: cache });
+  } finally {
+    fs.rmSync(cache, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Reinstall an app's packages clean when they are damaged (see
+ * damagedPackages), at most once per app per run. Resolves true when a
+ * reinstall ran and left nothing damaged, so the caller rebuilds.
+ */
+export function repairPackages(appDir: string, suspects: readonly string[] = []): Promise<boolean> {
+  const key = path.resolve(appDir);
+  if (repaired.has(key) || running.has(key) || !hasPackages(appDir)) return Promise.resolve(false);
+  const damaged = damagedPackages(appDir, suspects);
+  if (!damaged.length) return Promise.resolve(false);
+  repaired.add(key);
+  return exclusive(appDir, () => reinstallClean(appDir)).then((r) => r.ok && !damagedPackages(appDir, suspects).length);
 }
 
 /** Take packages out of an app: `bun remove` updates package.json, the
