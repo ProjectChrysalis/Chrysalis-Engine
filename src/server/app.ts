@@ -62,7 +62,7 @@ import { MAX_SANDBOX_FILE, SANDBOX_HIDDEN, readWorkspaceFile, workspaceFs, write
 import { PROXY_ERROR, fsTokenUser, initNetTokens, issueFsToken, issueNetToken, netTokenUser, proxySandboxRequest, readSandboxEpoch, readSandboxSettings, writeSandboxSettings } from "../sandbox/network.js";
 import { log } from "../logger.js";
 import type { EventBus } from "./ws.js";
-import { ensureLookWatcher } from "./look-watch.js";
+import { ensureLookWatcher, stopLookWatcher } from "./look-watch.js";
 import { assertPublicHost } from "../net-guard.js";
 import { installApp, hasPackages, packagesBusy } from "../apps/packages.js";
 import { appFsOps, checkOutput, leaseHolder, MAX_BATCH_OPS, readBuildStatus, readDevMeta, sourceRev, takeLease, writeClientErrors, writeClientLogs, writeOutput } from "../builder/server.js";
@@ -163,6 +163,22 @@ function sha256(s: string): string {
 class HttpError extends Error {
   constructor(readonly status: 400 | 404 | 409 | 500 | 503, message: string) {
     super(message);
+  }
+}
+
+/** Windows refuses a folder rename while a handle just closed is still
+ *  draining or a virus scanner has a file inside open, then allows it a
+ *  moment later. */
+async function renameRetrying(from: string, to: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (attempt >= 9 || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES")) throw e;
+      await new Promise((r) => setTimeout(r, 200));
+    }
   }
 }
 
@@ -1270,10 +1286,13 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     mcpRegistries.delete(oldName);
     pluginStores.delete(oldName);
     stopUserSchedules(oldName);
+    // the watcher and the user's programs hold the workspace open
+    stopLookWatcher(oldName);
+    await services.removeUser(oldName);
     try {
       const oldDir = userPaths(dataDir, oldName).root;
       const newDir = userPaths(dataDir, record.username).root;
-      if (fs.existsSync(oldDir) && oldDir !== newDir) fs.renameSync(oldDir, newDir);
+      if (fs.existsSync(oldDir) && oldDir !== newDir) await renameRetrying(oldDir, newDir);
     } catch (e) {
       // roll the account back so users.json matches the directory layout
       users.rename(record.username, oldName);

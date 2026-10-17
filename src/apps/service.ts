@@ -528,6 +528,11 @@ export class ServiceManager {
     this.entries.delete(key);
   }
 
+  /** Every program a user runs: their workspace is about to move. */
+  async removeUser(username: string): Promise<void> {
+    await Promise.all([...this.entries.values()].filter((e) => e.target.username === username).map((e) => this.remove(username, e.target.appId)));
+  }
+
   async stopAll(): Promise<void> {
     await Promise.all([...this.entries.values()].map((e) => this.remove(e.target.username, e.target.appId)));
   }

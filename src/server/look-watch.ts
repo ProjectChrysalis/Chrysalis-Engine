@@ -149,6 +149,13 @@ export function ensureLookWatcher(username: string, appsDir: string, bus: EventB
   });
 }
 
+/** Close one user's watcher. A recursive watch holds the folder open, and
+ *  Windows refuses to rename a folder anything holds open. */
+export function stopLookWatcher(username: string): void {
+  active.get(username)?.close();
+  active.delete(username);
+}
+
 export function stopLookWatchers(): void {
   for (const w of active.values()) w.close();
   active.clear();
