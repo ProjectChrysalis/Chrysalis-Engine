@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { discoverPlugins, invalidatePluginCache, runPluginHook, runPluginRoute, runPluginTool, collectSiblingTools, collectSiblingLlmHooks, syncSchedules, stopSchedules, type LoadedPlugin } from "../src/plugins/runtime.js";
+import { discoverPlugins, invalidatePluginCache, pluginBundlesSettled, runPluginHook, runPluginRoute, runPluginTool, collectSiblingTools, collectSiblingLlmHooks, syncSchedules, stopSchedules, type LoadedPlugin } from "../src/plugins/runtime.js";
 import { log } from "../src/logger.js";
 import { PluginStoreService } from "../src/plugins/store.js";
 
@@ -96,6 +96,42 @@ describe("plugins split across files", () => {
     expect(plugin.modules).toEqual({});
     const out = await route(plugin);
     expect(JSON.stringify(out)).not.toContain("host file");
+  }, 20_000);
+
+  it("runs as one bundled module once built, and an edit never runs the old bundle", async () => {
+    writePlugin("bundled", { name: "Bundled", version: "1.0.0", permissions: ["routes"], origin: "local" }, `export { handleRoute } from "./src/route.js";`);
+    writeModule("bundled", "src/route.js", `import { v } from "./v.js"; export function handleRoute() { return { status: 200, json: { v } }; }`);
+    writeModule("bundled", "src/v.js", "export const v = 1;");
+    const plugins = path.join(dir, "plugins");
+    expect(discoverPlugins(plugins)[0]!.modules).toBeDefined();
+    await pluginBundlesSettled();
+    const bundled = discoverPlugins(plugins)[0]!;
+    expect(bundled.modules).toBeUndefined();
+    expect((await route(bundled))?.json).toEqual({ v: 1 });
+    const file = path.join(plugins, "bundled", "src", "v.js");
+    fs.writeFileSync(file, "export const v = 2;");
+    const later = new Date(Date.now() + 5000);
+    fs.utimesSync(file, later, later);
+    const edited = discoverPlugins(plugins)[0]!;
+    expect(edited.modules).toBeDefined();
+    expect((await route(edited))?.json).toEqual({ v: 2 });
+    await pluginBundlesSettled();
+    expect((await route(discoverPlugins(plugins)[0]!))?.json).toEqual({ v: 2 });
+  }, 20_000);
+
+  it("a bundle never reaches past the plugin folder", async () => {
+    fs.writeFileSync(path.join(dir, "secret.js"), `export const secret = "host file";`);
+    writePlugin("reach", { name: "Reach", version: "1.0.0", permissions: ["routes"], origin: "local" }, `
+      import { secret } from "../../secret.js";
+      export { handleRoute } from "./src/route.js";
+      export const leaked = secret;
+    `);
+    writeModule("reach", "src/route.js", `export function handleRoute() { return { status: 200, json: {} }; }`);
+    discoverPlugins(path.join(dir, "plugins"));
+    await pluginBundlesSettled();
+    const plugin = discoverPlugins(path.join(dir, "plugins"))[0]!;
+    expect(plugin.modules).toBeDefined();
+    expect(plugin.source).not.toContain("host file");
   }, 20_000);
 
   it("a path segment named __proto__ is an ordinary folder", async () => {

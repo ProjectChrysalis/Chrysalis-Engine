@@ -2,7 +2,7 @@
 
 A plugin folder contains `manifest.json` and `plugin.js`. App plugins live under `apps/<app>/plugins/<id>/`; account plugins live under `plugins/<id>/`. App-specific behavior belongs to the app, not the engine. Bump the plugin manifest version when changing its code.
 
-`plugin.js` is the entry and holds the exports. A larger plugin can split into more `.js` or `.mjs` files anywhere in its folder and import them by relative path (`import { listChats } from "./src/chats.js"`). Re-export from `plugin.js` whatever the engine calls. Links, hidden files and `node_modules` are not loaded, and package imports do not resolve. A change to any module reloads the plugin on its next call. Split plugins need Chrysalis 1.0.5 or newer.
+`plugin.js` is the entry and holds the exports. A larger plugin can split into more `.js` or `.mjs` files anywhere in its folder and import them by relative path (`import { listChats } from "./src/chats.js"`). Re-export from `plugin.js` whatever the engine calls. Links, hidden files and `node_modules` are not loaded, and package imports do not resolve. A change to any module reloads the plugin on its next call. The engine then runs a split plugin as one bundled module, so line numbers in its errors point into that bundle; the message and the module comments (`// plugin:src/chats.js`) still say where. Split plugins need Chrysalis 1.0.5 or newer.
 
 Plugins run synchronous ES module exports in QuickJS. There is no Node/Bun API, npm import resolution, direct `fetch`, or host process access. Shared helpers belong at module scope. Use `export function`, not CommonJS `exports`.
 

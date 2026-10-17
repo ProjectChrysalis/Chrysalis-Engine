@@ -152,6 +152,63 @@ export function pluginMentions(plugin: LoadedPlugin, name: string): boolean {
 
 const discoveryCache = new Map<string, { plugins: LoadedPlugin[]; key: string }>();
 
+/** A plugin split across files runs as one module once it is bundled: QuickJS
+ *  spends more linking a few dozen modules on every call than evaluating the
+ *  code in them. The bundle is built from the files discovery read, never
+ *  from disk, so it holds exactly what the sandbox would load. Until it is
+ *  ready, or when it fails, the files run as they are and the sandbox reports
+ *  the real error. Keyed by plugin folder; a stale key is never used. */
+const bundles = new Map<string, { key: string; source: string | null; done: Promise<void> }>();
+
+function bundleFor(pluginsDir: string, dir: string, source: string, modules: Record<string, string>): string | null {
+  const key = createHash("sha1").update(JSON.stringify([source, modules])).digest("hex");
+  const have = bundles.get(dir);
+  if (have?.key === key) return have.source;
+  const entry = { key, source: null as string | null, done: Promise.resolve() };
+  entry.done = bundlePlugin(dir, source, modules).then((bundled) => {
+    if (bundles.get(dir) !== entry) return;
+    entry.source = bundled;
+    discoveryCache.delete(pluginsDir);
+  }, (e: unknown) => {
+    log.warn(`plugin ${path.basename(dir)} runs unbundled: ${(e as Error).message}`);
+  });
+  bundles.set(dir, entry);
+  return null;
+}
+
+/** Resolves like the sandbox's loader: the exact path, then with ".js", then
+ *  the folder's index.js. Package imports stay imports. */
+async function bundlePlugin(dir: string, source: string, modules: Record<string, string>): Promise<string> {
+  const files = new Map<string, string>([["plugin.js", source], ...Object.entries(modules)]);
+  const result = await Bun.build({
+    entrypoints: [path.join(dir, "plugin.js")],
+    format: "esm",
+    target: "browser",
+    throw: false,
+    plugins: [{
+      name: "plugin-folder",
+      setup(build) {
+        build.onResolve({ filter: /.*/ }, (args) => {
+          if (!args.importer) return { path: "plugin.js", namespace: "plugin" };
+          if (!args.path.startsWith(".")) return { path: args.path, external: true };
+          const base = path.posix.normalize(path.posix.join(path.posix.dirname(args.importer), args.path));
+          const found = [base, `${base}.js`, `${base}/index.js`].find((p) => files.has(p));
+          if (!found) throw new Error(`${args.importer} imports ${args.path}, which is not a module in the plugin folder`);
+          return { path: found, namespace: "plugin" };
+        });
+        build.onLoad({ filter: /.*/, namespace: "plugin" }, (args) => ({ contents: files.get(args.path) ?? "", loader: "js" }));
+      },
+    }],
+  });
+  if (!result.success || !result.outputs[0]) throw new Error(result.logs.map(String).join("; ") || "bundle failed");
+  return result.outputs[0].text();
+}
+
+/** Every bundle started so far has finished (built or failed). */
+export async function pluginBundlesSettled(): Promise<void> {
+  await Promise.all([...bundles.values()].map((b) => b.done));
+}
+
 export function discoverPlugins(pluginsDir: string): LoadedPlugin[] {
   let key = "";
   try {
@@ -188,7 +245,8 @@ export function discoverPlugins(pluginsDir: string): LoadedPlugin[] {
         modules[m.rel] = fs.readFileSync(path.join(dir, m.rel), "utf8");
         mtimeMs = Math.max(mtimeMs, m.mtimeMs);
       }
-      plugins.push({ id, dir, manifest, source, modules, mtimeMs });
+      const bundled = Object.keys(modules).length ? bundleFor(pluginsDir, dir, source, modules) : null;
+      plugins.push(bundled ? { id, dir, manifest, source: bundled, mtimeMs } : { id, dir, manifest, source, modules, mtimeMs });
     } catch (e) {
       log.warn(`plugin "${id}" skipped: ${(e as Error).message}`);
     }
