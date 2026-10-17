@@ -60,6 +60,8 @@ export interface AgentState {
   banner: Banner | null
   ask: PendingAsk | null
   models: EngineModel[]
+  /** The model catalog has been read at least once (an empty list is then real). */
+  modelsLoaded: boolean
   model: string | null
   reasoning: string
   mode: "normal" | "plan" | "accept"
@@ -168,6 +170,7 @@ export const useAgent = create<AgentState>()((set, get) => {
     banner: null,
     ask: null,
     models: [],
+    modelsLoaded: false,
     model: prefs.get("agent-ui-model"),
     reasoning: prefs.get("agent-ui-reasoning") ?? "",
     mode: storedMode(),
@@ -182,6 +185,7 @@ export const useAgent = create<AgentState>()((set, get) => {
         const [settings, models, catalog] = await Promise.all([getSettings(), listModels(), agentApps()])
         set({
           models,
+          modelsLoaded: true,
           apps: catalog.apps,
           model: get().model ?? settings.model ?? null,
           reasoning: get().reasoning || settings.reasoning || "",
@@ -594,7 +598,7 @@ export function connectWs(): void {
       // catalog is stale. The engine emits after discovery finished, so the
       // re-pull lands the fresh list immediately.
       listModels()
-        .then((models) => useAgent.setState({ models }))
+        .then((models) => useAgent.setState({ models, modelsLoaded: true }))
         .catch(() => undefined)
       return
     }

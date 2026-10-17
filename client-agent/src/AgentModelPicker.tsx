@@ -15,6 +15,7 @@ const RECENT = "agent-model-recent"
 
 export function AgentModelPicker() {
   const models = useAgent((s) => s.models)
+  const modelsLoaded = useAgent((s) => s.modelsLoaded)
   const selected = useAgent((s) => s.model)
   const reasoning = useAgent((s) => s.reasoning)
   const setModel = useAgent((s) => s.setModel)
@@ -46,6 +47,14 @@ export function AgentModelPicker() {
     const next = favorites.includes(id) ? favorites.filter((item) => item !== id) : [...favorites, id]
     setFavorites(next)
     saveModelList(FAVORITES, next)
+  }
+  // nothing to pick from: the way forward is a connection with models
+  if (modelsLoaded && !models.length && window.parent !== window) {
+    return (
+      <Button variant="ghost" size="sm" className="agent-composer-model" onClick={() => window.parent.postMessage({ __chrysalisAgent: "settings", tab: "api" }, location.origin)}>
+        <span className="truncate">{tr("Open API connections")}</span>
+      </Button>
+    )
   }
   return (
     <Dialog open={open} onOpenChange={(next) => { setOpen(next); if (next) { setQuery(""); setConnection("") } }}>

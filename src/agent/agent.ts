@@ -406,7 +406,7 @@ export class UserAgent {
     // the user's context override is the model's window here too: it decides
     // when the session auto-compacts
     const available = (await svc.models.getAvailable()).map((m) => svc.withOverride(m));
-    if (available.length === 0) throw new Error(`no models configured for ${username}`);
+    if (available.length === 0) throw new Error("No models configured yet. Add one in Settings, API connections.");
     // Deterministic pick: request model → user settings default → instance
     // default → faux (tests) → sorted first.
     const userDefault = readUserDefaultModel(paths);
