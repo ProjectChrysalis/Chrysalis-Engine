@@ -333,7 +333,7 @@ A Chrysalis app: React + Tailwind. Chrysalis builds it in your browser as you
 edit, so there is nothing to install or run locally.
 
 - \`src/\` UI. Entry \`main.tsx\`, page \`app.tsx\`.
-- \`plugins/\` backend routes, sandboxed. One folder per plugin: manifest.json + plugin.js.
+- \`plugins/\` backend routes, sandboxed. One folder per plugin: manifest.json + plugin.js, which can import more files from its folder.
 - \`data/\` app-owned data, kept with the workspace.
 - \`manifest.json\` identity. Bump \`version\` when a bundled plugin changes.
 

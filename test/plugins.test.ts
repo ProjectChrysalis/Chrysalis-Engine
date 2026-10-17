@@ -49,6 +49,67 @@ describe("plugin discovery", () => {
   });
 });
 
+describe("plugins split across files", () => {
+  const writeModule = (id: string, rel: string, code: string) => {
+    const file = path.join(dir, "plugins", id, rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, code);
+  };
+  const route = (plugin: LoadedPlugin) => runPluginRoute(plugin, { method: "POST", path: "/x", query: {}, body: {} }, deps());
+
+  it("plugin.js imports modules beside it by relative path, nested folders included", async () => {
+    writePlugin("split", { name: "Split", version: "1.0.0", permissions: ["routes"], origin: "local" }, `
+      import { greet } from "./src/greet.js";
+      export { handleRoute } from "./src/routes/index.mjs";
+      export const both = () => greet("plugin");
+    `);
+    writeModule("split", "src/greet.js", `import { punct } from "../lib/punct.js"; export const greet = (who) => "hello " + who + punct;`);
+    writeModule("split", "lib/punct.js", `export const punct = "!";`);
+    writeModule("split", "src/routes/index.mjs", `import { greet } from "../greet.js"; export function handleRoute() { return { status: 200, json: { said: greet("route") } }; }`);
+    const plugin = discoverPlugins(path.join(dir, "plugins"))[0]!;
+    expect(Object.keys(plugin.modules ?? {})).toEqual(["lib/punct.js", "src/greet.js", "src/routes/index.mjs"]);
+    expect((await route(plugin))?.json).toEqual({ said: "hello route!" });
+  }, 20_000);
+
+  it("an edit to a module alone reloads the plugin", async () => {
+    writePlugin("hot", { name: "Hot", version: "1.0.0", permissions: ["routes"], origin: "local" }, `export { handleRoute } from "./src/route.js";`);
+    writeModule("hot", "src/route.js", `export function handleRoute() { return { status: 200, json: { v: 1 } }; }`);
+    expect((await route(discoverPlugins(path.join(dir, "plugins"))[0]!))?.json).toEqual({ v: 1 });
+    const file = path.join(dir, "plugins", "hot", "src", "route.js");
+    fs.writeFileSync(file, `export function handleRoute() { return { status: 200, json: { v: 2 } }; }`);
+    const later = new Date(Date.now() + 5000);
+    fs.utimesSync(file, later, later);
+    expect((await route(discoverPlugins(path.join(dir, "plugins"))[0]!))?.json).toEqual({ v: 2 });
+  }, 20_000);
+
+  it("links, hidden entries and node_modules never reach the sandbox", async () => {
+    const outside = path.join(dir, "outside.js");
+    fs.writeFileSync(outside, `export const secret = "host file";`);
+    writePlugin("fenced", { name: "Fenced", version: "1.0.0", permissions: ["routes"], origin: "local" }, `
+      import * as linked from "./linked.js";
+      export function handleRoute() { return { status: 200, json: linked }; }
+    `);
+    fs.symlinkSync(outside, path.join(dir, "plugins", "fenced", "linked.js"));
+    writeModule("fenced", ".hidden/a.js", "export const a = 1;");
+    writeModule("fenced", "node_modules/b/index.js", "export const b = 1;");
+    const plugin = discoverPlugins(path.join(dir, "plugins"))[0]!;
+    expect(plugin.modules).toEqual({});
+    const out = await route(plugin);
+    expect(JSON.stringify(out)).not.toContain("host file");
+  }, 20_000);
+
+  it("a path segment named __proto__ is an ordinary folder", async () => {
+    writePlugin("proto", { name: "Proto", version: "1.0.0", permissions: ["routes"], origin: "local" }, `
+      import { v } from "./__proto__/v.js";
+      export function handleRoute() { return { status: 200, json: { v, clean: ({}).polluted === undefined } }; }
+    `);
+    writeModule("proto", "__proto__/v.js", `export const v = "ok";`);
+    const out = await route(discoverPlugins(path.join(dir, "plugins"))[0]!);
+    expect(out?.json).toEqual({ v: "ok", clean: true });
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  }, 20_000);
+});
+
 it("previews the request hook pipeline without generating a reply", async () => {
   writePlugin("previewer", { name: "Previewer", version: "1.0.0", permissions: ["routes", "llm"], origin: "local" }, `
     export function handleRoute(req) {

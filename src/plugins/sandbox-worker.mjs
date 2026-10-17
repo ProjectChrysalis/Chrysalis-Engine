@@ -4,7 +4,7 @@
  * respawns it (SPEC-v2 §S1: no sandbox failure may take down the server).
  *
  * Protocol (all plain JSON-serializable objects):
- *   → { id, source, hook, ctx, storeSnapshot, maxStoreBytes }
+ *   → { id, source, modules, hook, ctx, storeSnapshot, maxStoreBytes }
  *   ← { id, ok: true, out, storeWrites, llmRequests, logs }
  *     | { id, ok: false, error }
  *
@@ -145,6 +145,23 @@ const regexSvc = {
   },
 };
 
+/** The plugin folder as the guest sees it: plugin.js plus the modules beside
+ *  it, nested by path so `import "./src/x.js"` resolves from the importer. */
+function pluginTree(source, modules) {
+  // null prototypes: a path segment is a key, and "__proto__" must stay one
+  const root = Object.assign(Object.create(null), { "plugin.js": source });
+  for (const [rel, text] of Object.entries(modules ?? {})) {
+    const parts = rel.split("/");
+    let dir = root;
+    for (const part of parts.slice(0, -1)) {
+      if (typeof dir[part] !== "object") dir[part] = Object.create(null);
+      dir = dir[part];
+    }
+    dir[parts[parts.length - 1]] = text;
+  }
+  return root;
+}
+
 /** A route's own heap. App data is read whole into it, so a library's worth
  *  of JSON plus the serialized reply must fit. */
 const DEFAULT_MEMORY_LIMIT = 256 * 1024 * 1024;
@@ -198,7 +215,7 @@ function harnessCode(hook) {
   // serialized again on every call: about a millisecond each, so a route
   // reading a thousand files spent a second on that alone. The guest gets
   // its own copy, whose functions call the host's without a receiver.
-  const preamble = `import { varied } from "guard.js";\nimport * as mod from "plugin.js";
+  const preamble = `import { varied } from "guard.js";\nimport * as mod from "plugin/plugin.js";
 const local = (v, depth) => {
   if (typeof v === "function") return (...args) => v(...args);
   if (v === null || typeof v !== "object" || depth > 6) return v;
@@ -241,7 +258,7 @@ if (typeof fn === "function") { out = fn(ctx, host); }`);
 }
 
 port.on("message", async (msg) => {
-  const { id, source, hook, ctx, storeSnapshot = {}, llmResults = {}, netResults = {}, netAllowed = false, maxStoreBytes = 1024 * 1024, storeAllowed = true, llmAllowed = true, fsAllowed = false, fsRoot = null, fsReadOnly = false, fsTransaction = null, zipAllowed = false, zipBase64 = null, zipEntries: providedEntries = null, siblingToolDefs = null, embedResults = {}, executionTimeoutMs = 10_000, memoryLimitBytes = DEFAULT_MEMORY_LIMIT, trackReads = false } = msg;
+  const { id, source, modules = null, hook, ctx, storeSnapshot = {}, llmResults = {}, netResults = {}, netAllowed = false, maxStoreBytes = 1024 * 1024, storeAllowed = true, llmAllowed = true, fsAllowed = false, fsRoot = null, fsReadOnly = false, fsTransaction = null, zipAllowed = false, zipBase64 = null, zipEntries: providedEntries = null, siblingToolDefs = null, embedResults = {}, executionTimeoutMs = 10_000, memoryLimitBytes = DEFAULT_MEMORY_LIMIT, trackReads = false } = msg;
   const logs = [];
   const fsWrites = new Set();
   const llmRequests = [];
@@ -656,7 +673,7 @@ if (globalThis.crypto) {
         memoryLimit: memoryLimitBytes,
         maxStackSize: 1024 * 1024,
         env: { ctx, host },
-        nodeModules: { "plugin.js": source, "guard.js": guard },
+        nodeModules: { plugin: pluginTree(source, modules), "guard.js": guard },
         console: {
           log: cappedConsole("log"),
           error: cappedConsole("error"),

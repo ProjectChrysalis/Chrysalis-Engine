@@ -1325,7 +1325,7 @@ function systemPromptFor(username: string, isAdmin: boolean, paths: UserPaths, s
 - apps/<app-id>/            — installed apps. THE unit of experience. Every app UI is a standard web project (React + tailwind by default; any framework-free TS/JS works too).
   - manifest.json           { name, version, kind, origin }
   - package.json, index.html, src/  — the app's UI (built in the user's browser on save; the open tab hot-updates)
-  - plugins/<id>/           bundled backend behavior: manifest.json {permissions} + plugin.js
+  - plugins/<id>/           bundled backend behavior: manifest.json {permissions} + plugin.js (the entry; it may import more modules from its folder by relative path)
   - data/                   app-owned data files (git-tracked): whatever that app stores, in its own layout
   - node_modules/, dist/    — derived (installed / browser-built, outside git). dist/.chrysalis-build.json holds the last build's errors.
   - kind "service" runs an administrator-approved program with its own page and API. Read the service-app topic in chrysalis-docs for launch configuration, model access and live updates; use app_request with routes documented by the app.

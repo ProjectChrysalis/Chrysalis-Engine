@@ -68,6 +68,10 @@ export interface LoadedPlugin {
   dir: string;
   manifest: PluginManifest;
   source: string;
+  /** The other module files in the plugin folder, by path relative to it
+   *  ("src/chats.js"): plugin.js imports them with relative specifiers. */
+  modules?: Record<string, string>;
+  /** Newest change across plugin.js, its modules and manifest.json. */
   mtimeMs: number;
   /** App data dir fs scope for app-bundled plugins (null for top-level). */
   fsRoot?: string | null;
@@ -117,6 +121,29 @@ export interface PluginRuntimeDeps {
 
 // ---------- discovery (mtime-cached → cheap hot reload) ----------
 
+const MAX_PLUGIN_MODULES = 256;
+const MAX_PLUGIN_CODE_BYTES = 16 * 1024 * 1024;
+
+/** The module files beside plugin.js, sorted by path. Plain .js/.mjs files
+ *  only: links, hidden entries and node_modules are passed over, so nothing
+ *  outside the folder reaches the sandbox. */
+function pluginModuleFiles(dir: string): Array<{ rel: string; mtimeMs: number; size: number }> {
+  const out: Array<{ rel: string; mtimeMs: number; size: number }> = [];
+  const walk = (sub: string) => {
+    for (const entry of fs.readdirSync(path.join(dir, sub), { withFileTypes: true })) {
+      if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+      const rel = sub ? `${sub}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) { walk(rel); continue; }
+      if (!entry.isFile() || rel === "plugin.js" || !/\.m?js$/.test(entry.name)) continue;
+      const stat = fs.statSync(path.join(dir, rel));
+      out.push({ rel, mtimeMs: stat.mtimeMs, size: stat.size });
+      if (out.length > MAX_PLUGIN_MODULES) throw new Error(`more than ${MAX_PLUGIN_MODULES} module files`);
+    }
+  };
+  walk("");
+  return out.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+}
+
 const discoveryCache = new Map<string, { plugins: LoadedPlugin[]; key: string }>();
 
 export function discoverPlugins(pluginsDir: string): LoadedPlugin[] {
@@ -126,8 +153,9 @@ export function discoverPlugins(pluginsDir: string): LoadedPlugin[] {
     for (const id of fs.readdirSync(pluginsDir)) {
       try {
         // manifest mtime matters too — permissions/networkHosts edits must be
-      // picked up, not just plugin.js changes
+      // picked up, not just code changes; module paths catch adds and removes
       key += `${id}:${fs.statSync(path.join(pluginsDir, id, "plugin.js")).mtimeMs}:${fs.statSync(path.join(pluginsDir, id, "manifest.json")).mtimeMs}`;
+      for (const m of pluginModuleFiles(path.join(pluginsDir, id))) key += `:${m.rel}@${m.mtimeMs}`;
       } catch {
         /* incomplete plugin dir — skipped below */
       }
@@ -145,9 +173,18 @@ export function discoverPlugins(pluginsDir: string): LoadedPlugin[] {
       const manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8")) as PluginManifest;
       if (!manifest?.name || !Array.isArray(manifest.permissions)) continue;
       const source = fs.readFileSync(path.join(dir, "plugin.js"), "utf8");
-      plugins.push({ id, dir, manifest, source, mtimeMs: fs.statSync(path.join(dir, "plugin.js")).mtimeMs });
-    } catch {
-      log.warn(`plugin "${id}" skipped: invalid manifest or missing plugin.js`);
+      let mtimeMs = Math.max(fs.statSync(path.join(dir, "plugin.js")).mtimeMs, fs.statSync(path.join(dir, "manifest.json")).mtimeMs);
+      let bytes = source.length;
+      const modules: Record<string, string> = {};
+      for (const m of pluginModuleFiles(dir)) {
+        bytes += m.size;
+        if (bytes > MAX_PLUGIN_CODE_BYTES) throw new Error(`code over ${MAX_PLUGIN_CODE_BYTES / 1024 / 1024} MB`);
+        modules[m.rel] = fs.readFileSync(path.join(dir, m.rel), "utf8");
+        mtimeMs = Math.max(mtimeMs, m.mtimeMs);
+      }
+      plugins.push({ id, dir, manifest, source, modules, mtimeMs });
+    } catch (e) {
+      log.warn(`plugin "${id}" skipped: ${(e as Error).message}`);
     }
   }
   discoveryCache.set(pluginsDir, { plugins, key });
@@ -187,6 +224,7 @@ export function discoverAppPlugins(appsDir: string, appId: string): LoadedPlugin
 export async function readPluginExport(plugin: LoadedPlugin, exportName: string): Promise<unknown> {
   const r = await sandbox.eval({
     source: plugin.source,
+    modules: plugin.modules,
     hook: `__export:${exportName}`,
     ctx: { exportName },
     storeSnapshot: {},
@@ -214,6 +252,7 @@ export async function runPluginTool(
   for (let pass = 0; pass < MAX_TOOL_PASSES; pass++) {
     const r = await sandbox.eval({
       source: plugin.source,
+      modules: plugin.modules,
       hook: "__tool",
       ctx: { name: toolName, args },
       storeSnapshot: snapshotOf(plugin, deps),
@@ -356,7 +395,7 @@ export async function collectSiblingLlmHooks(
     if (sibling.id === self.id) continue;
     if (!hasCapAny(sibling, "hooks", deps) || !hasCapAny(sibling, "llm", deps)) continue;
     // cheap pre-check before paying for a sandbox eval: no name, no export
-    if (!sibling.source.includes(exportName)) continue;
+    if (!sibling.source.includes(exportName) && !Object.values(sibling.modules ?? {}).some((m) => m.includes(exportName))) continue;
     hooks.push({
       plugin: sibling,
       priority: typeof sibling.manifest.priority === "number" ? sibling.manifest.priority : 0,
@@ -893,7 +932,7 @@ export async function runPluginRoute(
     const storeOk = hasCapAny(plugin, "store", deps);
     let storeSnapshot = snapshotOf(plugin, deps);
     const memoKey = req.method === "GET" && !zipOk && !siblingToolDefs
-      ? createHash("sha1").update(JSON.stringify([plugin.id, plugin.dir, plugin.mtimeMs, plugin.source.length, plugin.fsRoot ?? null, fsOk, storeOk, caps, req.path, req.query, storeSnapshot])).digest("hex")
+      ? createHash("sha1").update(JSON.stringify([plugin.id, plugin.dir, plugin.mtimeMs, plugin.source.length, Object.keys(plugin.modules ?? {}), plugin.fsRoot ?? null, fsOk, storeOk, caps, req.path, req.query, storeSnapshot])).digest("hex")
       : null;
     const remembered = memoKey ? recallRoute(memoKey) : null;
     if (remembered) return remembered.res;
@@ -902,6 +941,7 @@ export async function runPluginRoute(
       const r = await box.eval({
         ...limits,
         source: plugin.source,
+        modules: plugin.modules,
         hook: "__route",
         // zipBase64 already rides the message for the host-side zip service —
         // keep the multi-MB string OUT of the guest's ctx (64MB heap)
@@ -1096,6 +1136,7 @@ async function hookPasses(
   for (let pass = 0; pass < MAX_PASSES; pass++) {
     const r = await box.eval({
       source: plugin.source,
+      modules: plugin.modules,
       hook,
       ctx: current as unknown,
       storeSnapshot,

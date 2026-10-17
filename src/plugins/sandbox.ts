@@ -23,6 +23,8 @@ const CALL_OVERHEAD_MS = 10_000;
 
 export interface SandboxRequest {
   source: string;
+  /** Module files beside plugin.js, by relative path. */
+  modules?: Record<string, string>;
   hook: string;
   ctx: unknown;
   storeSnapshot: Record<string, unknown>;
