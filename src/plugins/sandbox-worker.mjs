@@ -381,6 +381,8 @@ if (globalThis.crypto) {
     // { "path": "text content" } for TEXT entries (binary entries listed as
     // { "__binary__": true }). Size/count capped. Sandboxed plugin then maps
     // entries to app data — the kernel never interprets app formats.
+    // the fs service's image writer, for images already in hand as bytes
+    let storeImage = null;
     const zipSvc = (() => {
       const denied = () => { throw new Error("permission \"zip\" not granted (add \"zip\" to manifest permissions)"); };
       if (!zipAllowed) return { entries: denied, list: denied };
@@ -399,7 +401,7 @@ if (globalThis.crypto) {
           const bytes = Buffer.from(entry.base64, "base64");
           if (!bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error("invalid PNG");
           const metadata = pngMetadata(bytes);
-          return { url: host.fs.media("data:image/png;base64," + entry.base64), metadata, text: pngText(metadata) };
+          return { url: storeImage ? storeImage("png", bytes) : host.fs.media("data:image/png;base64," + entry.base64), metadata, text: pngText(metadata) };
         },
       };
       function zipEntries() {
@@ -556,6 +558,29 @@ if (globalThis.crypto) {
         // list on each write made a batch of a thousand writes quadratic
         fs.appendFileSync(path.join(fsTransaction, "journal.jsonl"), JSON.stringify({ rel, backup }) + "\n");
       };
+      // stored once per content hash; PNG text chunks are dropped
+      storeImage = (ext, bytes) => {
+        if (bytes.length > 64 * 1024 * 1024) throw new Error("image exceeds 64 MB");
+        if (ext === "png" && bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) {
+          const chunks = [bytes.subarray(0, 8)];
+          let at = 8;
+          while (at < bytes.length) {
+            if (at + 12 > bytes.length) throw new Error("invalid PNG chunk");
+            const length = bytes.readUInt32BE(at), end = at + length + 12;
+            if (end > bytes.length) throw new Error("invalid PNG chunk length");
+            const type = bytes.toString("ascii", at + 4, at + 8);
+            if (!["tEXt", "iTXt", "zTXt"].includes(type)) chunks.push(bytes.subarray(at, end));
+            at = end;
+          }
+          bytes = Buffer.concat(chunks);
+        }
+        const name = createHash("sha256").update(bytes).digest("hex") + "." + ext;
+        sideEffects = true;
+        const full = withinNewFile("__media/" + name);
+        fs.mkdirSync(path.dirname(full), { recursive: true });
+        if (!fs.existsSync(full)) fs.writeFileSync(full, bytes, { flag: "wx" });
+        return "/v1/apps/" + encodeURIComponent(path.basename(path.dirname(fsRoot))) + "/__media/" + name;
+      };
       return {
         lookup: (collection, key, value) => {
           if (!/^[a-zA-Z0-9_-]{1,64}$/.test(String(collection))) throw new Error("invalid lookup collection");
@@ -577,33 +602,12 @@ if (globalThis.crypto) {
           const bytes = Buffer.from(match[2], "base64");
           if (bytes.length > 64 * 1024 * 1024) throw new Error("image exceeds 64 MB");
           const metadata = match[1] === "png" ? pngMetadata(bytes) : {};
-          sideEffects = true;
-          return { url: host.fs.media(uri), metadata, text: pngText(metadata) };
+          return { url: storeImage(match[1], bytes), metadata, text: pngText(metadata) };
         },
         media: (uri) => {
           const match = /^data:image\/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=]+)$/.exec(String(uri));
           if (!match || match[2].length > 90 * 1024 * 1024) throw new Error("invalid image or image exceeds 64 MB");
-          let bytes = Buffer.from(match[2], "base64");
-          if (bytes.length > 64 * 1024 * 1024) throw new Error("image exceeds 64 MB");
-          if (match[1] === "png" && bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) {
-            const chunks = [bytes.subarray(0, 8)];
-            let at = 8;
-            while (at < bytes.length) {
-              if (at + 12 > bytes.length) throw new Error("invalid PNG chunk");
-              const length = bytes.readUInt32BE(at), end = at + length + 12;
-              if (end > bytes.length) throw new Error("invalid PNG chunk length");
-              const type = bytes.toString("ascii", at + 4, at + 8);
-              if (!["tEXt", "iTXt", "zTXt"].includes(type)) chunks.push(bytes.subarray(at, end));
-              at = end;
-            }
-            bytes = Buffer.concat(chunks);
-          }
-          const name = createHash("sha256").update(bytes).digest("hex") + "." + match[1];
-          sideEffects = true;
-          const full = withinNewFile("__media/" + name);
-          fs.mkdirSync(path.dirname(full), { recursive: true });
-          if (!fs.existsSync(full)) fs.writeFileSync(full, bytes, { flag: "wx" });
-          return "/v1/apps/" + encodeURIComponent(path.basename(path.dirname(fsRoot))) + "/__media/" + name;
+          return storeImage(match[1], Buffer.from(match[2], "base64"));
         },
         read: (rel) => { try { return fs.readFileSync(readFile(rel), "utf8"); } catch (e) { scrub(e, rel); } },
         // many files in one call: a folder of thousands of small files paid
