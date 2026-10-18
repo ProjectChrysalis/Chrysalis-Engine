@@ -93,12 +93,17 @@ function matches(root, pattern, onDir) {
   return out;
 }
 
+/** The value at a dotted path, null when absent. A path ending in "?" asks
+ *  only whether there is one, so a large value (an embedded lorebook) can be
+ *  noticed without being copied into the index. */
 function pick(value, dotted) {
+  const exists = dotted.endsWith("?");
   let at = value;
-  for (const key of dotted.split(".")) {
-    if (at === null || typeof at !== "object" || !Object.hasOwn(at, key)) return null;
+  for (const key of (exists ? dotted.slice(0, -1) : dotted).split(".")) {
+    if (at === null || typeof at !== "object" || !Object.hasOwn(at, key)) return exists ? false : null;
     at = at[key];
   }
+  if (exists) return at !== undefined && at !== null;
   return at === undefined ? null : at;
 }
 
@@ -128,7 +133,7 @@ function test(value, cond) {
 }
 
 /**
- * `spec`: { files: "characters/*\/card.json", fields: { name: "name", fav: "extensions.fav" } }
+ * `spec`: { files: "characters/*\/card.json", fields: { name: "name", fav: "extensions.fav", hasBook: "character_book?" } }
  * `options`: { where: { field: value | [any of] | {contains, gt, gte, lt, lte, exists, not} },
  *   sort: field | [field, "desc"] | [[field, "desc"], …], offset, limit }
  * → { rows: [{ path, keys, data, error? }], total }. `keys` is what each `*`

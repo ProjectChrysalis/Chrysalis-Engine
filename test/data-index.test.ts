@@ -17,7 +17,7 @@ const put = (rel: string, value: unknown) => {
 const later = () => Bun.sleep(5);
 
 describe("field index", () => {
-  const spec = { files: "characters/*/card.json", fields: { name: "name", fav: "extensions.fav", tags: "tags" } };
+  const spec = { files: "characters/*/card.json", fields: { name: "name", fav: "extensions.fav", tags: "tags", book: "character_book?" } };
 
   it("answers from the files, and follows every edit, addition and removal", async () => {
     put("characters/aria/card.json", { name: "Aria", tags: ["fantasy"], extensions: { fav: true }, character_book: { entries: "x".repeat(100_000) } });
@@ -28,6 +28,7 @@ describe("field index", () => {
     expect(first.total).toBe(3);
     expect(first.rows.map((r) => [r.keys[0], r.data.name, r.data.fav])).toEqual([["aria", "Aria", true], ["kael", "Kael", null], ["broken", null, null]]);
     expect(first.rows[2]!.error).toBeTruthy();
+    expect(first.rows.map((r) => r.data.book)).toEqual([true, false, null]);
 
     await later();
     put("characters/kael/card.json", { name: "Kael Renamed", tags: ["sci-fi"], extensions: { fav: true } });
