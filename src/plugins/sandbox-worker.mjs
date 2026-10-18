@@ -21,7 +21,11 @@
  *   host.net.request(key, req)          → collected for two-phase execution;
  *                                         results in host.net.results next pass
  *   host.fs, host.zip                   → the app's data folder and uploaded
- *                                         zips, when permitted
+ *                                         zips, when permitted; fs.append
+ *                                         adds to a file, zip.image stores an
+ *                                         image entry as media, zip.read
+ *                                         hands a large text entry over in
+ *                                         line-aligned slices
  *   host.regex.matches(source, flags, text)
  *                                       → every match of a pattern, found by
  *                                         the host's own regex engine:
@@ -81,6 +85,7 @@ function pngMetadata(bytes) {
 }
 
 const utf8 = new TextDecoder("utf-8");
+const IMAGE_NAME = /\.(png|jpe?g|webp|gif)$/i;
 import variant from "@jitl/quickjs-ng-wasmfile-release-sync";
 // the wasm travels with the code: a compiled engine has no node_modules for
 // the emscripten loader to find it in
@@ -554,16 +559,46 @@ port.on("message", async (msg) => {
           const entries = zipEntries();
           if (!providedEntries) return entries;
           const out = {};
-          for (const [name, entry] of Object.entries(entries)) out[name] = /\.png$/i.test(name) && entry?.__b64__ ? { __image__: true, size: entry.size } : entry;
+          for (const [name, entry] of Object.entries(entries)) {
+            out[name] = entry?.__large__ ? { __large__: true, size: entry.size }
+              : IMAGE_NAME.test(name) && entry?.__b64__ ? { __image__: true, size: entry.size }
+              : entry;
+          }
           return out;
         },
+        // an image entry stored as media; a PNG's text chunks come back too
         image: (name) => {
           const entry = zipEntries()[String(name)];
-          if (!entry?.__b64__ || typeof entry.base64 !== "string" || !/\.png$/i.test(String(name))) throw new Error("image entry not found");
+          const ext = IMAGE_NAME.exec(String(name))?.[1]?.toLowerCase();
+          if (!entry?.__b64__ || typeof entry.base64 !== "string" || !ext) throw new Error("image entry not found");
           const bytes = Buffer.from(entry.base64, "base64");
-          if (!bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error("invalid PNG");
-          const metadata = pngMetadata(bytes);
-          return { url: storeImage ? storeImage("png", bytes) : host.fs.media("data:image/png;base64," + entry.base64), metadata, text: pngText(metadata) };
+          const type = ext === "jpg" ? "jpeg" : ext;
+          if (type === "png" && !bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error("invalid PNG");
+          const metadata = type === "png" ? pngMetadata(bytes) : {};
+          return { url: storeImage ? storeImage(type, bytes) : host.fs.media(`data:image/${type};base64,${entry.base64}`), metadata, text: pngText(metadata) };
+        },
+        // a large text entry, one slice at a time: whole lines from `offset`,
+        // about `maxBytes` of them (more when one line is longer), and where
+        // the next slice starts, or null at the end
+        read: (name, offset = 0, maxBytes = 4 * 1024 * 1024) => {
+          const entry = zipEntries()[String(name)];
+          if (!entry?.__large__ || typeof entry.file !== "string") throw new Error("large entry not found");
+          const from = Number(offset), want = Math.min(64 * 1024 * 1024, Math.max(64 * 1024, Number(maxBytes) || 0));
+          if (!Number.isSafeInteger(from) || from < 0 || from > entry.size) throw new Error("invalid offset");
+          const fd = fs.openSync(entry.file, "r");
+          try {
+            let buf = Buffer.alloc(0);
+            for (;;) {
+              const chunk = Buffer.alloc(Math.min(want, entry.size - from - buf.length));
+              const got = chunk.length ? fs.readSync(fd, chunk, 0, chunk.length, from + buf.length) : 0;
+              buf = Buffer.concat([buf, chunk.subarray(0, got)]);
+              const end = from + buf.length >= entry.size || got === 0;
+              if (end) return { text: utf8.decode(buf), next: null };
+              const cut = buf.lastIndexOf(10);
+              if (cut >= 0) return { text: utf8.decode(buf.subarray(0, cut + 1)), next: from + cut + 1 };
+              if (buf.length >= 256 * 1024 * 1024) return { text: utf8.decode(buf), next: from + buf.length };
+            }
+          } finally { fs.closeSync(fd); }
         },
       };
       function zipEntries() {
@@ -783,13 +818,25 @@ port.on("message", async (msg) => {
         write: (rel, content) => {
           if (typeof content !== "string") throw new Error("fs.write(rel, string)");
           const full = withinNewFile(rel);
-          if (Buffer.byteLength(content) > 64 * 1024 * 1024) throw new Error("fs.write content too large (64MB)");
+          if (Buffer.byteLength(content) > 512 * 1024 * 1024) throw new Error("fs.write content too large (512MB)");
           try {
             fs.mkdirSync(path.dirname(full), { recursive: true });
             beforeWrite(full);
             const temporary = full + "." + randomUUID() + ".tmp";
             try { fs.writeFileSync(temporary, content, { encoding: "utf8", flag: "wx" }); fs.renameSync(temporary, full); fsWrites.add(path.relative(fsRoot, full).split(path.sep).join("/")); }
             finally { fs.rmSync(temporary, { force: true }); }
+          } catch (e) { scrub(e, rel); }
+        },
+        // the end of a file, which may grow past what one write can carry
+        append: (rel, content) => {
+          if (typeof content !== "string") throw new Error("fs.append(rel, string)");
+          const full = withinNewFile(rel);
+          if (Buffer.byteLength(content) > 64 * 1024 * 1024) throw new Error("fs.append content too large (64MB)");
+          try {
+            fs.mkdirSync(path.dirname(full), { recursive: true });
+            beforeWrite(full);
+            fs.appendFileSync(full, content, "utf8");
+            fsWrites.add(path.relative(fsRoot, full).split(path.sep).join("/"));
           } catch (e) { scrub(e, rel); }
         },
         list: (rel = ".") => {

@@ -8,13 +8,22 @@ import yauzl, { type Entry, type ZipFile } from "yauzl";
 export const IMPORT_CHUNK_BYTES = 8 * 1024 * 1024;
 export const IMPORT_MAX_BYTES = 32 * 1024 ** 3;
 const MAX_EXPANDED = 256 * 1024 ** 3;
-const MAX_ENTRY = 64 * 1024 ** 2;
-/** Entries reach the app's sandbox heap whole, except PNG images: the host
+/** A text entry up to this size reaches the app's sandbox whole. A bigger
+ *  one (a transcript years long) is copied out of the archive to disk and
+ *  handed over as {__large__, size}: the app reads it in line-aligned slices
+ *  through host.zip.read, in a batch of its own, so no single file is too big
+ *  for the sandbox's heap or the batch's time. */
+const MAX_WHOLE_TEXT = 64 * 1024 ** 2;
+/** Binary entries (images) are read on the host and never enter the guest. */
+const MAX_BINARY = 256 * 1024 ** 2;
+/** Entries reach the app's sandbox heap whole, except images: the host
  *  decodes those and only their metadata reaches the guest, so they can
  *  fill more of a batch. */
 const BATCH_GUEST_BYTES = 8 * 1024 ** 2;
 const BATCH_BYTES = 32 * 1024 ** 2;
 const TEXT_ENTRY = /\.(json|jsonl|txt|md|js|css|html|yml|yaml|csv)$/i;
+const IMAGE_ENTRY = /\.(png|jpe?g|webp|gif)$/i;
+const isLarge = (row: { name: string; size: number }): boolean => TEXT_ENTRY.test(row.name) && row.size > MAX_WHOLE_TEXT;
 const BATCH_ENTRIES = 128;
 /** `include` limits the import to some collections; entries outside them are
  *  never read. `selected` and `processed` count entries inside them, so
@@ -127,6 +136,9 @@ export class AppImports {
     const state = this.state(id);
     if (state.status !== "ready" || cursor !== state.cursor) throw new Error("import is not ready at this cursor");
     const dir = this.dir(id);
+    // the previous batch's large entries are done with
+    const staged = path.join(dir, "large");
+    fs.rmSync(staged, { recursive: true, force: true });
     const db = new Database(path.join(dir, "index.sqlite"), { readonly: true });
     const zip = await zipOpen(path.join(dir, "archive.zip"));
     zip.on("error", () => undefined);
@@ -135,12 +147,25 @@ export class AppImports {
       const entries: Record<string, unknown> = {};
       let size = 0; let used = 0;
       const read = async (row: Row): Promise<unknown> => {
-        if (row.size > MAX_ENTRY) return { __binary__: true, size: row.size, error: "entry exceeds 64 MB" };
+        const large = isLarge(row);
+        if (!large && !TEXT_ENTRY.test(row.name) && row.size > MAX_BINARY) return { __binary__: true, size: row.size, error: "entry exceeds 256 MB" };
         const parsed = JSON.parse(row.entry);
         const entry = Object.assign(Object.create(yauzl.Entry.prototype), parsed) as Entry;
         const stream = await new Promise<NodeJS.ReadableStream>((resolve, reject) => zip.openReadStream(entry, (err, value) => err || !value ? reject(err) : resolve(value)));
-        const chunks: Buffer[] = []; let bytes = 0; let crc = 0;
-        for await (const chunk of stream as AsyncIterable<Buffer>) { bytes += chunk.length; if (bytes > MAX_ENTRY) throw new Error("entry exceeds 64 MB"); crc = crc32(chunk, crc); chunks.push(chunk); }
+        let crc = 0;
+        if (large) {
+          fs.mkdirSync(staged, { recursive: true });
+          const file = path.join(staged, `${row.seq}.txt`);
+          const fd = fs.openSync(file, "w");
+          try {
+            for await (const chunk of stream as AsyncIterable<Buffer>) { crc = crc32(chunk, crc); let at = 0; while (at < chunk.length) at += fs.writeSync(fd, chunk, at); }
+          } finally { fs.closeSync(fd); }
+          if (crc !== entry.crc32) throw new Error("archive entry checksum failed: " + row.name);
+          return { __large__: true, size: row.size, file };
+        }
+        const limit = TEXT_ENTRY.test(row.name) ? MAX_WHOLE_TEXT : MAX_BINARY;
+        const chunks: Buffer[] = []; let bytes = 0;
+        for await (const chunk of stream as AsyncIterable<Buffer>) { bytes += chunk.length; if (bytes > limit) throw new Error("entry is larger than the archive says: " + row.name); crc = crc32(chunk, crc); chunks.push(chunk); }
         if (crc !== entry.crc32) throw new Error("archive entry checksum failed: " + row.name);
         const data = Buffer.concat(chunks);
         return TEXT_ENTRY.test(row.name) ? data.toString("utf8") : { __b64__: true, base64: data.toString("base64"), size: data.length };
@@ -148,11 +173,13 @@ export class AppImports {
       let next = rows.length < BATCH_ENTRIES ? state.files : cursor;
       let guest = 0;
       for (const row of rows) {
-        const inGuest = !/\.png$/i.test(row.name);
-        if (used && (size + row.size > BATCH_BYTES || (inGuest && guest + row.size > BATCH_GUEST_BYTES))) { next = rows[used - 1]!.ordinal; break; }
-        entries[row.name] = await read(row); size += row.size; used++;
+        const large = isLarge(row);
+        const inGuest = !large && !IMAGE_ENTRY.test(row.name);
+        const counted = large ? 0 : row.size;
+        if (used && (large || size + counted > BATCH_BYTES || (inGuest && guest + row.size > BATCH_GUEST_BYTES))) { next = rows[used - 1]!.ordinal; break; }
+        entries[row.name] = await read(row); size += counted; used++;
         if (inGuest) guest += row.size;
-        if (rows.length === BATCH_ENTRIES) next = row.ordinal;
+        if (rows.length === BATCH_ENTRIES || large) next = row.ordinal;
         if (/(^|\/)card\.json$/i.test(row.name) && typeof entries[row.name] === "string") {
           const card = JSON.parse(entries[row.name] as string) as { assets?: { uri?: string }[]; data?: { assets?: { uri?: string }[] } };
           let assetBytes = row.size;
@@ -162,7 +189,7 @@ export class AppImports {
             const side = db.query<Row, [string]>("SELECT seq,name,size,entry FROM entries WHERE name=?").get(name);
             if (side && !Object.hasOwn(entries, side.name)) {
               assetBytes += side.size;
-              if (assetBytes > MAX_ENTRY) throw new Error("card package media exceeds 64 MB");
+              if (assetBytes > MAX_BINARY) throw new Error("card package media exceeds 256 MB");
               entries[side.name] = await read(side);
             }
           }
@@ -172,6 +199,7 @@ export class AppImports {
           const side = db.query<Row, [string]>("SELECT seq,name,size,entry FROM entries WHERE name=?").get(row.name.replace(/\.jsonl$/i, suffix));
           if (side) entries[side.name] = await read(side);
         }
+        if (large) break;
       }
       return { entries, next, used, total: state.files };
     } finally { zip.close(); db.close(); }
@@ -218,7 +246,7 @@ export class AppImports {
     state.running = false;
     this.save(state);
     const dir = this.dir(id);
-    for (const name of ["archive.zip", "index.sqlite"]) fs.rmSync(path.join(dir, name), { force: true });
+    for (const name of ["archive.zip", "index.sqlite", "large"]) fs.rmSync(path.join(dir, name), { recursive: true, force: true });
     fs.rmSync(this.transactionDir(id), { recursive: true, force: true });
     return state;
   }

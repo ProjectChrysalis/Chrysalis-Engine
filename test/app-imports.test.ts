@@ -94,3 +94,71 @@ it("restores interrupted batch writes and preserves writes after the cursor comm
   service.recover(state.id, root);
   expect(fs.existsSync(path.join(root, "older.json"))).toBe(false);
 });
+it("hands a transcript too big for the sandbox over in slices, in a batch of its own", async () => {
+  const service = imports();
+  const line = JSON.stringify({ name: "Aria", mes: "a long reply ".repeat(60) }) + "\n";
+  const lines = Math.ceil((65 * 1024 ** 2) / line.length);
+  const zip = zipSync({ "chats/A/a.jsonl": strToU8(line), "chats/A/b.jsonl": strToU8(line.repeat(lines)), "chats/A/c.jsonl": strToU8(line) });
+  const created = service.create("big.zip", zip.length, ["chats/"]);
+  for (let at = 0; at < zip.length; at += IMPORT_CHUNK_BYTES) service.append(created.id, at, zip.subarray(at, at + IMPORT_CHUNK_BYTES));
+  await ready(service, created.id);
+  const first = await service.batch(created.id, 0);
+  expect(Object.keys(first.entries)).toEqual(["chats/A/a.jsonl"]);
+  service.advance(created.id, 0, first.next, {});
+  const second = await service.batch(created.id, first.next);
+  expect(Object.keys(second.entries)).toEqual(["chats/A/b.jsonl"]);
+  const large = second.entries["chats/A/b.jsonl"] as { __large__: boolean; size: number; file: string };
+  expect(large.__large__).toBe(true);
+  expect(fs.statSync(large.file).size).toBe(line.length * lines);
+  const { PluginSandbox } = await import("../src/plugins/sandbox.js");
+  const box = new PluginSandbox(1);
+  try {
+    const r = await box.eval({
+      source: `export function handleRoute(req, host) {
+        const entry = host.zip.entries()["chats/A/b.jsonl"];
+        let next = 0, n = 0, slices = 0, bad = 0;
+        while (next !== null) {
+          const slice = host.zip.read("chats/A/b.jsonl", next);
+          for (const l of slice.text.split("\\n")) { if (!l) continue; try { JSON.parse(l); n++; } catch { bad++; } }
+          next = slice.next; slices++;
+        }
+        return { json: { n, bad, slices, keys: Object.keys(entry) } };
+      }`,
+      hook: "__route", ctx: { method: "POST", path: "/x", query: {}, body: null }, storeSnapshot: {}, zipAllowed: true, zipEntries: second.entries,
+      executionTimeoutMs: 120_000, memoryLimitBytes: 512 * 1024 ** 2,
+    });
+    expect(r.error).toBeUndefined();
+    expect(r.out).toEqual({ json: { n: lines, bad: 0, slices: expect.any(Number), keys: ["__large__", "size"] } });
+    expect((r.out as { json: { slices: number } }).json.slices).toBeGreaterThan(10);
+  } finally { await box.dispose(); }
+  service.advance(created.id, first.next, second.next, {});
+  const third = await service.batch(created.id, second.next);
+  expect(Object.keys(third.entries)).toEqual(["chats/A/c.jsonl"]);
+  expect(fs.existsSync(large.file)).toBe(false);
+}, 120_000);
+it("stores animated and photo images from an archive on the host, whatever their type", async () => {
+  const { PluginSandbox } = await import("../src/plugins/sandbox.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "app-import-media-"));
+  roots.push(root);
+  const data = path.join(root, "roleplay", "data");
+  fs.mkdirSync(data, { recursive: true });
+  const gif = Buffer.concat([Buffer.from("GIF89a"), crypto.getRandomValues(new Uint8Array(4096))]);
+  const jpg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), crypto.getRandomValues(new Uint8Array(4096))]);
+  const box = new PluginSandbox(1);
+  try {
+    const r = await box.eval({
+      source: `export function handleRoute(req, host) {
+        const e = host.zip.entries();
+        return { json: { kinds: Object.fromEntries(Object.entries(e).map(([k, v]) => [k, Object.keys(v)])), gif: host.zip.image("sprites/joy.gif").url, jpg: host.zip.image("avatars/me.jpg").url } };
+      }`,
+      hook: "__route", ctx: { method: "POST", path: "/x", query: {}, body: null }, storeSnapshot: {}, zipAllowed: true, fsAllowed: true, fsRoot: data,
+      zipEntries: { "sprites/joy.gif": { __b64__: true, base64: gif.toString("base64"), size: gif.length }, "avatars/me.jpg": { __b64__: true, base64: jpg.toString("base64"), size: jpg.length } },
+    });
+    expect(r.error).toBeUndefined();
+    const out = (r.out as { json: { kinds: Record<string, string[]>; gif: string; jpg: string } }).json;
+    expect(out.kinds).toEqual({ "sprites/joy.gif": ["__image__", "size"], "avatars/me.jpg": ["__image__", "size"] });
+    expect(out.gif).toMatch(/\/__media\/[a-f0-9]{64}\.gif$/);
+    expect(out.jpg).toMatch(/\/__media\/[a-f0-9]{64}\.jpeg$/);
+    expect(fs.readFileSync(path.join(data, "__media", out.gif.split("/").pop()!))).toEqual(gif);
+  } finally { await box.dispose(); }
+});

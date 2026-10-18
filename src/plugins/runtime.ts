@@ -984,8 +984,13 @@ export async function runPluginRoute(
   const zipBox = zipOk ? importSandbox(req.fsTransaction) : null;
   const box = zipBox ?? sandbox;
   // a route reads the app's data whole, so a large library needs longer than
-  // the 10 s a hook gets; it holds one pool worker meanwhile, not all of them
-  const limits = zipOk ? { executionTimeoutMs: 120_000, memoryLimitBytes: 512 * 1024 * 1024 } : { executionTimeoutMs: 30_000 };
+  // the 10 s a hook gets; it holds one pool worker meanwhile, not all of them.
+  // An import batch runs on its own sandbox and the engine resumes it, so its
+  // clock only stops a plugin that never returns, and its heap is nearly all
+  // the 2 GB the wasm runtime can address.
+  // A route that loads one long chat reads it whole; a transcript of a few
+  // hundred MB needs a heap of about three times that.
+  const limits = zipOk ? { executionTimeoutMs: 60 * 60_000, memoryLimitBytes: 1792 * 1024 * 1024 } : { executionTimeoutMs: 120_000, memoryLimitBytes: 1024 * 1024 * 1024 };
   try {
     // ?siblingtools=1: expose the tool DEFINITIONS a wantsTools:true llm request
     // from this plugin would carry (defs only — execution stays host-side), so a
