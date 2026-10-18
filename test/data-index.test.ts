@@ -71,26 +71,33 @@ describe("JSONL records", () => {
     const file = path.join(root, "chats/c.jsonl");
     put("chats/c.jsonl", Array.from({ length: 10 }, (_, i) => JSON.stringify({ i })).join("\n") + "\n\n");
     expect(lines(file, -3).lines.map((l) => JSON.parse(l).i)).toEqual([7, 8, 9]);
-    expect(lines(file, 2, 4)).toEqual({ lines: ['{"i":2}', '{"i":3}'], from: 2, total: 10 });
+    const before = lines(file, 2, 4);
+    expect(before).toMatchObject({ lines: ['{"i":2}', '{"i":3}'], from: 2, total: 10 });
     const head = fs.readFileSync(file).subarray(0, 40);
-    expect(splice(file, 8, ['{"i":8,"edited":true}', '{"i":10}'])).toEqual({ total: 10 });
+    const edit = splice(file, 8, ['{"i":8,"edited":true}', '{"i":10}']);
+    expect(edit.total).toBe(10);
+    expect(edit.version).not.toBe(before.version);
+    expect(lines(file, 0, 0).version).toBe(edit.version);
     expect(fs.readFileSync(file).subarray(0, 40)).toEqual(head);
     expect(lines(file, -2).lines).toEqual(['{"i":8,"edited":true}', '{"i":10}']);
-    expect(splice(file, 10, ['{"i":11}'])).toEqual({ total: 11 });
-    expect(splice(file, 9, [])).toEqual({ total: 9 });
+    expect(splice(file, 10, ['{"i":11}']).total).toBe(11);
+    expect(splice(file, 9, []).total).toBe(9);
     expect(fs.readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l).i)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
     // someone else rewrote the file: positions come from it again
+    const ours = lines(file, 0, 0).version;
     await later();
     fs.writeFileSync(file, '{"i":"a"}\n{"i":"b"}');
-    expect(lines(file, -1).lines).toEqual(['{"i":"b"}']);
-    expect(splice(file, 2, ['{"i":"c"}'])).toEqual({ total: 3 });
+    const theirs = lines(file, -1);
+    expect(theirs.lines).toEqual(['{"i":"b"}']);
+    expect(theirs.version).not.toBe(ours);
+    expect(splice(file, 2, ['{"i":"c"}']).total).toBe(3);
     expect(fs.readFileSync(file, "utf8")).toBe('{"i":"a"}\n{"i":"b"}\n{"i":"c"}\n');
   });
 
   it("treats a missing file as empty and creates it on the first write", () => {
     const file = path.join(root, "chats/new.jsonl");
-    expect(lines(file)).toEqual({ lines: [], from: 0, total: 0 });
-    expect(splice(file, 0, ['{"first":true}'])).toEqual({ total: 1 });
+    expect(lines(file)).toEqual({ lines: [], from: 0, total: 0, version: null });
+    expect(splice(file, 0, ['{"first":true}']).total).toBe(1);
     expect(() => splice(file, 3, [])).toThrow();
     expect(() => splice(file, 0, ["two\nlines"])).toThrow();
   });
@@ -114,7 +121,7 @@ describe("through the plugin sandbox", () => {
       hook: "__route", ctx: { method: "POST", path: "/x", query: {}, body: null }, storeSnapshot: {}, fsAllowed: true, fsRoot: root,
     });
     expect(r.error).toBeUndefined();
-    expect(r.out).toEqual({ json: { names: ["Aria"], tail: ['{"n":2}'], after: { total: 3 }, refused: "__index/ belongs to the engine" } });
+    expect(r.out).toMatchObject({ json: { names: ["Aria"], tail: ['{"n":2}'], after: { total: 3 }, refused: "__index/ belongs to the engine" } });
     expect(r.fsWrites).toEqual(["chats/c.jsonl"]);
     expect(fs.readFileSync(path.join(root, "chats/c.jsonl"), "utf8")).toBe('{"n":1}\n{"n":2}\n{"n":3}\n');
   });

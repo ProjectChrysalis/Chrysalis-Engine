@@ -13,5 +13,5 @@ export function query(
   options?: { where?: Record<string, Condition>; sort?: Sort; offset?: number; limit?: number },
   track?: { dir(dir: string): void; file(full: string): void },
 ): { rows: QueryRow[]; total: number };
-export function lines(full: string, from?: number, to?: number): { lines: string[]; from: number; total: number };
-export function splice(full: string, from: number, replacement: string[]): { total: number };
+export function lines(full: string, from?: number, to?: number): { lines: string[]; from: number; total: number; version: string | null };
+export function splice(full: string, from: number, replacement: string[]): { total: number; version: string };

@@ -248,15 +248,17 @@ function scan(full, st) {
 }
 
 /** Records `from` (negative counts from the end) up to `to` (exclusive,
- *  default the end) → { lines, from, total }. A missing file has none. */
+ *  default the end) → { lines, from, total, version }. A missing file has
+ *  none and no version. `version` changes whenever the file does, whoever
+ *  wrote it. */
 export function lines(full, from = 0, to) {
   let st;
-  try { st = fs.statSync(full); } catch (e) { if (e?.code === "ENOENT") return { lines: [], from: 0, total: 0 }; throw e; }
+  try { st = fs.statSync(full); } catch (e) { if (e?.code === "ENOENT") return { lines: [], from: 0, total: 0, version: null }; throw e; }
   const idx = scan(full, st);
   const total = idx.starts.length;
   const clamp = (n, fallback) => { const v = n == null ? fallback : Math.floor(Number(n)); return Number.isFinite(v) ? Math.max(0, Math.min(total, v < 0 ? total + v : v)) : fallback; };
   const a = clamp(from, 0), b = Math.max(a, clamp(to, total));
-  if (a === b) return { lines: [], from: a, total };
+  if (a === b) return { lines: [], from: a, total, version: idx.sig };
   const fd = fs.openSync(full, "r");
   try {
     const startByte = idx.starts[a], endByte = idx.ends[b - 1];
@@ -265,7 +267,7 @@ export function lines(full, from = 0, to) {
     while (at < buf.length) { const got = fs.readSync(fd, buf, at, buf.length - at, startByte + at); if (!got) break; at += got; }
     const out = [];
     for (let i = a; i < b; i++) out.push(buf.toString("utf8", idx.starts[i] - startByte, idx.ends[i] - startByte).replace(/\r$/, ""));
-    return { lines: out, from: a, total };
+    return { lines: out, from: a, total, version: idx.sig };
   } finally { fs.closeSync(fd); }
 }
 
@@ -273,7 +275,7 @@ export function lines(full, from = 0, to) {
  *  them; `from` = total appends. The new records are written before the
  *  file is cut to length, so a crash in between leaves extra trailing bytes
  *  (which a reader skips as an unreadable line), never lost new ones.
- *  → { total } */
+ *  → { total, version } */
 export function splice(full, from, replacement) {
   if (!Array.isArray(replacement) || replacement.some((l) => typeof l !== "string" || l.includes("\n"))) throw new Error("spliceLines: records must be strings without newlines");
   let st = null;
@@ -308,7 +310,8 @@ export function splice(full, from, replacement) {
     }
     fs.fsyncSync(fd);
     const after = fs.fstatSync(fd);
-    records.set(full, { sig: signature(after), starts, ends, size: after.size });
-    return { total: starts.length };
+    const sig = signature(after);
+    records.set(full, { sig, starts, ends, size: after.size });
+    return { total: starts.length, version: sig };
   } finally { fs.closeSync(fd); }
 }
