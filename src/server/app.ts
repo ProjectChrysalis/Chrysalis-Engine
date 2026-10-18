@@ -5126,7 +5126,17 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
           if (importLocks.has(lock)) { await Bun.sleep(100); continue; }
           importLocks.add(lock);
           try {
-            if (state.cursor < state.files) await importBatch(u, appId, paths, imports, id, state.cursor, state.run.route);
+            if (state.cursor < state.files) {
+              // a failed batch has rolled back, so it can run again; a worker
+              // that died under it is the usual cause, and a fresh one fixes it
+              try { await importBatch(u, appId, paths, imports, id, state.cursor, state.run.route); }
+              catch (first) {
+                if (run.stop) throw first;
+                log.warn(`[imports] batch at ${state.cursor} failed, retrying: ${first instanceof Error ? first.message : String(first)}`);
+                await Bun.sleep(1000);
+                await importBatch(u, appId, paths, imports, id, state.cursor, state.run.route);
+              }
+            }
             else { await finishImport(u, appId, paths, imports, id, state.run.finish); imports.complete(id); return; }
           } finally { importLocks.delete(lock); }
         }
