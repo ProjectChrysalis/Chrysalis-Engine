@@ -185,6 +185,25 @@ describe("workspace garbage collection", () => {
   });
 });
 
+it.skipIf(!Bun.which("git"))("known-file commits leave a repository git itself reads as clean", async () => {
+  await initRepo(dir);
+  await commitAll(dir, "alice", "initial");
+  fs.mkdirSync(path.join(dir, "chats", "deep"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "chats", "a.jsonl"), "{\"mes\":\"hi\"}\n".repeat(500));
+  fs.writeFileSync(path.join(dir, "chats", "deep", "b.json"), "{}");
+  fs.writeFileSync(path.join(dir, "card.json"), "card");
+  expect(await commitWrittenPaths(dir, "alice", "write", ["chats/a.jsonl", "chats/deep/b.json", "card.json"])).toBeTruthy();
+  fs.appendFileSync(path.join(dir, "chats", "a.jsonl"), "{\"mes\":\"more\"}\n");
+  fs.unlinkSync(path.join(dir, "card.json"));
+  expect(await commitWrittenPaths(dir, "alice", "edit", ["chats/a.jsonl", "card.json"])).toBeTruthy();
+  const run = (...args: string[]) => Bun.spawnSync(["git", "-C", dir, ...args]);
+  expect(run("fsck", "--strict").exitCode).toBe(0);
+  expect(run("status", "--porcelain").stdout.toString()).toBe("");
+  expect(run("show", "HEAD:chats/a.jsonl").stdout.toString()).toBe(fs.readFileSync(path.join(dir, "chats", "a.jsonl"), "utf8"));
+  expect(run("ls-files").stdout.toString().split("\n").filter(Boolean).sort()).toEqual(["chats/a.jsonl", "chats/deep/b.json"]);
+  expect(await changedPaths(dir)).toEqual([]);
+});
+
 it("known-file commits track edits and deletions without sweeping unrelated files", async () => {
   await initRepo(dir);
   await commitAll(dir, "alice", "initial");

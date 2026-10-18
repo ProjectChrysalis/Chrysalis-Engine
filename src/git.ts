@@ -2,10 +2,13 @@
  * isomorphic-git wrapper for per-user repos (text entities only — SPEC §12
  * git boundary). Pure JS: no git binary required on any platform.
  */
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import git from "isomorphic-git";
+import { GitIndexManager } from "isomorphic-git/managers";
 import { gitBoundaryIgnored } from "./paths.js";
 
 export interface CommitInfo {
@@ -278,6 +281,33 @@ async function applyTreeChanges(dir: string, oid: string | undefined, changes: T
   return byName.size ? git.writeTree({ fs, dir, tree: [...byName.values()] }) : null;
 }
 
+/** A loose blob in git's own format, hashed and compressed natively. An
+ *  object already on disk is never rewritten. */
+function writeBlobFile(dir: string, bytes: Buffer): string {
+  const wrapped = Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes]);
+  const oid = createHash("sha1").update(wrapped).digest("hex");
+  const file = path.join(dir, ".git", "objects", oid.slice(0, 2), oid.slice(2));
+  if (!fs.existsSync(file)) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const temporary = `${file}.${randomUUID()}.tmp`;
+    try {
+      fs.writeFileSync(temporary, zlib.deflateSync(wrapped), { flag: "wx" });
+      fs.renameSync(temporary, file);
+    } catch (error) {
+      fs.rmSync(temporary, { force: true });
+      throw error;
+    }
+  }
+  return oid;
+}
+
+/** What GitIndexManager reads and writes the index through. */
+const indexFs = {
+  lstat: async (file: string) => fs.promises.lstat(file).catch(() => null),
+  read: async (file: string) => fs.promises.readFile(file).catch(() => null),
+  write: (file: string, data: Uint8Array) => fs.promises.writeFile(file, data),
+};
+
 /** Commit only the named paths; unrelated index entries keep their staging. */
 export async function commitWrittenPaths(dir: string, username: string, message: string, paths: string[], viaAgent = false): Promise<string | null> {
   return withRepoLock(dir, async () => {
@@ -285,23 +315,30 @@ export async function commitWrittenPaths(dir: string, username: string, message:
     const head = await resolveHead(dir);
     const original = head === "0".repeat(40) ? undefined : (await git.readCommit({ fs, dir, oid: head })).commit.tree;
     const changes: TreeChange[] = [];
+    const staged = new Map<string, { oid: string; stats: fs.Stats }>();
     for (const raw of new Set(paths)) {
       const filepath = path.posix.normalize(raw.replaceAll("\\", "/"));
       const full = path.resolve(dir, filepath);
       if (!full.startsWith(path.resolve(dir) + path.sep) || gitBoundaryIgnored(filepath)) continue;
-      const exists = fs.existsSync(full);
-      if (exists && !fs.lstatSync(full).isFile()) continue;
-      const blob = exists ? await git.writeBlob({ fs, dir, blob: fs.readFileSync(full) }) : null;
-      const mode = exists && (fs.statSync(full).mode & 0o111) ? "100755" : "100644";
+      let stats: fs.Stats | null = null;
+      try { stats = fs.lstatSync(full); } catch { /* deleted */ }
+      if (stats && !stats.isFile()) continue;
+      const blob = stats ? writeBlobFile(dir, fs.readFileSync(full)) : null;
+      if (stats && blob) staged.set(filepath, { oid: blob, stats });
+      const mode = stats && (stats.mode & 0o111) ? "100755" : "100644";
       changes.push({ segments: filepath.split("/"), filepath, blob, mode });
     }
     const changed: string[] = [];
     const tree = await applyTreeChanges(dir, original, changes, changed) ?? await git.writeTree({ fs, dir, tree: [] });
     if (!changed.length || tree === original) return null;
-    const kept = changed.filter(filepath => fs.existsSync(path.join(dir, filepath)));
-    if (kept.length) await git.add({ fs, dir, filepath: kept });
-    const keptSet = new Set(kept);
-    for (const filepath of changed) if (!keptSet.has(filepath)) await git.remove({ fs, dir, filepath });
+    // the index takes the blobs just written, in one read and one write
+    await GitIndexManager.acquire({ fs: indexFs, gitdir: path.join(dir, ".git"), cache: {} }, async (index) => {
+      for (const filepath of changed) {
+        const entry = staged.get(filepath);
+        if (entry) index.insert({ filepath, oid: entry.oid, stats: entry.stats });
+        else index.delete({ filepath });
+      }
+    });
     return commitWithReflog(dir, username, message, viaAgent, tree);
   });
 }
