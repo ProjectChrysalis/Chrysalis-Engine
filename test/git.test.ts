@@ -157,6 +157,32 @@ describe("workspace garbage collection", () => {
     fs.appendFileSync(path.join(dir, ".git", "config"), "\n[gc]\nrecentObjectsHook = evil\n");
     expect(await gcRepoIfChunky(dir, 0)).toBe(false);
   });
+
+  it.skipIf(!Bun.which("git"))("splits a pack the sandbox could not mount", async () => {
+    await initRepo(dir);
+    for (let i = 0; i < 4; i++) fs.writeFileSync(path.join(dir, `art-${i}.bin`), crypto.getRandomValues(new Uint8Array(60_000)));
+    await commitAll(dir, "alice", "initial");
+    const packs = () => fs.readdirSync(path.join(dir, ".git", "objects", "pack")).filter((name) => name.endsWith(".pack")).map((name) => fs.statSync(path.join(dir, ".git", "objects", "pack", name)).size);
+    expect(await gcRepoIfChunky(dir, 0, 1 << 30)).toBe(true);
+    expect(packs()).toHaveLength(1);
+    // packed with no cap, then held to 1 MiB: the big pack alone triggers a split
+    for (let i = 4; i < 40; i++) fs.writeFileSync(path.join(dir, `art-${i}.bin`), crypto.getRandomValues(new Uint8Array(60_000)));
+    await commitAll(dir, "alice", "more");
+    expect(await gcRepoIfChunky(dir, 1 << 20, 1 << 30)).toBe(false);
+    expect(await gcRepoIfChunky(dir, 0, 1 << 30)).toBe(true);
+    expect(packs()).toHaveLength(1);
+    expect(Math.max(...packs())).toBeGreaterThan(1 << 21);
+    expect(await gcRepoIfChunky(dir, 1 << 20, 1 << 20)).toBe(true);
+    expect(packs().length).toBeGreaterThan(1);
+    expect(Math.max(...packs())).toBeLessThanOrEqual((1 << 20) + 70_000);
+    expect(await gcRepoIfChunky(dir, 1 << 20, 1 << 20)).toBe(false);
+    // one object over the cap packs alone and is left there
+    fs.writeFileSync(path.join(dir, "huge.bin"), Buffer.concat(Array.from({ length: 24 }, () => crypto.getRandomValues(new Uint8Array(65_536)))));
+    await commitAll(dir, "alice", "huge");
+    expect(await gcRepoIfChunky(dir, 0, 1 << 20)).toBe(true);
+    expect(Math.max(...packs())).toBeGreaterThan(1 << 20);
+    expect(await gcRepoIfChunky(dir, 1 << 20, 1 << 20)).toBe(false);
+  });
 });
 
 it("known-file commits track edits and deletions without sweeping unrelated files", async () => {

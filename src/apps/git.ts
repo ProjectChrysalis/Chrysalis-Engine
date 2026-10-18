@@ -18,7 +18,7 @@ import path from "node:path";
 import git from "isomorphic-git";
 import http from "isomorphic-git/http/node";
 import diff3Merge from "diff3";
-import { gitConfigRefused } from "../sandbox/workspace.js";
+import { MAX_SANDBOX_FILE, gitConfigRefused } from "../sandbox/workspace.js";
 
 const GIT_ENV = {
   ...process.env,
@@ -209,25 +209,49 @@ export async function remoteManifest(url: string, commit: string, fetcher: typeo
   }
 }
 
+/** Objects in a pack, from its version-2 index (the last fan-out entry). A
+ *  single object over the size cap gets a pack of its own, which no repack
+ *  can split. */
+function packObjectCount(idx: string): number {
+  try {
+    const head = Buffer.alloc(8 + 256 * 4);
+    const fd = fs.openSync(idx, "r");
+    try { fs.readSync(fd, head, 0, head.length, 0); } finally { fs.closeSync(fd); }
+    return head.readUInt32BE(0) === 0xff744f63 ? head.readUInt32BE(8 + 255 * 4) : 0;
+  } catch {
+    return 0;
+  }
+}
+
 /** Pack a workspace repo's loose objects when they pile up. isomorphic-git
  *  never gc's: every chat save mints a fresh blob + commit, so months of use
  *  leave tens of thousands of loose objects that make statusMatrix and commit
  *  slower. A git program on the machine packs them; threshold-gated so
  *  untouched repos skip the spawn. Without git the objects stay loose and
- *  keep working. Returns true when a gc actually ran. */
-export async function gcRepoIfChunky(cwd: string, threshold = 4000): Promise<boolean> {
+ *  keep working. Returns true when a gc actually ran.
+ *
+ *  Packs are capped at `packLimit`: the agent's sandbox cannot mount a file
+ *  over MAX_SANDBOX_FILE, and a repository whose objects sit in one pack it
+ *  cannot see has no history there (log is empty, commit cannot write a
+ *  tree). A pack already over the cap is reason enough to repack. */
+export async function gcRepoIfChunky(cwd: string, threshold = 4000, packLimit = MAX_SANDBOX_FILE / 2): Promise<boolean> {
   const objectsDir = path.join(cwd, ".git", "objects");
   let loose = 0;
+  let oversized = false;
   try {
     for (const entry of fs.readdirSync(objectsDir)) {
       if (!/^[0-9a-f]{2}$/.test(entry)) continue; // info/, pack/
       loose += fs.readdirSync(path.join(objectsDir, entry)).length;
       if (loose > threshold) break;
     }
+    const packDir = path.join(objectsDir, "pack");
+    if (fs.existsSync(packDir)) {
+      oversized = fs.readdirSync(packDir).some((name) => name.endsWith(".pack") && fs.statSync(path.join(packDir, name)).size > packLimit && packObjectCount(path.join(packDir, name.replace(/\.pack$/, ".idx"))) > 1);
+    }
   } catch {
     return false; // no repo / no objects dir
   }
-  if (loose <= threshold || !systemGit()) return false;
+  if ((loose <= threshold && !oversized) || !systemGit()) return false;
   // The agent's sandbox writes this repository's .git, and git runs commands
   // its config names. A config the sandbox policy would refuse (written before
   // that policy existed) is left alone; the rest is run with every
@@ -241,7 +265,8 @@ export async function gcRepoIfChunky(cwd: string, threshold = 4000): Promise<boo
   if (gitConfigRefused(config) || fs.existsSync(path.join(cwd, ".git", "objects", "info", "alternates"))) return false;
   const hooks = fs.mkdtempSync(path.join(os.tmpdir(), "chrysalis-no-hooks-"));
   try {
-    await runGit(["-c", "core.fsmonitor=false", "-c", `core.hooksPath=${hooks}`, "-c", "gc.recentObjectsHook=", "-c", "core.alternateRefsCommand=", "gc", "--quiet"], { cwd, timeoutMs: 300_000 });
+    const limit = `${Math.max(1, Math.floor(packLimit / (1024 * 1024)))}m`;
+    await runGit(["-c", "core.fsmonitor=false", "-c", `core.hooksPath=${hooks}`, "-c", "gc.recentObjectsHook=", "-c", "core.alternateRefsCommand=", "-c", `pack.packSizeLimit=${limit}`, "-c", `gc.maxCruftSize=${limit}`, "gc", "--quiet"], { cwd, timeoutMs: 300_000 });
     return true;
   } catch {
     return false; // git missing or busy — loose objects keep working, just slower
