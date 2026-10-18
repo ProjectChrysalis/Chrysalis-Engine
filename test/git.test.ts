@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import isomorphicGit from "isomorphic-git";
-import { initRepo, commitAll, log, restoreFile, status, untrackBoundary, changedPaths, commitPaths, commitWrittenPaths } from "../src/git.js";
+import { initRepo, commitAll, log, restoreFile, status, untrackBoundary, changedPaths, commitPaths, commitWrittenPaths, queueRouteCommit } from "../src/git.js";
 import { ensureGitignoreEntries } from "../src/paths.js";
 import { gcRepoIfChunky } from "../src/apps/git.js";
 
@@ -201,6 +201,19 @@ it.skipIf(!Bun.which("git"))("known-file commits leave a repository git itself r
   expect(run("status", "--porcelain").stdout.toString()).toBe("");
   expect(run("show", "HEAD:chats/a.jsonl").stdout.toString()).toBe(fs.readFileSync(path.join(dir, "chats", "a.jsonl"), "utf8"));
   expect(run("ls-files").stdout.toString().split("\n").filter(Boolean).sort()).toEqual(["chats/a.jsonl", "chats/deep/b.json"]);
+  expect(await changedPaths(dir)).toEqual([]);
+});
+
+it("queued route commits label other edits out-of-band and readers wait for them", async () => {
+  await initRepo(dir);
+  await commitAll(dir, "alice", "base");
+  fs.writeFileSync(path.join(dir, "todo.md"), "left by the agent");
+  fs.writeFileSync(path.join(dir, "a.json"), "A");
+  fs.writeFileSync(path.join(dir, "b.json"), "B");
+  void queueRouteCommit(dir, "alice", "route a", ["a.json"], true);
+  void queueRouteCommit(dir, "alice", "route b", ["b.json"], false);
+  // not awaited: the log waits on the same queue
+  expect((await log(dir, 3)).map((c) => c.message)).toEqual(["route b", "route a", "out-of-band: todo.md"]);
   expect(await changedPaths(dir)).toEqual([]);
 });
 

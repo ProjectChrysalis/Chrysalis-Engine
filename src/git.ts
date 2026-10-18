@@ -196,7 +196,7 @@ export async function commitAll(
 /** Paths with uncommitted changes (the same rows `status` reports, names only).
  *  Boundary paths are excluded — they are never staged, so they are never pending. */
 export async function changedPaths(dir: string): Promise<string[]> {
-  const matrix = await statusRows(dir);
+  const matrix = await withRepoLock(dir, () => statusRows(dir));
   return matrix
     .filter(([filepath, head, workdir, stage]) => !gitBoundaryIgnored(filepath) && !(head === 1 && workdir === 1 && stage === 1))
     .map(([filepath]) => filepath);
@@ -215,27 +215,31 @@ export async function commitPaths(
   if (paths.length === 0) return null;
   return withRepoLock(dir, async () => {
     await ensureRepo(dir);
-    const wanted = new Set(paths.filter((p) => !gitBoundaryIgnored(p)));
-    if (wanted.size === 0) return null;
-    const matrix = await statusRows(dir);
-    let changed = 0;
-    for (const [filepath, head, workdir, stage] of matrix) {
-      if (!wanted.has(filepath)) continue;
-      if (workdir === 0) {
-        if (head !== 0 || stage !== 0) {
-          await git.remove({ fs, dir, filepath });
-          changed++;
-        }
-        continue;
-      }
-      if (workdir === 2 || head === 0) {
-        await git.add({ fs, dir, filepath });
+    return commitMatrixPaths(dir, username, message, paths, await statusRows(dir), viaAgent);
+  });
+}
+
+/** commitPaths against a status already read; caller holds the repo lock. */
+async function commitMatrixPaths(dir: string, username: string, message: string, paths: string[], matrix: StatusRow[], viaAgent = false): Promise<string | null> {
+  const wanted = new Set(paths.filter((p) => !gitBoundaryIgnored(p)));
+  if (wanted.size === 0) return null;
+  let changed = 0;
+  for (const [filepath, head, workdir, stage] of matrix) {
+    if (!wanted.has(filepath)) continue;
+    if (workdir === 0) {
+      if (head !== 0 || stage !== 0) {
+        await git.remove({ fs, dir, filepath });
         changed++;
       }
+      continue;
     }
-    if (changed === 0) return null;
-    return commitWithReflog(dir, username, message, viaAgent);
-  });
+    if (workdir === 2 || head === 0) {
+      await git.add({ fs, dir, filepath });
+      changed++;
+    }
+  }
+  if (changed === 0) return null;
+  return commitWithReflog(dir, username, message, viaAgent);
 }
 
 /** Replace one tree entry without involving unrelated staged files. */
@@ -310,41 +314,80 @@ const indexFs = {
 
 /** Commit only the named paths; unrelated index entries keep their staging. */
 export async function commitWrittenPaths(dir: string, username: string, message: string, paths: string[], viaAgent = false): Promise<string | null> {
+  return withRepoLock(dir, () => commitKnownPaths(dir, username, message, paths, viaAgent));
+}
+
+/** Paths an app route wrote whose commit is queued and has not run yet. */
+const queuedWrites = new Map<string, Map<string, number>>();
+
+/** An app route's history, queued behind the repo's other git work so the
+ *  route answers without waiting for it. With `sweep`, whatever else changed
+ *  since the last commit (agent or shell edits) is committed first under an
+ *  out-of-band label; then the route's own writes. Readers of history (log,
+ *  status, changedPaths) take the same lock, so they see both. */
+export function queueRouteCommit(dir: string, username: string, message: string, written: string[], sweep: boolean): Promise<void> {
+  const queued = queuedWrites.get(dir) ?? new Map<string, number>();
+  queuedWrites.set(dir, queued);
+  for (const file of written) queued.set(file, (queued.get(file) ?? 0) + 1);
   return withRepoLock(dir, async () => {
-    await ensureRepo(dir);
-    const head = await resolveHead(dir);
-    const original = head === "0".repeat(40) ? undefined : (await git.readCommit({ fs, dir, oid: head })).commit.tree;
-    const changes: TreeChange[] = [];
-    const staged = new Map<string, { oid: string; stats: fs.Stats }>();
-    for (const raw of new Set(paths)) {
-      const filepath = path.posix.normalize(raw.replaceAll("\\", "/"));
-      const full = path.resolve(dir, filepath);
-      if (!full.startsWith(path.resolve(dir) + path.sep) || gitBoundaryIgnored(filepath)) continue;
-      let stats: fs.Stats | null = null;
-      try { stats = fs.lstatSync(full); } catch { /* deleted */ }
-      if (stats && !stats.isFile()) continue;
-      const blob = stats ? writeBlobFile(dir, fs.readFileSync(full)) : null;
-      if (stats && blob) staged.set(filepath, { oid: blob, stats });
-      const mode = stats && (stats.mode & 0o111) ? "100755" : "100644";
-      changes.push({ segments: filepath.split("/"), filepath, blob, mode });
+    for (const file of written) {
+      const left = (queued.get(file) ?? 1) - 1;
+      if (left > 0) queued.set(file, left); else queued.delete(file);
     }
-    const changed: string[] = [];
-    const tree = await applyTreeChanges(dir, original, changes, changed) ?? await git.writeTree({ fs, dir, tree: [] });
-    if (!changed.length || tree === original) return null;
-    // the index takes the blobs just written, in one read and one write
-    await GitIndexManager.acquire({ fs: indexFs, gitdir: path.join(dir, ".git"), cache: {} }, async (index) => {
-      for (const filepath of changed) {
-        const entry = staged.get(filepath);
-        if (entry) index.insert({ filepath, oid: entry.oid, stats: entry.stats });
-        else index.delete({ filepath });
+    await ensureRepo(dir);
+    if (sweep) {
+      // a route queued behind this one wrote what is still queued: its own
+      // commit names it
+      const own = new Set(written);
+      const matrix = await statusRows(dir);
+      const dirty = matrix
+        .filter(([filepath, head, workdir, stage]) => !gitBoundaryIgnored(filepath) && !(head === 1 && workdir === 1 && stage === 1))
+        .map(([filepath]) => filepath)
+        .filter((filepath) => !own.has(filepath) && !queued.has(filepath));
+      if (dirty.length > 0) {
+        const preview = dirty.slice(0, 3).join(", ") + (dirty.length > 3 ? ` +${dirty.length - 3} more` : "");
+        await commitMatrixPaths(dir, username, `out-of-band: ${preview}`, dirty, matrix);
       }
-    });
-    return commitWithReflog(dir, username, message, viaAgent, tree);
+    }
+    if (written.length) await commitKnownPaths(dir, username, message, written);
   });
 }
 
+/** commitWrittenPaths; caller holds the repo lock. */
+async function commitKnownPaths(dir: string, username: string, message: string, paths: string[], viaAgent = false): Promise<string | null> {
+  await ensureRepo(dir);
+  const head = await resolveHead(dir);
+  const original = head === "0".repeat(40) ? undefined : (await git.readCommit({ fs, dir, oid: head })).commit.tree;
+  const changes: TreeChange[] = [];
+  const staged = new Map<string, { oid: string; stats: fs.Stats }>();
+  for (const raw of new Set(paths)) {
+    const filepath = path.posix.normalize(raw.replaceAll("\\", "/"));
+    const full = path.resolve(dir, filepath);
+    if (!full.startsWith(path.resolve(dir) + path.sep) || gitBoundaryIgnored(filepath)) continue;
+    let stats: fs.Stats | null = null;
+    try { stats = fs.lstatSync(full); } catch { /* deleted */ }
+    if (stats && !stats.isFile()) continue;
+    const blob = stats ? writeBlobFile(dir, fs.readFileSync(full)) : null;
+    if (stats && blob) staged.set(filepath, { oid: blob, stats });
+    const mode = stats && (stats.mode & 0o111) ? "100755" : "100644";
+    changes.push({ segments: filepath.split("/"), filepath, blob, mode });
+  }
+  const changed: string[] = [];
+  const tree = await applyTreeChanges(dir, original, changes, changed) ?? await git.writeTree({ fs, dir, tree: [] });
+  if (!changed.length || tree === original) return null;
+  // the index takes the blobs just written, in one read and one write
+  await GitIndexManager.acquire({ fs: indexFs, gitdir: path.join(dir, ".git"), cache: {} }, async (index) => {
+    for (const filepath of changed) {
+      const entry = staged.get(filepath);
+      if (entry) index.insert({ filepath, oid: entry.oid, stats: entry.stats });
+      else index.delete({ filepath });
+    }
+  });
+  return commitWithReflog(dir, username, message, viaAgent, tree);
+}
+
 export async function log(dir: string, limit = 50): Promise<CommitInfo[]> {
-  const commits = await git.log({ fs, dir, depth: limit });
+  const commits = await withRepoLock(dir, () => git.log({ fs, dir, depth: limit }));
   return commits.map((c) => ({
     oid: c.oid,
     message: c.commit.message.trim(),
@@ -354,7 +397,7 @@ export async function log(dir: string, limit = 50): Promise<CommitInfo[]> {
 }
 
 export async function status(dir: string): Promise<{ path: string; head: number; workdir: number }[]> {
-  const matrix = await statusRows(dir);
+  const matrix = await withRepoLock(dir, () => statusRows(dir));
   return matrix
     .filter(([filepath, head, workdir, stage]) => !gitBoundaryIgnored(filepath) && !(head === 1 && workdir === 1 && stage === 1))
     .map(([p, head, workdir]) => ({ path: p, head, workdir }));
