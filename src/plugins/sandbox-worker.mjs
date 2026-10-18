@@ -85,8 +85,8 @@ import variant from "@jitl/quickjs-ng-wasmfile-release-sync";
 // the wasm travels with the code: a compiled engine has no node_modules for
 // the emscripten loader to find it in
 import wasmFile from "@jitl/quickjs-ng-wasmfile-release-sync/wasm" with { type: "file" };
-import { newVariant } from "quickjs-emscripten-core";
-import { loadQuickJs } from "@sebastianwessel/quickjs";
+import { newVariant, Scope, shouldInterruptAfterDeadline } from "quickjs-emscripten-core";
+import { expose, loadQuickJs } from "@sebastianwessel/quickjs";
 
 const port = parentPort;
 if (!port) throw new Error("sandbox worker requires worker_threads");
@@ -110,8 +110,13 @@ async function getRun() {
  * hits the wasm ceiling, where every later call dies with "out of memory".
  */
 function heapBytes() {
+  if (retire) return Number.MAX_SAFE_INTEGER;
   return quickJs?.module?.module?.HEAPU8?.buffer?.byteLength ?? 0;
 }
+
+/** A kept-loaded context that could not free itself leaves this worker's
+ *  wasm state unfit for more calls; the next reply asks the host to end it. */
+let retire = false;
 
 function reply(msg) {
   port.postMessage({ ...msg, heapBytes: heapBytes() });
@@ -162,6 +167,42 @@ function pluginTree(source, modules) {
   return root;
 }
 
+// NOTE: we do NOT pass fetchAdapter — but the package may still inject a
+// fetch symbol; neutralize it explicitly inside the guest. It rides as its
+// own module so the harness can import it BEFORE plugin.js: statements
+// prepended to a module body would run after the imports it hoists above
+// them, i.e. after the plugin's own top-level code had already seen fetch.
+// It also notes whether the plugin read the clock or drew a random number:
+// such a result can differ on the same data, so no host may answer the
+// same request again from a remembered copy. A kept-loaded plugin's calls
+// reset that note each time.
+const GUARD = `
+try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: false, configurable: false }); } catch (e) {}
+let touched = false;
+export const varied = () => touched;
+export const resetVaried = () => { touched = false; };
+const mark = () => { touched = true; };
+const RealDate = Date;
+const now = () => { mark(); return RealDate.now(); };
+globalThis.Date = new Proxy(RealDate, {
+  apply(target, self, args) { mark(); return Reflect.apply(target, self, args); },
+  construct(target, args, newTarget) { if (args.length === 0) mark(); return Reflect.construct(target, args, newTarget); },
+  get(target, key) { return key === "now" ? now : Reflect.get(target, key, target); },
+});
+const random = Math.random;
+Math.random = () => { mark(); return random(); };
+if (globalThis.performance && typeof globalThis.performance.now === "function") {
+  const perf = globalThis.performance.now.bind(globalThis.performance);
+  try { globalThis.performance.now = () => { mark(); return perf(); }; } catch (e) {}
+}
+if (globalThis.crypto) {
+  for (const name of ["getRandomValues", "randomUUID"]) {
+    const fn = globalThis.crypto[name];
+    if (typeof fn === "function") { try { globalThis.crypto[name] = (...args) => { mark(); return fn.apply(globalThis.crypto, args); }; } catch (e) {} }
+  }
+}
+`;
+
 /** A route's own heap. App data is read whole into it, so a library's worth
  *  of JSON plus the serialized reply must fit. */
 const DEFAULT_MEMORY_LIMIT = 256 * 1024 * 1024;
@@ -210,24 +251,16 @@ function dirSignature(full) {
 function harnessCode(hook) {
   // guard.js first: static imports evaluate in order, so `fetch` is already
   // neutralized before the plugin module's top-level code runs
-  // env reaches the guest as host objects. A method call on one
-  // (host.fs.read(...)) carries its object along as \`this\`, which is
-  // serialized again on every call: about a millisecond each, so a route
-  // reading a thousand files spent a second on that alone. The guest gets
-  // its own copy, whose functions call the host's without a receiver.
   const preamble = `import { varied } from "guard.js";\nimport * as mod from "plugin/plugin.js";
-const local = (v, depth) => {
-  if (typeof v === "function") return (...args) => v(...args);
-  if (v === null || typeof v !== "object" || depth > 6) return v;
-  if (Array.isArray(v)) return v.map((x) => local(x, depth + 1));
-  const o = {};
-  for (const k of Object.keys(v)) o[k] = local(v[k], depth + 1);
-  return o;
-};
-const host = local(env.host, 0);
-const ctx = local(env.ctx, 0);
+${HOST_COPY}`;
+  return `${preamble}export default ${callBody(hook)};
 `;
-  const wrap = (body) => `${preamble}export default (async () => {
+}
+
+/** What the guest runs for one call, as an expression: an async function's
+ *  promise for the JSON envelope. `mod`, `varied` and `env` are in scope. */
+function callBody(hook) {
+  const wrap = (body) => `(async () => {
 try {
 ${body}
 if (out && typeof out.then === "function") out = await out;
@@ -237,8 +270,7 @@ return json;
 } catch (e) {
 return JSON.stringify({ ok: false, error: String((e && e.message) || e) });
 }
-})();
-`;
+})()`;
   // pseudo-hooks for kernel services (SPEC-v2 §3)
   if (hook.startsWith("__export:")) {
     const name = JSON.stringify(hook.slice("__export:".length));
@@ -257,8 +289,171 @@ let out;
 if (typeof fn === "function") { out = fn(ctx, host); }`);
 }
 
+// ---------- plugins kept loaded between calls ----------
+//
+// A plugin whose manifest sets keepLoaded is evaluated once per worker and
+// key (a user's copy of one plugin), and each call runs as a short script in
+// the same context: compiling a large plugin cost more than most calls. Its
+// module state may outlive a call, so the manifest flag is the plugin saying
+// it does not depend on starting fresh. A context leaves when its code
+// changes, when a call runs out of time or memory, or when more are kept
+// than WARM_MAX (least recently used first).
+
+const WARM_MAX = 4;
+const warmSessions = new Map();
+/** The console of the call running now; a context outlives its first call. */
+let warmConsole = null;
+
+function openWarm(version, tree, memoryLimitBytes, executionTimeoutMs) {
+  let release;
+  const released = new Promise((resolve) => { release = resolve; });
+  let loaded, failed;
+  const ready = new Promise((resolve, reject) => { loaded = resolve; failed = reject; });
+  ready.catch(() => {});
+  const sink = (level) => (...args) => warmConsole?.(level, ...args);
+  const done = getRun().then((runSandboxed) => runSandboxed(async ({ ctx, evalCode }) => {
+    ctx.runtime.setInterruptHandler(shouldInterruptAfterDeadline(Date.now() + executionTimeoutMs));
+    const r = await evalCode(`import * as guard from "guard.js";
+import * as mod from "plugin/plugin.js";
+Object.defineProperty(globalThis, "__chrysalisWarm", { value: Object.freeze({ mod, guard }) });
+export default true;
+`, "warm.mjs");
+    if (!r.ok) { failed(new Error(r.error.message)); return; }
+    loaded(ctx);
+    await released;
+  }, {
+    memoryLimit: memoryLimitBytes,
+    maxStackSize: 1024 * 1024,
+    nodeModules: { plugin: tree, "guard.js": GUARD },
+    console: { log: sink("log"), error: sink("error"), warn: sink("warn"), info: sink("info"), debug: sink("debug"), trace: sink("trace") },
+  }));
+  done.catch((e) => failed(e));
+  return {
+    version,
+    ready,
+    close: async () => {
+      release();
+      try { await done; } catch { retire = true; }
+    },
+  };
+}
+
+/** The host for one kept-loaded call. A plugin that keeps `host` in module
+ *  state would otherwise reach a finished call's store, journal and reads. */
+function sealHost(value, live, depth = 0) {
+  if (typeof value === "function") {
+    return (...args) => {
+      if (!live.on) throw new Error("host belongs to a call that has ended");
+      return value(...args);
+    };
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value) || depth > 6) return value;
+  const out = {};
+  for (const [k, v] of Object.entries(value)) out[k] = sealHost(v, live, depth + 1);
+  return out;
+}
+
+const TIME_LIMIT = "The script execution has exceeded the maximum allowed time limit.";
+
+/** One call in a kept-loaded context, answered like runSandboxed: {ok, data}
+ *  or {ok: false, error}. `broken` means the context must not serve again. */
+async function callWarm(ctx, hook, env, executionTimeoutMs, memoryLimitBytes) {
+  const deadline = Date.now() + executionTimeoutMs;
+  const scope = new Scope();
+  let handle = null;
+  const failure = (errorHandle) => {
+    const e = ctx.dump(errorHandle);
+    errorHandle.dispose();
+    const message = String(e?.message ?? e);
+    return { ok: false, error: { message: message === "interrupted" ? TIME_LIMIT : message }, broken: true };
+  };
+  try {
+    ctx.runtime.setMemoryLimit(memoryLimitBytes);
+    ctx.runtime.setInterruptHandler(shouldInterruptAfterDeadline(deadline));
+    expose(ctx, scope, { env });
+    const evaluated = ctx.evalCode(`(() => {
+const { mod, guard } = globalThis.__chrysalisWarm;
+guard.resetVaried();
+const varied = guard.varied;
+${HOST_COPY}return ${callBody(hook)};
+})()`, "call.js", { type: "global", strict: true });
+    if (evaluated.error) return failure(evaluated.error);
+    handle = evaluated.value;
+    // a sync export settles during the eval; anything else needs its jobs run
+    let state = ctx.getPromiseState(handle);
+    while (state.type === "pending") {
+      if (Date.now() > deadline) return { ok: false, error: { message: TIME_LIMIT }, broken: true };
+      const jobs = ctx.runtime.executePendingJobs();
+      if (jobs.error) return failure(jobs.error);
+      jobs.dispose();
+      state = ctx.getPromiseState(handle);
+      if (state.type === "pending") await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    if (state.type === "rejected") return failure(state.error);
+    const data = ctx.dump(state.value);
+    state.value.dispose();
+    return { ok: true, data };
+  } finally {
+    handle?.dispose();
+    try { expose(ctx, scope, { env: undefined }); } catch { /* context already unusable */ }
+    scope.dispose();
+  }
+}
+
+async function runWarm(key, source, modules, hook, env, executionTimeoutMs, memoryLimitBytes, sink) {
+  const version = createHash("sha1").update(source).update("\0").update(JSON.stringify(modules ?? {})).digest("hex");
+  let session = warmSessions.get(key);
+  if (session && session.version !== version) {
+    warmSessions.delete(key);
+    await session.close();
+    session = undefined;
+  }
+  if (session) warmSessions.delete(key);
+  else session = openWarm(version, pluginTree(source, modules), memoryLimitBytes, executionTimeoutMs);
+  warmSessions.set(key, session);
+  for (const [oldKey, old] of warmSessions) {
+    if (warmSessions.size <= WARM_MAX) break;
+    warmSessions.delete(oldKey);
+    await old.close();
+  }
+  const live = { on: true };
+  warmConsole = sink;
+  let result;
+  try {
+    const ctx = await session.ready;
+    result = await callWarm(ctx, hook, { ctx: env.ctx, host: sealHost(env.host, live) }, executionTimeoutMs, memoryLimitBytes);
+  } catch (e) {
+    result = { ok: false, error: { message: String(e?.message ?? e) }, broken: true };
+  } finally {
+    live.on = false;
+    warmConsole = null;
+  }
+  if (result.broken && warmSessions.get(key) === session) {
+    warmSessions.delete(key);
+    await session.close();
+  }
+  return result;
+}
+
+// env reaches the guest as host objects. A method call on one
+// (host.fs.read(...)) carries its object along as `this`, which is
+// serialized again on every call: about a millisecond each, so a route
+// reading a thousand files spent a second on that alone. The guest gets its
+// own copy, whose functions call the host's without a receiver.
+const HOST_COPY = `const local = (v, depth) => {
+  if (typeof v === "function") return (...args) => v(...args);
+  if (v === null || typeof v !== "object" || depth > 6) return v;
+  if (Array.isArray(v)) return v.map((x) => local(x, depth + 1));
+  const o = {};
+  for (const k of Object.keys(v)) o[k] = local(v[k], depth + 1);
+  return o;
+};
+const host = local(env.host, 0);
+const ctx = local(env.ctx, 0);
+`;
+
 port.on("message", async (msg) => {
-  const { id, source, modules = null, hook, ctx, storeSnapshot = {}, llmResults = {}, netResults = {}, netAllowed = false, maxStoreBytes = 1024 * 1024, storeAllowed = true, llmAllowed = true, fsAllowed = false, fsRoot = null, fsReadOnly = false, fsTransaction = null, zipAllowed = false, zipBase64 = null, zipEntries: providedEntries = null, siblingToolDefs = null, embedResults = {}, executionTimeoutMs = 10_000, memoryLimitBytes = DEFAULT_MEMORY_LIMIT, trackReads = false } = msg;
+  const { id, source, modules = null, hook, ctx, storeSnapshot = {}, llmResults = {}, netResults = {}, netAllowed = false, maxStoreBytes = 1024 * 1024, storeAllowed = true, llmAllowed = true, fsAllowed = false, fsRoot = null, fsReadOnly = false, fsTransaction = null, zipAllowed = false, zipBase64 = null, zipEntries: providedEntries = null, siblingToolDefs = null, embedResults = {}, executionTimeoutMs = 10_000, memoryLimitBytes = DEFAULT_MEMORY_LIMIT, trackReads = false, warmKey = null } = msg;
   const logs = [];
   const fsWrites = new Set();
   const llmRequests = [];
@@ -344,39 +539,6 @@ port.on("message", async (msg) => {
             results: {},
           },
     };
-    // NOTE: we do NOT pass fetchAdapter — but the package may still inject a
-    // fetch symbol; neutralize it explicitly inside the guest. It rides as its
-    // own module so the harness can import it BEFORE plugin.js: statements
-    // prepended to a module body would run after the imports it hoists above
-    // them, i.e. after the plugin's own top-level code had already seen fetch.
-    // It also notes whether the plugin read the clock or drew a random number:
-    // such a result can differ on the same data, so no host may answer the
-    // same request again from a remembered copy.
-    const guard = `
-try { Object.defineProperty(globalThis, 'fetch', { value: undefined, writable: false, configurable: false }); } catch (e) {}
-let touched = false;
-export const varied = () => touched;
-const mark = () => { touched = true; };
-const RealDate = Date;
-const now = () => { mark(); return RealDate.now(); };
-globalThis.Date = new Proxy(RealDate, {
-  apply(target, self, args) { mark(); return Reflect.apply(target, self, args); },
-  construct(target, args, newTarget) { if (args.length === 0) mark(); return Reflect.construct(target, args, newTarget); },
-  get(target, key) { return key === "now" ? now : Reflect.get(target, key, target); },
-});
-const random = Math.random;
-Math.random = () => { mark(); return random(); };
-if (globalThis.performance && typeof globalThis.performance.now === "function") {
-  const perf = globalThis.performance.now.bind(globalThis.performance);
-  try { globalThis.performance.now = () => { mark(); return perf(); }; } catch (e) {}
-}
-if (globalThis.crypto) {
-  for (const name of ["getRandomValues", "randomUUID"]) {
-    const fn = globalThis.crypto[name];
-    if (typeof fn === "function") { try { globalThis.crypto[name] = (...args) => { mark(); return fn.apply(globalThis.crypto, args); }; } catch (e) {} }
-  }
-}
-`;
     // Zip service (SPEC-v2 §3, import path): decode base64 zip → entries map
     // { "path": "text content" } for TEXT entries (binary entries listed as
     // { "__binary__": true }). Size/count capped. Sandboxed plugin then maps
@@ -670,14 +832,14 @@ if (globalThis.crypto) {
         .slice(0, 500);
       logs.push(`[console.${level}] ${text}`);
     };
-    const result = await runSandboxed(
+    const result = warmKey ? await runWarm(warmKey, source, modules, hook, { ctx, host }, executionTimeoutMs, memoryLimitBytes, (level, ...args) => cappedConsole(level)(...args)) : await runSandboxed(
       async ({ evalCode }) => evalCode(harnessCode(hook), "harness.mjs"),
       {
         executionTimeout: executionTimeoutMs,
         memoryLimit: memoryLimitBytes,
         maxStackSize: 1024 * 1024,
         env: { ctx, host },
-        nodeModules: { plugin: pluginTree(source, modules), "guard.js": guard },
+        nodeModules: { plugin: pluginTree(source, modules), "guard.js": GUARD },
         console: {
           log: cappedConsole("log"),
           error: cappedConsole("error"),

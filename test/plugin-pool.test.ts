@@ -194,4 +194,14 @@ describe("host regex", () => {
     expect(native.out?.json).toEqual(guest.out?.json as Record<string, unknown>);
     expect(native.ms).toBeLessThan(guest.ms / 3);
   }, 60_000);
+
+  it("keeps a plugin loaded between calls only when its manifest says so", async () => {
+    const code = `let n = 0; export function handleRoute() { n++; return { json: n }; }`;
+    const fresh = plugin("fresh", code, ["routes"]);
+    const kept = plugin("kept", code, ["routes"]);
+    kept.manifest.keepLoaded = true;
+    expect([(await post(fresh))?.json, (await post(fresh))?.json]).toEqual([1, 1]);
+    const first = (await post(kept))?.json as number;
+    expect((await post(kept))?.json).toBe(first + 1);
+  }, 30_000);
 });

@@ -33,7 +33,7 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { PluginSandbox, sandbox, type SandboxResponse } from "./sandbox.js";
+import { PluginSandbox, sandbox, type SandboxRequest, type SandboxResponse } from "./sandbox.js";
 import { JsonFieldStreamDecoder, normalizeStreamDecodeSpec } from "./stream-decode.js";
 import type { PluginStoreService } from "./store.js";
 import type { UserModelService, GenerateRequest, GenerateResult } from "../models.js";
@@ -284,11 +284,16 @@ export function discoverAppPlugins(appsDir: string, appId: string): LoadedPlugin
   }));
 }
 
+/** What the sandbox runs for a plugin. A plugin that keeps loaded is
+ *  evaluated once and called again in place, per user's copy of it. */
+function pluginCode(plugin: LoadedPlugin): Pick<SandboxRequest, "source" | "modules" | "warmKey"> {
+  return { source: plugin.source, modules: plugin.modules, ...(plugin.manifest.keepLoaded === true ? { warmKey: plugin.dir } : {}) };
+}
+
 /** Read a static export (e.g. TOOLS) from a plugin without running hooks. */
 export async function readPluginExport(plugin: LoadedPlugin, exportName: string): Promise<unknown> {
   const r = await sandbox.eval({
-    source: plugin.source,
-    modules: plugin.modules,
+    ...pluginCode(plugin),
     hook: `__export:${exportName}`,
     ctx: { exportName },
     storeSnapshot: {},
@@ -315,8 +320,7 @@ export async function runPluginTool(
   let results = noResults();
   for (let pass = 0; pass < MAX_TOOL_PASSES; pass++) {
     const r = await sandbox.eval({
-      source: plugin.source,
-      modules: plugin.modules,
+      ...pluginCode(plugin),
       hook: "__tool",
       ctx: { name: toolName, args },
       storeSnapshot: snapshotOf(plugin, deps),
@@ -1004,8 +1008,7 @@ export async function runPluginRoute(
       if (pass > 0) storeSnapshot = snapshotOf(plugin, deps);
       const r = await box.eval({
         ...limits,
-        source: plugin.source,
-        modules: plugin.modules,
+        ...pluginCode(plugin),
         hook: "__route",
         // zipBase64 already rides the message for the host-side zip service —
         // keep the multi-MB string OUT of the guest's ctx (64MB heap)
@@ -1141,6 +1144,10 @@ export interface PluginManifest {
    *  "*.example.com" suffixes. Absent/empty = no network at all; egress is
    *  default-deny for every plugin, trusted or imported. */
   networkHosts?: string[];
+  /** The plugin's modules stay loaded between calls instead of being
+   *  evaluated for each one: the plugin keeps no state in module scope that
+   *  a call depends on starting fresh. */
+  keepLoaded?: boolean;
 }
 
 // ---------- hook execution (two-phase llm exchange, worker-isolated) ----------
@@ -1199,8 +1206,7 @@ async function hookPasses(
 
   for (let pass = 0; pass < MAX_PASSES; pass++) {
     const r = await box.eval({
-      source: plugin.source,
-      modules: plugin.modules,
+      ...pluginCode(plugin),
       hook,
       ctx: current as unknown,
       storeSnapshot,

@@ -54,6 +54,9 @@ export interface SandboxRequest {
    *  a worker runs one call at a time. */
   executionTimeoutMs?: number;
   memoryLimitBytes?: number;
+  /** Keep the plugin loaded in the worker under this key and call it again
+   *  in place; one key per user's copy of a plugin. */
+  warmKey?: string;
 }
 
 export interface SandboxResponse {
