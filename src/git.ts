@@ -23,6 +23,17 @@ function authorFor(username: string, viaAgent: boolean): { name: string; email: 
   return { name, email: `${username}@local` };
 }
 
+/** A file over this size stays out of history: every save of it would add
+ *  another compressed copy to the repository (a long chat grows it by tens
+ *  of MB a message), and hashing it means reading it whole. It stays on disk
+ *  untouched; a tracked file that grows past it leaves the next commit that
+ *  names it. */
+const MAX_VERSIONED_BYTES = 32 * 1024 * 1024;
+function versioned(dir: string, filepath: string): boolean {
+  if (gitBoundaryIgnored(filepath)) return false;
+  try { return fs.statSync(path.join(dir, filepath)).size <= MAX_VERSIONED_BYTES; } catch { return true; }
+}
+
 // Route sweeps, agent tools and restores all commit the same repo from
 // concurrent async contexts — isomorphic-git index writes must not interleave.
 const repoLocks = new Map<string, Promise<unknown>>();
@@ -173,7 +184,7 @@ export async function commitAll(
     for (const [filepath, head, workdir, stage] of matrix) {
       // git boundary (paths.ts): credentials/chat logs/runtime state are never
       // staged — even if a tampered .gitignore would let statusMatrix see them.
-      if (gitBoundaryIgnored(filepath)) continue;
+      if (!versioned(dir, filepath)) continue;
       if (workdir === 0) {
         // deleted from workdir (was tracked or staged)
         if (head !== 0 || stage !== 0) {
@@ -198,7 +209,7 @@ export async function commitAll(
 export async function changedPaths(dir: string): Promise<string[]> {
   const matrix = await withRepoLock(dir, () => statusRows(dir));
   return matrix
-    .filter(([filepath, head, workdir, stage]) => !gitBoundaryIgnored(filepath) && !(head === 1 && workdir === 1 && stage === 1))
+    .filter(([filepath, head, workdir, stage]) => !(head === 1 && workdir === 1 && stage === 1) && versioned(dir, filepath))
     .map(([filepath]) => filepath);
 }
 
@@ -221,7 +232,7 @@ export async function commitPaths(
 
 /** commitPaths against a status already read; caller holds the repo lock. */
 async function commitMatrixPaths(dir: string, username: string, message: string, paths: string[], matrix: StatusRow[], viaAgent = false): Promise<string | null> {
-  const wanted = new Set(paths.filter((p) => !gitBoundaryIgnored(p)));
+  const wanted = new Set(paths.filter((p) => versioned(dir, p)));
   if (wanted.size === 0) return null;
   let changed = 0;
   for (const [filepath, head, workdir, stage] of matrix) {
@@ -341,7 +352,7 @@ export function queueRouteCommit(dir: string, username: string, message: string,
       const own = new Set(written);
       const matrix = await statusRows(dir);
       const dirty = matrix
-        .filter(([filepath, head, workdir, stage]) => !gitBoundaryIgnored(filepath) && !(head === 1 && workdir === 1 && stage === 1))
+        .filter(([filepath, head, workdir, stage]) => !(head === 1 && workdir === 1 && stage === 1) && versioned(dir, filepath))
         .map(([filepath]) => filepath)
         .filter((filepath) => !own.has(filepath) && !queued.has(filepath));
       if (dirty.length > 0) {
@@ -367,6 +378,7 @@ async function commitKnownPaths(dir: string, username: string, message: string, 
     let stats: fs.Stats | null = null;
     try { stats = fs.lstatSync(full); } catch { /* deleted */ }
     if (stats && !stats.isFile()) continue;
+    if (stats && stats.size > MAX_VERSIONED_BYTES) stats = null; // leaves history, see versioned()
     const blob = stats ? writeBlobFile(dir, fs.readFileSync(full)) : null;
     if (stats && blob) staged.set(filepath, { oid: blob, stats });
     const mode = stats && (stats.mode & 0o111) ? "100755" : "100644";
@@ -399,7 +411,7 @@ export async function log(dir: string, limit = 50): Promise<CommitInfo[]> {
 export async function status(dir: string): Promise<{ path: string; head: number; workdir: number }[]> {
   const matrix = await withRepoLock(dir, () => statusRows(dir));
   return matrix
-    .filter(([filepath, head, workdir, stage]) => !gitBoundaryIgnored(filepath) && !(head === 1 && workdir === 1 && stage === 1))
+    .filter(([filepath, head, workdir, stage]) => !(head === 1 && workdir === 1 && stage === 1) && versioned(dir, filepath))
     .map(([p, head, workdir]) => ({ path: p, head, workdir }));
 }
 

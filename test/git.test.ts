@@ -217,6 +217,23 @@ it("queued route commits label other edits out-of-band and readers wait for them
   expect(await changedPaths(dir)).toEqual([]);
 });
 
+it("keeps files over the size cap out of history, and drops one that grows past it", async () => {
+  await initRepo(dir);
+  await commitAll(dir, "alice", "initial");
+  const big = Buffer.alloc(33 * 1024 * 1024, 97);
+  fs.writeFileSync(path.join(dir, "long.jsonl"), "small\n");
+  fs.writeFileSync(path.join(dir, "huge.jsonl"), big);
+  expect(await commitWrittenPaths(dir, "alice", "write", ["long.jsonl", "huge.jsonl"])).toBeTruthy();
+  const files = async () => (await isomorphicGit.listFiles({ fs, dir, ref: "HEAD" })).filter((f) => f.endsWith(".jsonl")).sort();
+  expect(await files()).toEqual(["long.jsonl"]);
+  fs.writeFileSync(path.join(dir, "long.jsonl"), big);
+  expect(await commitWrittenPaths(dir, "alice", "grew", ["long.jsonl"])).toBeTruthy();
+  expect(await files()).toEqual([]);
+  expect(fs.statSync(path.join(dir, "long.jsonl")).size).toBe(big.length);
+  expect(await changedPaths(dir)).toEqual([]);
+  expect(await commitAll(dir, "alice", "sweep")).toBeNull();
+});
+
 it("known-file commits track edits and deletions without sweeping unrelated files", async () => {
   await initRepo(dir);
   await commitAll(dir, "alice", "initial");
