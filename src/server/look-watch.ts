@@ -60,7 +60,8 @@ const flush = (username: string, changed: Set<string>, changedBuild: Set<string>
  *  edit data/...; open app pages re-hydrate on the event). */
 const isAppData = (rel: string): boolean => {
   const segs = rel.split(/[\\/]/).filter(Boolean);
-  return segs.length >= 2 && segs[1] === "data" && !segs.includes("node_modules");
+  // data/__index is the engine's own cache of the files, not app data
+  return segs.length >= 2 && segs[1] === "data" && segs[2] !== "__index" && !segs.includes("node_modules");
 };
 
 export function ensureLookWatcher(username: string, appsDir: string, bus: EventBus, opts?: WatchOpts): void {

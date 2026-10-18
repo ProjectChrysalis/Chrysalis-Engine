@@ -11,7 +11,7 @@ import { AGENT_READ_DENYLIST, agentReadDenied, agentWriteDenied } from "../paths
 
 /** Directories never mounted into the sandbox (derived artifacts, runtime
  *  state, agent transcripts). Matched on any path segment. */
-const MOUNT_SKIP_DIRS = new Set(["node_modules", "dist", "agent", "assets-store", "store", ".staging"]);
+const MOUNT_SKIP_DIRS = new Set(["node_modules", "dist", "agent", "assets-store", "store", ".staging", "__index"]);
 /** Listing stops here; a workspace this big is marked truncated. */
 export const MAX_MOUNT_FILES = 100_000;
 /** A single file the sandbox may read or write back. */

@@ -39,7 +39,8 @@ export class BackupError extends Error {
   }
 }
 
-const SKIPPED_DIRS = new Set(["node_modules", "dist", ".git"]);
+// __index: the engine's rebuildable index of the app's data files
+const SKIPPED_DIRS = new Set(["node_modules", "dist", ".git", "__index"]);
 
 /** Every file of an installed app, by relative path. Symlinks are skipped,
  *  never followed, so nothing an app plants can pull a file from outside its

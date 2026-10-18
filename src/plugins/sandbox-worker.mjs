@@ -25,7 +25,10 @@
  *                                         adds to a file, zip.image stores an
  *                                         image entry as media, zip.read
  *                                         hands a large text entry over in
- *                                         line-aligned slices
+ *                                         line-aligned slices; fs.query reads
+ *                                         fields of many JSON files through
+ *                                         an index, fs.lines / spliceLines
+ *                                         reach JSONL records by position
  *   host.regex.matches(source, flags, text)
  *                                       → every match of a pattern, found by
  *                                         the host's own regex engine:
@@ -39,6 +42,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { unzipSync } from "fflate";
 import { inflateSync } from "node:zlib";
+import { INDEX_DIR, lines as readRecords, query as queryIndex, splice as spliceRecords } from "./data-index.mjs";
 
 /** PNG text fields that hold base64 (card data is base64 JSON), decoded:
  *  the guest would otherwise decode them itself, tens of milliseconds a card. */
@@ -684,9 +688,11 @@ port.on("message", async (msg) => {
         }
         return full;
       };
+      const indexRoot = path.join(fsRoot, INDEX_DIR);
       const withinNewFile = (rel) => {
         const full = within(rel);
         if (full === fsRoot) throw new Error("refusing to write the data dir itself");
+        if (full === indexRoot || full.startsWith(indexRoot + path.sep)) throw new Error(`${INDEX_DIR}/ belongs to the engine`);
         // even a symlink whose target resolves inside the jail is refused for
         // writes — the target could be swapped after this check
         if (isSymlink(full)) throw new Error(`refusing to write through a symlink: ${rel}`);
@@ -827,6 +833,33 @@ port.on("message", async (msg) => {
             finally { fs.rmSync(temporary, { force: true }); }
           } catch (e) { scrub(e, rel); }
         },
+        // fields of many JSON files at once; see data-index.mjs
+        query: (spec, options) => {
+          try {
+            return queryIndex(fsRoot, spec, options ?? {}, reads ? {
+              dir: (dir) => { if (!reads.has(`d:${dir}`)) reads.set(`d:${dir}`, dirSignature(dir)); },
+              file: (file) => { if (!reads.has(`f:${file}`)) reads.set(`f:${file}`, fileSignature(file)); },
+            } : undefined);
+          } catch (e) { scrub(e, String(spec?.files ?? "")); }
+        },
+        // records of a JSONL file by position, without reading the rest
+        lines: (rel, from, to) => {
+          try {
+            const full = readFile(rel);
+            return readRecords(full, from, to);
+          } catch (e) { scrub(e, rel); }
+        },
+        // rewrite a JSONL file from record `from` on; earlier records stay
+        // byte for byte, so a long transcript's save writes only its tail
+        spliceLines: (rel, from, records) => {
+          const full = withinNewFile(rel);
+          try {
+            beforeWrite(full);
+            const r = spliceRecords(full, from, records);
+            fsWrites.add(path.relative(fsRoot, full).split(path.sep).join("/"));
+            return r;
+          } catch (e) { scrub(e, rel); }
+        },
         // the end of a file, which may grow past what one write can carry
         append: (rel, content) => {
           if (typeof content !== "string") throw new Error("fs.append(rel, string)");
@@ -849,6 +882,7 @@ port.on("message", async (msg) => {
         remove: (rel) => {
           const full = within(rel);
           if (full === fsRoot) throw new Error("refusing to remove the data dir itself");
+          if (full === indexRoot || full.startsWith(indexRoot + path.sep)) throw new Error(`${INDEX_DIR}/ belongs to the engine`);
           try {
             const remember = (file) => {
               if (fs.lstatSync(file).isDirectory()) {
