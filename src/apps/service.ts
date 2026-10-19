@@ -746,14 +746,18 @@ export class ServiceManager {
     if (target.spec.setup) {
       const last = readServiceApprovals(target.approvalsFile)[target.appId]?.setup;
       const packages = fs.existsSync(path.join(cwd, "node_modules"));
-      // due on the first start, when what it works from changed, and when
-      // the packages it installed are gone. An install from before this was
-      // recorded has its packages and counts as set up
-      const due = last === undefined
-        ? !packages
+      const downloads = this.opts.config.apps.packageDownloads;
+      // due on the first start, after a run that did not finish (its
+      // node_modules may be half there), when what it works from changed,
+      // and when the packages it installed are gone. Where nothing may be
+      // downloaded, an install that never recorded a run keeps its packages
+      const due = last === undefined && packages && !downloads
+        ? false
         : last !== setupStamp(cwd, target.spec) || (!packages && fs.existsSync(path.join(cwd, "package.json")));
       if (due) {
-        if (!this.opts.config.apps.packageDownloads) throw new Error("this app needs to download its packages, and package downloads are off in config.yaml");
+        if (!downloads) throw new Error("this app needs to download its packages, and package downloads are off in config.yaml");
+        // cleared first, so a run that fails or is cut short is due again
+        recordSetup(target.approvalsFile, target.appId, "");
         e.state = "installing";
         this.note(e, `$ ${target.spec.setup.join(" ")}`);
         const setup = this.spawn(e, target.spec.setup);

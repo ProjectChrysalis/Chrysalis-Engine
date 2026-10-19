@@ -532,6 +532,22 @@ describe("service app", () => {
     expect(validateAppManifest(manifest({ ...SERVICE, setupOn: ["../x"] }))).toBeNull();
   });
 
+  it("setup that failed after leaving packages behind runs again", async () => {
+    const spec = { ...SERVICE, setup: ["bun", "setup.js"] };
+    fs.writeFileSync(path.join(appDir, "manifest.json"), JSON.stringify(manifest(spec)));
+    fs.writeFileSync(
+      path.join(appDir, "server", "setup.js"),
+      `const fs = require("node:fs");
+if (fs.existsSync("tried")) fs.appendFileSync("ran.txt", "x");
+else { fs.mkdirSync("node_modules"); fs.writeFileSync("tried", ""); process.exit(1); }`,
+    );
+    await act("approve");
+    expect((await until("failed")).error).toMatch(/setup ended with code 1/);
+    await act("start");
+    await until("running");
+    expect(fs.readFileSync(path.join(appDir, "server", "ran.txt"), "utf8")).toBe("x");
+  });
+
   it("a stop asked for during setup ends the setup instead of waiting for it", async () => {
     const spec = { ...SERVICE, setup: ["bun", "setup.js"] };
     fs.writeFileSync(path.join(appDir, "manifest.json"), JSON.stringify(manifest(spec)));
