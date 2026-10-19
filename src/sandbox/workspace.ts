@@ -31,7 +31,16 @@ export interface WorkspaceFileInfo {
  *  the workspace must not turn a sandbox sync into a read/write handle on the
  *  rest of the machine. */
 export function makePathGuard(root: string) {
-  const inside = (real: string): boolean => real === root || real.startsWith(root + path.sep);
+  // targets are compared by real path, so the root must be one too: Android
+  // hands apps their storage through a symlink (/data/user/0 -> /data/data)
+  const realRoot = (() => {
+    try {
+      return fs.realpathSync(root);
+    } catch {
+      return root;
+    }
+  })();
+  const inside = (real: string): boolean => real === realRoot || real.startsWith(realRoot + path.sep);
   return {
     /** read/list guard: the resolved target must stay inside the workspace */
     assertReadable(abs: string, rel: string): void {

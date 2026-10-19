@@ -51,7 +51,7 @@ function exclusive(appDir: string, run: () => Promise<InstallResult>): Promise<I
  *  a new file, and on Windows the virus scanner inspects each one the first
  *  time the builder reads it (tens of seconds per build, against under one
  *  for cache files it has already seen). */
-const LINK_BACKEND = INSTALL_KIND === "android" ? ["--backend=copyfile"] : [];
+export const LINK_BACKEND = INSTALL_KIND === "android" ? ["--backend=copyfile"] : [];
 
 /** Does this app declare package dependencies? */
 export function hasPackages(appDir: string): boolean {

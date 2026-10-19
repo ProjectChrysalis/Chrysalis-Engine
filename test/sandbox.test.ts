@@ -195,6 +195,20 @@ describe("workspace mount", () => {
     expect(() => readWorkspaceFile(p.root, "../users.json")).toThrow(/Refused/);
   });
 
+  it("works through a symlinked data folder, and still refuses links out of it", () => {
+    const real = path.join(tmp, "real");
+    fs.mkdirSync(real);
+    const linked = path.join(tmp, "linked");
+    fs.symlinkSync(real, linked);
+    const p = bootstrapUserDir(linked, "carol");
+    expect(workspaceFs(p.root, { op: "write", files: [{ path: "notes/a.txt", b64: Buffer.from("hi").toString("base64") }] }).results?.[0]?.ok).toBe(true);
+    expect(readWorkspaceFile(p.root, "notes/a.txt").toString()).toBe("hi");
+    fs.mkdirSync(path.join(tmp, "elsewhere"));
+    fs.writeFileSync(path.join(tmp, "elsewhere", "secret.txt"), "no");
+    fs.symlinkSync(path.join(tmp, "elsewhere"), path.join(p.root, "out"));
+    expect(() => readWorkspaceFile(p.root, "out/secret.txt")).toThrow(/outside the workspace/);
+  });
+
   it("refuses to delete HEAD, config and the index; refs still delete", () => {
     const p = bootstrapUserDir(tmp, "bob");
     const gitDir = path.join(p.root, ".git");

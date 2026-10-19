@@ -27,6 +27,7 @@ import type { Server, ServerWebSocket, Subprocess } from "bun";
 import { listenHost, type InstanceConfig } from "../config.js";
 import { log } from "../logger.js";
 import { HotScripts } from "./hot.js";
+import { LINK_BACKEND } from "./packages.js";
 import type { ServiceSpec } from "./manager.js";
 
 export type ServiceState = "stopped" | "installing" | "starting" | "running" | "failed";
@@ -704,6 +705,8 @@ export class ServiceManager {
     env.PORT = String(e.childPort);
     for (const [k, v] of Object.entries(e.target.spec.env ?? {})) env[k] = this.fill(e, v);
     if (own) env.BUN_BE_BUN = "1";
+    // reaches every bun install the program runs, including its own children
+    if (LINK_BACKEND.length) env.BUN_OPTIONS = [env.BUN_OPTIONS, ...LINK_BACKEND].filter(Boolean).join(" ");
     const cwd = path.resolve(e.target.appDir, e.target.spec.cwd ?? ".");
     const proc = Bun.spawn(argv, { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     live.add(proc);
