@@ -127,9 +127,12 @@ async function statusRows(dir: string): Promise<StatusRow[]> {
     if (Math.floor(stat.mtimeMs / 1000) < indexSecond) continue;
     head ??= await resolveHead(dir);
     try {
+      // read before starting readBlob: a file deleted meanwhile must not
+      // leave that promise rejecting with nothing awaiting it
+      const object = fs.readFileSync(path.join(dir, filepath));
       const [{ oid: committed }, { oid: current }] = await Promise.all([
         git.readBlob({ fs, dir, oid: head, filepath }),
-        git.hashBlob({ object: fs.readFileSync(path.join(dir, filepath)) }),
+        git.hashBlob({ object }),
       ]);
       if (committed !== current) row[2] = 2;
     } catch {
