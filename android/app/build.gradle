@@ -27,7 +27,10 @@ android {
         resValue "string", "app_name", staging ? "Chrysalis Staging" : "Chrysalis"
         // the compiled Bun server targets Android 9 (API 28) on ARM64
         minSdk 28
-        targetSdk 35
+        // apps run programs their packages download (esbuild and other
+        // native tools in node_modules); an app targeting API 29+ may only
+        // execute code that shipped inside its APK
+        targetSdk 28
         versionCode code
         versionName engineVersion
         buildConfigField "String", "REPOSITORY", "\"${engine.repository ?: ""}\""
@@ -35,6 +38,9 @@ android {
     }
 
     buildFeatures { buildConfig true }
+
+    // the old target is deliberate (see targetSdk); release lint fails on it
+    lint { disable "ExpiredTargetSdkVersion" }
 
     // release signing comes from the environment; without it the release
     // build is signed with the debug key (installable, but a later build
