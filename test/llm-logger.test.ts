@@ -23,3 +23,17 @@ it('prints all thinking lines and long tool results', () => {
     expect(String(log.mock.calls[1]?.[0])).toContain('END');
   } finally { log.mockRestore(); }
 });
+
+it('keeps mid-prompt system messages when a leading system prompt is supplied', () => {
+  const log = spyOn(console, 'log').mockImplementation(() => {});
+  try {
+    llmLogRequest('test', { model: 'provider/model', params: {}, systemPrompt: 'Leading', messages: [
+      { role: 'user', content: 'Turn' }, { role: 'system', content: 'After history' },
+    ] });
+    const output = String(log.mock.calls[0]?.[0]);
+    expect(output).toContain('Leading');
+    expect(output).toContain('After history');
+    expect(output.indexOf('Turn')).toBeLessThan(output.indexOf('After history'));
+    expect(output.match(/"role": "system"/g)).toHaveLength(2);
+  } finally { log.mockRestore(); }
+});

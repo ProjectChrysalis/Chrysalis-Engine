@@ -54,7 +54,7 @@ export function llmLogRequest(source: string | undefined, p: TracePayload): void
 
   const wire = [
     ...(p.systemPrompt ? [{ role: "system", content: p.systemPrompt }] : []),
-    ...(p.messages ?? []).filter((message) => !p.systemPrompt || message.role !== "system"),
+    ...(p.messages ?? []),
   ];
   const request = { model: rest.join("/"), ...p.params, stream: true,
     ...(p.prompt != null ? { prompt: p.prompt } : { messages: wire }) };

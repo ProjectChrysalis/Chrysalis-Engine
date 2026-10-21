@@ -102,6 +102,73 @@ describe("UserModelService message construction (regression: assistant history)"
     expect(got.contents[5]).toBe("POST-HISTORY");
   }, 20_000);
 
+  it("keeps interleaved system roles on the chat-completions wire", async () => {
+    const requests: { messages: { role: string; content: string }[] }[] = [];
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(req) {
+      requests.push(await req.json() as typeof requests[number]);
+      return new Response('data: {"id":"test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"OK"},"finish_reason":null}]}\n\ndata: {"id":"test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } });
+    } });
+    try {
+      const p = bootstrapUserDir(dataDir, "wire");
+      const baseUrl = `http://127.0.0.1:${server.port}/v1`;
+      fs.writeFileSync(p.connections, JSON.stringify({ connections: { wire: { name: "Wire", api: "openai-completions", baseUrl,
+        models: [{ id: "test", contextWindow: 8192, maxTokens: 1024 }] } } }));
+      fs.writeFileSync(p.auth, JSON.stringify({ wire: { type: "api_key", key: "test", boundBaseUrl: baseUrl } }));
+      const svc = new UserModelService("wire", p, defaultInstanceConfig());
+      await svc.generate({ model: "wire/test", messages: [
+        { role: "system", content: "Leading" }, { role: "user", content: "Boundaries" },
+        { role: "system", content: "Rules" }, { role: "assistant", content: "History" },
+        { role: "system", content: "Post history" },
+      ] });
+      expect(requests[0]?.messages).toEqual([
+        { role: "system", content: "Leading" }, { role: "user", content: "Boundaries" },
+        { role: "system", content: "Rules" }, { role: "assistant", content: "History" },
+        { role: "system", content: "Post history" },
+      ]);
+    } finally { server.stop(true); }
+  });
+
+  for (const api of ["anthropic-messages", "google-generative-ai", "openai-responses"] as const) {
+    it(`retains every instruction on the ${api} wire`, async () => {
+      const requests: Record<string, unknown>[] = [];
+      const server = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(req) {
+        requests.push(await req.json() as Record<string, unknown>);
+        return Response.json({ error: { type: "invalid_request_error", message: "Request captured", code: 400, status: "INVALID_ARGUMENT" } }, { status: 400 });
+      } });
+      try {
+        const p = bootstrapUserDir(dataDir, "native-wire");
+        const baseUrl = `http://127.0.0.1:${server.port}/v1`;
+        fs.writeFileSync(p.connections, JSON.stringify({ connections: { wire: { name: "Wire", api, baseUrl,
+          models: [{ id: "test", contextWindow: 8192, maxTokens: 1024 }] } } }));
+        fs.writeFileSync(p.auth, JSON.stringify({ wire: { type: "api_key", key: "test", boundBaseUrl: baseUrl } }));
+        const svc = new UserModelService("native-wire", p, defaultInstanceConfig());
+        await expect(svc.generate({ model: "wire/test", messages: [
+          { role: "system", content: "LEADING-MARK" }, { role: "user", content: "BOUNDARIES-MARK" },
+          { role: "system", content: "RULES-MARK" }, { role: "assistant", content: "HISTORY-MARK" },
+          { role: "system", content: "POST-HISTORY-MARK" },
+        ] })).rejects.toThrow();
+        expect(requests).toHaveLength(1);
+        const request = requests[0] ?? {};
+        const turns = (request.messages ?? request.contents ?? request.input) as { role: string; content?: unknown; parts?: unknown }[];
+        expect(Array.isArray(turns)).toBe(true);
+        const text = JSON.stringify(turns);
+        for (const marker of ["BOUNDARIES-MARK", "RULES-MARK", "HISTORY-MARK", "POST-HISTORY-MARK"]) expect(text).toContain(marker);
+        expect(text.indexOf("BOUNDARIES-MARK")).toBeLessThan(text.indexOf("RULES-MARK"));
+        expect(text.indexOf("RULES-MARK")).toBeLessThan(text.indexOf("HISTORY-MARK"));
+        expect(text.indexOf("HISTORY-MARK")).toBeLessThan(text.indexOf("POST-HISTORY-MARK"));
+        if (api === "openai-responses") {
+          expect(turns.map((m) => m.role)).toEqual(["system", "user", "system", "assistant", "system"]);
+          expect(text).toContain("LEADING-MARK");
+        } else {
+          expect(turns.every((m) => m.role !== "system")).toBe(true);
+          expect(turns.at(-1)?.role).toBe("user");
+          expect(JSON.stringify(request.system ?? request.systemInstruction)).toContain("LEADING-MARK");
+          expect(text).not.toContain("LEADING-MARK");
+        }
+      } finally { server.stop(true); }
+    });
+  }
+
   it("tool loop: executes tools host-side and returns final text + trace", async () => {
     const svc = makeService();
     const call = fauxAssistantMessage([{ type: "toolCall", id: "tc1", name: "roll", arguments: { sides: 6 } }]);

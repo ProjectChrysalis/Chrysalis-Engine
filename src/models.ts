@@ -891,14 +891,11 @@ export class UserModelService {
     if (this.textCompletions.has(model.provider)) {
       return this.generateTextCompletion(model, req, onDelta, onThinking);
     }
-    // Only the LEADING run of system entries is the system prompt. A system
-    // entry further down is an in-chat injection — an author's note at a
-    // depth, a world-info entry, the post-history instruction block — and its
-    // POSITION is the whole point, so it stays where the caller put it and
-    // speaks as the user. (Hoisting those to the top moved an instruction
-    // meant to be read after the transcript to before it.) The transport
-    // carries exactly one system message, so in-place is the only way to keep
-    // the order the caller built.
+    // Native APIs with a top-level system field need later instructions as
+    // user turns to retain their position. Compatible OpenAI transports can
+    // carry system instructions in place, including after the chat history.
+    const inPlaceSystem = model.api === "openai-completions" || model.api === "openai-responses" || model.api === "azure-openai-responses";
+    if (inPlaceSystem) model = { ...model, compat: { ...model.compat, supportsMidConvoSystemMessages: true } };
     const systemParts: string[] = [];
     if (req.systemPrompt) systemParts.push(req.systemPrompt);
     let lead = 0;
@@ -911,9 +908,11 @@ export class UserModelService {
     const messages: Message[] = req.messages
       .slice(lead)
       .filter((m) => m.role !== "system" || m.content.trim())
-      .map((m) => (m.role === "system" ? { role: "user" as const, content: m.content } : m))
       .flatMap((m): Message[] => {
-        if (m.role === "user") return [{ role: "user", content: m.content, timestamp: Date.now() }];
+        if (m.role === "user" || m.role === "system") return [{
+          role: m.role === "system" && !inPlaceSystem ? "user" : m.role,
+          content: m.content, timestamp: Date.now(),
+        }];
         const replay = m.replay;
         if (replay?.text === m.content && Array.isArray(replay.messages) && replay.messages.length &&
           replay.messages.every((r) => Array.isArray(r.content) &&
@@ -986,8 +985,7 @@ export class UserModelService {
       }
     };
 
-    // console trace: the request EXACTLY as it leaves for the provider —
-    // hoisted system prompt, effective params, resolved model + connection
+    // Trace the effective roles and order after transport adaptation.
     const genOpts: Record<string, unknown> = {};
     if (reasoningLevel && reasoningLevel !== "off") genOpts.reasoning = reasoningLevel;
     if (req.thinkingBudget && req.thinkingBudget > 0 && reasoningLevel && reasoningLevel !== "off")
@@ -1003,7 +1001,8 @@ export class UserModelService {
       connection: this.connectionNames.get(model.provider) ?? null,
       params: genOpts,
       systemPrompt,
-      messages: req.messages,
+      messages: messages.map((m) => ({ role: m.role, content: typeof m.content === "string" ? m.content
+        : m.content.map((b) => b.type === "text" ? b.text : b.type === "thinking" ? b.thinking : "").filter(Boolean).join("\n") })),
     });
 
     // text the model writes BEFORE pausing to call tools — kept so the result
