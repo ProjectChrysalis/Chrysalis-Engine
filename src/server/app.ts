@@ -1,3 +1,4 @@
+import { validateGenerationSettings, type GenerationSettings } from "../providers/generation-settings.js";
 import { engineSkills, engineSkillsLoaded, readEngineSkillResource } from "../agent/builtin-skills.js";
 import { recordChange, withMutation } from '../agent/changes.js';
 import { recoverRun } from "../agent/journal.js";
@@ -1842,7 +1843,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const p = c.get("paths");
     const auth = readAuth(p);
     const curated = new Set(curatedProviders().map((x) => x.id));
-    const byId = new Map<string, { id: string; label: string; kind: string; baseUrl: string | null; apiKeyAuth: boolean; oauth: boolean; oauthLabel: string | null; signIn: boolean; signInLabel: string | null }>();
+    const byId = new Map<string, { id: string; label: string; kind: string; generationApis: string[]; baseUrl: string | null; apiKeyAuth: boolean; oauth: boolean; oauthLabel: string | null; signIn: boolean; signInLabel: string | null }>();
     for (const provider of [...builtinProviders(), ...curatedProviders(), ...loadCustomProviders(p.root + "/providers.json")]) {
       // radius OAuth needs gateway options we don't expose yet
       const oauth = provider.auth?.oauth && provider.id !== "radius" ? provider.auth.oauth : undefined;
@@ -1859,6 +1860,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       byId.set(provider.id, {
         id: provider.id,
         label: provider.name ?? provider.id,
+        generationApis: [...new Set(provider.getModels().map((model) => model.api))],
         kind: curated.has(provider.id) ? "curated" : connectable ? "builtin" : "needs-setup",
         baseUrl: provider.baseUrl ?? null,
         apiKeyAuth: !!provider.auth?.apiKey,
@@ -2980,7 +2982,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   app.patch("/v1/settings/connections/:id", async (c) => {
     const u = c.get("user");
     const p = c.get("paths");
-    const body = await c.req.json<{ name?: string; baseUrl?: string; key?: string; models?: unknown; promptFormat?: unknown; promptFormatCustom?: unknown; openRouterRouting?: unknown }>().catch(() => null) ?? {};
+    const body = await c.req.json<{ name?: string; baseUrl?: string; key?: string; models?: unknown; promptFormat?: unknown; promptFormatCustom?: unknown; openRouterRouting?: unknown; generation?: unknown }>().catch(() => null) ?? {};
     let baseUrl: string | undefined;
     if (body.baseUrl !== undefined) {
       const check = validateConnectionInput({ name: "x", api: "openai-completions", baseUrl: body.baseUrl });
@@ -3000,6 +3002,14 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       if (!check.ok) return c.json({ error: check.error }, 400);
       format = check.value;
     }
+    let generation: { generation?: GenerationSettings | null } = {};
+    if (body.generation !== undefined) {
+      const checked = validateGenerationSettings(body.generation);
+      if (!checked.ok) return c.json({ error: checked.error }, 400);
+      const def = readConnections(p).connections[c.req.param("id")];
+      if (!def) return c.json({ error: "connection not found" }, 404);
+      generation = { generation: checked.value };
+    }
     let routing: { openRouterRouting?: OpenRouterRouting | null } = {};
     if (body.openRouterRouting !== undefined) {
       const checked = validateOpenRouterRouting(body.openRouterRouting);
@@ -3018,6 +3028,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       ...(models !== undefined ? { models } : {}),
       ...format,
       ...routing,
+      ...generation,
     });
     if (!updated) return c.json({ error: "connection not found" }, 404);
     connectionsMutated(u, updated.id);

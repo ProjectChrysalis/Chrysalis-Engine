@@ -3,6 +3,7 @@
  * SECURITY INVARIANT: provider credentials NEVER leave this module —
  * scripts/plugins/looks only ever reach llm.generate through here.
  */
+import { withGenerationSettings, generationSampling, type GenerationSettings } from "./providers/generation-settings.js";
 import fs from "node:fs";
 import path from "node:path";
 import { createModels, getSupportedThinkingLevels, uuidv7, type Api, type AssistantMessage, type AssistantMessageEvent, type Context, type Credential, type CredentialInfo, type Message, type Model, type MutableModels, type Tool as PiTool, type ToolResultMessage, type Usage } from "@earendil-works/pi-ai";
@@ -366,19 +367,21 @@ export class UserModelService {
         log.warn(`[connection:${id}] failed: ${(e as Error).message}`);
       }
     }
-    const connectionDefs = new Map(Object.entries(conns.connections).map(([id, def]) => [def.providerId ?? id, def]));
+    const connectionDefs = new Map(Object.entries(conns.connections).map(([id, def]) => [def.oauthProvider ?? def.providerId ?? id, def]));
     for (const provider of models.getProviders()) {
       const def = connectionDefs.get(provider.id);
       const routed = def?.openRouterRouting && supportsOpenRouterRouting(def)
         ? withOpenRouterRouting(provider, def.openRouterRouting) : provider;
-      models.setProvider(withGooglePromptFeedback(routed));
+      models.setProvider(withGooglePromptFeedback(def?.generation ? withGenerationSettings(routed, def.generation) : routed));
     }
+    this.connectionGeneration = new Map(Object.entries(conns.connections).flatMap(([id, def]) => def.generation ? [[def.oauthProvider ?? def.providerId ?? id, def.generation] as const] : []));
     this.connectionNames = new Map(
       Object.entries(conns.connections).map(([id, def]) => [def.oauthProvider === "radius" ? "radius" : def.providerId ?? id, def.name]),
     );
     this.models = models;
   }
 
+  private connectionGeneration = new Map<string, GenerationSettings>();
   private connectionNames: Map<string, string> = new Map();
   /** openai-text connections by provider id: prompt-flattened /v1/completions transports */
   private textCompletions = new Map<string, { name: string; baseUrl: string; promptFormat: string; promptFormatCustom?: PromptFormat }>();
@@ -608,7 +611,9 @@ export class UserModelService {
     const t0 = Date.now();
     const label = req.model ?? "default-model";
     try {
-      const res = await this.generateWithReasoningFloor(req, onDelta, onThinking);
+      const model = await this.resolveModel(req.model);
+      req = this.generationRequest(model, req);
+      const res = await this.generateWithReasoningFloor(req, onDelta, onThinking, this.connectionGeneration.get(model.provider)?.reasoning !== undefined);
       llmLogResult(req.source, res.model || label, Date.now() - t0, res);
       // stateless echoes for two-phase callers (their module state resets
       // between passes): timing, sampler snapshot, prefill metadata
@@ -630,13 +635,13 @@ export class UserModelService {
   /** A request that names no reasoning level goes out with reasoning off, and
    *  some models cannot turn it off. Such a refusal retries once at the
    *  model's lowest level, and later requests to that model start there. */
-  private async generateWithReasoningFloor(req: GenerateRequest, onDelta?: (delta: string) => void, onThinking?: (delta: string) => void): Promise<GenerateResult> {
+  private async generateWithReasoningFloor(req: GenerateRequest, onDelta?: (delta: string) => void, onThinking?: (delta: string) => void, fixedReasoning = false): Promise<GenerateResult> {
     const unset = !req.reasoning || req.reasoning === "off";
-    const known = unset && req.model ? this.reasoningFloor.get(req.model) : undefined;
+    const known = unset && !fixedReasoning && req.model ? this.reasoningFloor.get(req.model) : undefined;
     try {
       return await this.generateInner(known ? { ...req, reasoning: known } : req, onDelta, onThinking);
     } catch (e) {
-      if (!unset || known || !/reasoning is mandatory|cannot be disabled|reasoning.{0,40}required/i.test((e as Error).message)) throw e;
+      if (!unset || known || fixedReasoning || !/reasoning is mandatory|cannot be disabled|reasoning.{0,40}required/i.test((e as Error).message)) throw e;
       const model = await this.resolveModel(req.model).catch(() => null);
       const lowest = (model ? getSupportedThinkingLevels(model) : []).find((l) => l !== "off") ?? "low";
       const level = lowest as NonNullable<GenerateRequest["reasoning"]>;
@@ -876,7 +881,22 @@ export class UserModelService {
     }
   }
 
+  private generationRequest(model: Model<Api>, req: GenerateRequest): GenerateRequest {
+    const generation = this.connectionGeneration.get(model.provider);
+    return generation ? {
+      ...req,
+      ...(generation.reasoning !== undefined ? { reasoning: generation.reasoning } : {}),
+      presetParams: {
+        ...req.presetParams,
+        ...(generation.temperature !== undefined ? { temperature: generation.temperature } : {}),
+        ...(generation.maxTokens !== undefined ? { max_tokens: generation.maxTokens } : {}),
+        params: { ...req.presetParams?.params, ...generationSampling(generation, this.textCompletions.has(model.provider) ? "openai-text" : model.api) },
+      },
+    } : req;
+  }
+
   private async generateModel(model: Model<Api>, req: GenerateRequest, onDelta?: (delta: string) => void, onThinking?: (delta: string) => void): Promise<GenerateResult> {
+    req = this.generationRequest(model, req);
     // Stable per-conversation session id (caller-supplied chat/session id, or
     // a fresh one for stateless callers). It keys provider prompt caching
     // (OpenAI prompt_cache_key, Anthropic cache session) and, for the OpenCode
@@ -1282,6 +1302,13 @@ export class UserModelService {
     const model = await this.resolveModel(req.model ?? null);
     if (this.textCompletions.has(model.provider)) return null;
     const { context, toolChoice } = req.build(model);
+    const generation = this.connectionGeneration.get(model.provider);
+    if (generation) req = { ...req,
+      ...(generation.reasoning !== undefined ? { reasoning: generation.reasoning } : {}),
+      ...(generation.maxTokens !== undefined ? { maxTokens: generation.maxTokens } : {}),
+      ...(generation.temperature !== undefined ? { temperature: generation.temperature } : {}),
+      params: { ...req.params, ...generationSampling(generation, this.textCompletions.has(model.provider) ? "openai-text" : model.api) },
+    };
     const level = req.reasoning === "med" ? "medium" : req.reasoning;
     const options: Record<string, unknown> = {
       ...(level && level !== "off" ? { reasoning: level } : {}),

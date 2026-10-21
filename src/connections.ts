@@ -20,8 +20,10 @@ import type { UserPaths } from "./paths.js";
 import { CURATED_PROVIDERS, keyBoundTo, reservedProviderIds } from "./providers/custom.js";
 import { parsePromptFormat, promptFormatById, type PromptFormat } from "./providers/prompt-formats.js";
 import { supportsOpenRouterRouting, validateOpenRouterRouting, type OpenRouterRouting } from "./providers/openrouter-routing.js";
+import { validateGenerationSettings, type GenerationSettings } from "./providers/generation-settings.js";
 
 export interface ConnectionDef {
+  generation?: GenerationSettings;
   name: string;
   openRouterRouting?: OpenRouterRouting;
   /** builtin pi-ai provider id (mutually exclusive with api+baseUrl) */
@@ -29,7 +31,7 @@ export interface ConnectionDef {
   /** Radius gateway sign-in (OAuth connection kind; needs `gateway`) */
   oauthProvider?: "radius";
   gateway?: string;
-  api?: "openai-completions" | "anthropic-messages" | "openai-text";
+  api?: "openai-completions" | "anthropic-messages" | "openai-responses" | "google-generative-ai" | "openai-text";
   baseUrl?: string;
   /** set when this connection is a builtin provider routed through a reverse
    * proxy: custom-shaped def + display origin. The key is
@@ -61,6 +63,7 @@ export interface ConnectionsFile {
 }
 
 export interface ConnectionInfo extends ConnectionDef {
+  generationApis: string[];
   id: string;
   /** true when ANY credential is stored (API key or OAuth subscription) */
   hasKey: boolean;
@@ -200,6 +203,7 @@ export function validateConnectionInput(input: {
   promptFormat?: unknown;
   promptFormatCustom?: unknown;
   openRouterRouting?: unknown;
+  generation?: unknown;
 }):
   | { ok: true; value: ConnectionInput }
   | { ok: false; error: string } {
@@ -207,6 +211,9 @@ export function validateConnectionInput(input: {
   if (!name || name.length > NAME_MAX) return { ok: false, error: `name must be 1-${NAME_MAX} characters` };
   const key = typeof input.key === "string" ? input.key.trim() : undefined;
   if (key !== undefined && (!key || key.length > 4096)) return { ok: false, error: "key must be a non-empty string" };
+  const generation = input.generation === undefined ? { ok: true as const, value: null } : validateGenerationSettings(input.generation);
+  if (!generation.ok) return generation;
+  const generationFields = generation.value ? { generation: generation.value } : {};
   let routing: OpenRouterRouting | null = null;
   if (input.openRouterRouting !== undefined) {
     const checked = validateOpenRouterRouting(input.openRouterRouting);
@@ -237,7 +244,7 @@ export function validateConnectionInput(input: {
       if (!checked.ok) return checked;
       const models = checked.value;
       const proxyApi: ConnectionDef["api"] = builtin.id === "anthropic" ? "anthropic-messages" : "openai-completions";
-      return { ok: true, value: { name, api: proxyApi, baseUrl: proxyUrl, proxyOf: builtin.id, models, ...(routing ? { openRouterRouting: routing } : {}), ...(key ? { key } : {}) } };
+      return { ok: true, value: { ...generationFields, name, api: proxyApi, baseUrl: proxyUrl, proxyOf: builtin.id, models, ...(routing ? { openRouterRouting: routing } : {}), ...(key ? { key } : {}) } };
     }
     const checked = validateConnectionModels(input.models);
     if (!checked.ok) return checked;
@@ -249,14 +256,14 @@ export function validateConnectionInput(input: {
         }
       }
     }
-    return { ok: true, value: { name, providerId: builtin.id, ...(input.models !== undefined ? { models: checked.value } : {}), ...(routing ? { openRouterRouting: routing } : {}), ...(key ? { key } : {}) } };
+    return { ok: true, value: { ...generationFields, name, providerId: builtin.id, ...(input.models !== undefined ? { models: checked.value } : {}), ...(routing ? { openRouterRouting: routing } : {}), ...(key ? { key } : {}) } };
   }
 
   // Radius gateway: OAuth-only connection kind
   if (input.oauthProvider === "radius") {
     const gateway = typeof input.gateway === "string" ? input.gateway.trim() : "";
     if (!/^https?:\/\/.{3,}/.test(gateway)) return { ok: false, error: "radius needs a gateway http(s) URL" };
-    return { ok: true, value: { name, oauthProvider: "radius", gateway } };
+    return { ok: true, value: { ...generationFields, name, oauthProvider: "radius", gateway } };
   }
 
   if (
@@ -276,9 +283,19 @@ export function validateConnectionInput(input: {
   if (input.api === "openai-text") {
     const format = validatePromptFormatInput(input.promptFormat, input.promptFormatCustom);
     if (!format.ok) return format;
-    return { ok: true, value: { name, api: input.api, baseUrl, models, ...format.value, ...(key ? { key } : {}) } };
+    return { ok: true, value: { ...generationFields, name, api: input.api, baseUrl, models, ...format.value, ...(key ? { key } : {}) } };
   }
-  return { ok: true, value: { name, api: input.api as ConnectionDef["api"], baseUrl, models, ...(routing ? { openRouterRouting: routing } : {}), ...(key ? { key } : {}) } };
+  return { ok: true, value: { ...generationFields, name, api: input.api as ConnectionDef["api"], baseUrl, models, ...(routing ? { openRouterRouting: routing } : {}), ...(key ? { key } : {}) } };
+}
+
+export function connectionGenerationApis(def: ConnectionDef): string[] {
+  if (def.api) return [def.api];
+  const provider = def.oauthProvider ?? def.providerId;
+  if (provider === "radius") return ["pi-messages"];
+  if (!provider) return [];
+  const curated = CURATED_PROVIDERS[provider];
+  if (curated) return [curated.api];
+  return [...new Set(builtinProviders().find((entry) => entry.id === provider)?.getModels().map((model) => model.api) ?? [])];
 }
 
 export function listConnections(p: UserPaths): ConnectionInfo[] {
@@ -288,12 +305,12 @@ export function listConnections(p: UserPaths): ConnectionInfo[] {
     .map(([id, def]) => {
       const target = authTarget(def, id);
       const cred = auth[target];
-      return { id, ...def, hasKey: !!cred, ...(cred ? { credentialType: cred.type as "api_key" | "oauth" } : {}), effectiveProviderId: target };
+      return { id, ...def, generationApis: cred?.type === "oauth" && def.providerId === "openai" ? ["openai-codex-responses"] : connectionGenerationApis(def), hasKey: !!cred, ...(cred ? { credentialType: cred.type as "api_key" | "oauth" } : {}), effectiveProviderId: target };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-type ConnectionInput = Pick<ConnectionDef, "providerId" | "oauthProvider" | "gateway" | "api" | "baseUrl" | "proxyOf" | "models" | "promptFormat" | "promptFormatCustom" | "openRouterRouting"> & { name: string; key?: string };
+type ConnectionInput = Pick<ConnectionDef, "providerId" | "oauthProvider" | "gateway" | "api" | "baseUrl" | "proxyOf" | "models" | "promptFormat" | "promptFormatCustom" | "openRouterRouting" | "generation"> & { name: string; key?: string };
 
 export function createConnection(p: UserPaths, value: ConnectionInput): ConnectionInfo {
   const file = readConnections(p);
@@ -311,6 +328,7 @@ export function createConnection(p: UserPaths, value: ConnectionInput): Connecti
           ...(value.proxyOf ? { proxyOf: value.proxyOf } : {}),
           ...(value.api === "openai-text" ? { promptFormat: value.promptFormat ?? "auto", ...(value.promptFormatCustom ? { promptFormatCustom: value.promptFormatCustom } : {}) } : {}),
         };
+  if (value.generation) def.generation = value.generation;
   if (value.openRouterRouting) def.openRouterRouting = value.openRouterRouting;
   file.connections[id] = def;
   writeConnections(p, file);
@@ -321,13 +339,13 @@ export function createConnection(p: UserPaths, value: ConnectionInput): Connecti
     writeAuth(p, auth);
   }
   const target = authTarget(def, id);
-  return { id, ...def, hasKey: !!value.key, ...(value.key ? { credentialType: "api_key" as const } : {}), effectiveProviderId: target };
+  return { id, ...def, generationApis: connectionGenerationApis(def), hasKey: !!value.key, ...(value.key ? { credentialType: "api_key" as const } : {}), effectiveProviderId: target };
 }
 
 export function updateConnection(
   p: UserPaths,
   id: string,
-  patch: { name?: string; baseUrl?: string; key?: string; models?: ConnectionDef["models"]; promptFormat?: string; promptFormatCustom?: PromptFormat; openRouterRouting?: OpenRouterRouting | null },
+  patch: { name?: string; baseUrl?: string; key?: string; models?: ConnectionDef["models"]; promptFormat?: string; promptFormatCustom?: PromptFormat; openRouterRouting?: OpenRouterRouting | null; generation?: GenerationSettings | null },
 ): ConnectionInfo | null {
   const file = readConnections(p);
   const def = file.connections[id];
@@ -337,6 +355,10 @@ export function updateConnection(
   if (patch.baseUrl !== undefined && !def.providerId && /^https?:\/\/.{3,}/.test(patch.baseUrl)) def.baseUrl = patch.baseUrl.trim();
   if (patch.models !== undefined) {
     def.models = patch.models === "auto" || (Array.isArray(patch.models) && patch.models.length > 0) ? patch.models : def.models;
+  }
+  if (patch.generation !== undefined) {
+    if (patch.generation) def.generation = patch.generation;
+    else delete def.generation;
   }
   if (patch.openRouterRouting !== undefined) {
     if (patch.openRouterRouting) def.openRouterRouting = patch.openRouterRouting;
@@ -366,7 +388,7 @@ export function updateConnection(
   const auth = readAuth(p);
   const target = authTarget(def, id);
   const cred = auth[target];
-  return { id, ...def, hasKey: !!cred, ...(cred ? { credentialType: cred.type as "api_key" | "oauth" } : {}), effectiveProviderId: target };
+  return { id, ...def, generationApis: cred?.type === "oauth" && def.providerId === "openai" ? ["openai-codex-responses"] : connectionGenerationApis(def), hasKey: !!cred, ...(cred ? { credentialType: cred.type as "api_key" | "oauth" } : {}), effectiveProviderId: target };
 }
 
 export function deleteConnection(p: UserPaths, id: string): boolean {

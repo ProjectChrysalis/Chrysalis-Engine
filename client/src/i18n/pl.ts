@@ -660,6 +660,18 @@ const dict = {
   "Remove {name}": "Usuń {name}",
   "Retry": "Spróbuj ponownie",
   "Search choices": "Szukaj pozycji",
+  "Maximum": "Maksimum",
+  "Generation settings": "Ustawienia generowania",
+  "Set values override app and agent requests. Leave blank to use their settings.": "Podane wartości zastępują ustawienia aplikacji i agenta. Pozostaw puste, aby użyć ich ustawień.",
+  "Output token limit": "Limit tokenów wyjściowych",
+  "Temperature": "Temperatura",
+  "Top P": "Top P",
+  "Frequency penalty": "Kara za częstotliwość",
+  "Presence penalty": "Kara za obecność",
+  "Unchanged": "Bez zmian",
+  "Supported values depend on your endpoint and model.": "Obsługiwane wartości zależą od punktu końcowego i modelu.",
+  "Clear overrides": "Wyczyść nadpisania",
+  "Check the generation settings and their allowed ranges.": "Sprawdź ustawienia generowania i dozwolone zakresy.",
 }
 
 export default dict

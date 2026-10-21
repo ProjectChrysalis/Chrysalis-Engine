@@ -660,6 +660,18 @@ const dict = {
   "Remove {name}": "{name} を削除",
   "Retry": "再試行",
   "Search choices": "項目を検索",
+  "Maximum": "最大",
+  "Generation settings": "生成設定",
+  "Set values override app and agent requests. Leave blank to use their settings.": "設定した値はアプリとエージェントの指定を上書きします。空欄では元の設定を使います。",
+  "Output token limit": "出力トークン上限",
+  "Temperature": "温度",
+  "Top P": "Top P",
+  "Frequency penalty": "頻度ペナルティ",
+  "Presence penalty": "存在ペナルティ",
+  "Unchanged": "変更なし",
+  "Supported values depend on your endpoint and model.": "対応する値はエンドポイントとモデルによって異なります。",
+  "Clear overrides": "上書きを解除",
+  "Check the generation settings and their allowed ranges.": "生成設定と指定可能な範囲を確認してください。",
 }
 
 export default dict

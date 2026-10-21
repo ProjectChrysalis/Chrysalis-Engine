@@ -660,6 +660,18 @@ const dict = {
   "Remove {name}": "{name} 제거",
   "Retry": "다시 시도",
   "Search choices": "항목 검색",
+  "Maximum": "최대",
+  "Generation settings": "생성 설정",
+  "Set values override app and agent requests. Leave blank to use their settings.": "입력한 값은 앱과 에이전트의 설정을 덮어씁니다. 비워 두면 기존 설정을 사용합니다.",
+  "Output token limit": "출력 토큰 한도",
+  "Temperature": "온도",
+  "Top P": "Top P",
+  "Frequency penalty": "빈도 페널티",
+  "Presence penalty": "존재 페널티",
+  "Unchanged": "변경 없음",
+  "Supported values depend on your endpoint and model.": "지원하는 값은 엔드포인트와 모델에 따라 다릅니다.",
+  "Clear overrides": "덮어쓰기 초기화",
+  "Check the generation settings and their allowed ranges.": "생성 설정과 허용 범위를 확인하세요.",
 }
 
 export default dict

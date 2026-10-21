@@ -1,3 +1,4 @@
+import type { GenerationSettings } from "../../src/providers/generation-settings"
 import { tr } from "./i18n/index"
 import type { AppUpdate, StoreList } from "./types"
 import type { OpenRouterRouting } from "../../src/providers/openrouter-routing"
@@ -8,6 +9,8 @@ export interface EngineConnection {
   id: string
   name: string
   openRouterRouting?: OpenRouterRouting
+  generationApis?: string[]
+  generation?: GenerationSettings
   providerId?: string
   oauthProvider?: "radius"
   gateway?: string
@@ -43,6 +46,7 @@ export const listPromptFormats = () =>
   api<{ formats: NamedPromptFormat[] }>("GET", "/v1/models/prompt-formats").then((r) => r.formats)
 
 export interface EngineProvider {
+  generationApis: string[]
   id: string
   label: string
   kind: "builtin" | "curated" | "needs-setup"
@@ -137,9 +141,9 @@ export const avatarApi = {
 export const connectionsApi = {
   routingProviders: () => api<{ providers: Array<{ slug: string; name: string }> }>("GET", "/v1/settings/openrouter/providers").then((r) => r.providers),
   list: () => api<{ connections: EngineConnection[] }>("GET", "/v1/settings/connections").then((r) => r.connections ?? []),
-  create: (body: { name: string; providerId?: string; oauthProvider?: "radius"; gateway?: string; api?: EngineConnection["api"]; baseUrl?: string; proxyUrl?: string; models?: unknown; key?: string; promptFormat?: string; promptFormatCustom?: PromptFormat; openRouterRouting?: OpenRouterRouting | null }) =>
+  create: (body: { name: string; providerId?: string; oauthProvider?: "radius"; gateway?: string; api?: EngineConnection["api"]; baseUrl?: string; proxyUrl?: string; models?: unknown; key?: string; promptFormat?: string; promptFormatCustom?: PromptFormat; openRouterRouting?: OpenRouterRouting | null; generation?: GenerationSettings | null }) =>
     api<{ connection: EngineConnection }>("POST", "/v1/settings/connections", body),
-  update: (id: string, body: { name?: string; baseUrl?: string; key?: string; models?: unknown; promptFormat?: string; promptFormatCustom?: PromptFormat; openRouterRouting?: OpenRouterRouting | null }) =>
+  update: (id: string, body: { name?: string; baseUrl?: string; key?: string; models?: unknown; promptFormat?: string; promptFormatCustom?: PromptFormat; openRouterRouting?: OpenRouterRouting | null; generation?: GenerationSettings | null }) =>
     api<{ connection: EngineConnection }>("PATCH", `/v1/settings/connections/${encodeURIComponent(id)}`, body),
   remove: (id: string) => api("DELETE", `/v1/settings/connections/${encodeURIComponent(id)}`),
 }

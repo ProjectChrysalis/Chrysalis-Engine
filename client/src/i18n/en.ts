@@ -2,6 +2,19 @@
 // {name} placeholders and falls back to the key itself, so a locale dictionary
 // only needs the entries it translates.
 const en = {
+  "Maximum": "",
+  "Generation settings": "",
+  "Set values override app and agent requests. Leave blank to use their settings.": "",
+  "Output token limit": "",
+  "Temperature": "",
+  "Top P": "",
+  "Frequency penalty": "",
+  "Presence penalty": "",
+  "Unchanged": "",
+  "Supported values depend on your endpoint and model.": "",
+  "Clear overrides": "",
+  "Check the generation settings and their allowed ranges.": "",
+
   "Price caps must be non-negative numbers.": "",
   "OpenRouter routing": "",
   "Saved fields apply to every app using this connection.": "",

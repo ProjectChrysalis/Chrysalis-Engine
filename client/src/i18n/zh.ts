@@ -660,6 +660,18 @@ const dict = {
   "Remove {name}": "移除 {name}",
   "Retry": "重试",
   "Search choices": "搜索选项",
+  "Maximum": "最大",
+  "Generation settings": "生成设置",
+  "Set values override app and agent requests. Leave blank to use their settings.": "填写的值会覆盖应用和智能体的设置。留空则使用原有设置。",
+  "Output token limit": "输出令牌上限",
+  "Temperature": "温度",
+  "Top P": "Top P",
+  "Frequency penalty": "频率惩罚",
+  "Presence penalty": "存在惩罚",
+  "Unchanged": "不变",
+  "Supported values depend on your endpoint and model.": "支持的值取决于端点和模型。",
+  "Clear overrides": "清除覆盖设置",
+  "Check the generation settings and their allowed ranges.": "请检查生成设置及其允许范围。",
 }
 
 export default dict

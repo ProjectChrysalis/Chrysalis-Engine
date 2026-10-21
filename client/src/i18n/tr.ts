@@ -660,6 +660,18 @@ const dict = {
   "Remove {name}": "{name} öğesini kaldır",
   "Retry": "Yeniden dene",
   "Search choices": "Seçeneklerde ara",
+  "Maximum": "Maksimum",
+  "Generation settings": "Üretim ayarları",
+  "Set values override app and agent requests. Leave blank to use their settings.": "Girilen değerler uygulama ve aracı ayarlarını geçersiz kılar. Kendi ayarlarını kullanmak için boş bırakın.",
+  "Output token limit": "Çıktı token sınırı",
+  "Temperature": "Sıcaklık",
+  "Top P": "Top P",
+  "Frequency penalty": "Sıklık cezası",
+  "Presence penalty": "Varlık cezası",
+  "Unchanged": "Değiştirilmedi",
+  "Supported values depend on your endpoint and model.": "Desteklenen değerler uç noktaya ve modele bağlıdır.",
+  "Clear overrides": "Geçersiz kılmaları temizle",
+  "Check the generation settings and their allowed ranges.": "Üretim ayarlarını ve izin verilen aralıkları kontrol edin.",
 }
 
 export default dict

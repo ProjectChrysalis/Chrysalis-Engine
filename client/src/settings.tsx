@@ -2,6 +2,8 @@
 // API tab: provider connection flow — pick a provider
 // (all pi-ai providers, logos, search), name it, paste the key; or define a
 // custom OpenAI-compatible / Anthropic endpoint. Keys never leave the server.
+import { GenerationSettingsEditor } from "./generation-settings"
+import { generationDraft, generationBody } from "./generation-settings-state"
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { Dialog } from "./ui/dialog"
 import { cn } from "./ui/cn"
@@ -75,7 +77,7 @@ const LOCAL_SERVERS: LocalPick[] = [
 ].map((s) => ({ ...s, id: s.id as LocalPick["id"], kind: "builtin" as const, apiKeyAuth: true as const, hasKey: false as const }))
 /** Sign-in pick, straight to its flow: subscription OAuth or a guided
  *  credential setup (Vertex ADC, AWS profile, Cloudflare ids). */
-type OAuthPick = { id: string; providerId: string; label: string; kind: "builtin"; baseUrl: null; apiKeyAuth: false; hasKey: false; authKind: "oauth" | "credentials"; needsGateway?: boolean }
+type OAuthPick = { id: string; providerId: string; label: string; kind: "builtin"; baseUrl: null; apiKeyAuth: false; hasKey: false; authKind: "oauth" | "credentials"; needsGateway?: boolean; generationApis?: string[] }
 type ProviderPick = EngineProvider | CustomPick | OAuthPick | LocalPick
 
 export type TabValue = "general" | "api" | "speech" | "agent" | "mcp" | "server" | "users"
@@ -836,6 +838,7 @@ function EditConnection(props: { connection: EngineConnection; onDone: () => voi
   const [baseUrl, setBaseUrl] = useState(c.baseUrl ?? "")
   const [key, setKey] = useState("")
   const [routing, setRouting] = useState(() => routingDraft(c.openRouterRouting))
+  const [generation, setGeneration] = useState(() => generationDraft(c.generation))
   const [err, setErr] = useState("")
   const [busy, setBusy] = useState(false)
   const [format, setFormat] = useState<FormatChoice>({ id: c.promptFormat ?? "auto", custom: c.promptFormatCustom ?? EMPTY_FORMAT })
@@ -868,6 +871,7 @@ function EditConnection(props: { connection: EngineConnection; onDone: () => voi
     try {
       await connectionsApi.update(c.id, {
         name: name.trim(),
+        generation: generationBody(generation, tr("Check the generation settings and their allowed ranges."), c.generationApis ?? [c.api ?? "pi-messages"]),
         ...(!c.providerId && baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
         ...(key.trim() ? { key: key.trim() } : {}),
         ...(!c.oauthProvider ? { models: modelDefs() } : {}),
@@ -898,6 +902,7 @@ function EditConnection(props: { connection: EngineConnection; onDone: () => voi
           <input className={inputClass} placeholder="https://…/v1" value={baseUrl} onChange={(e) => setBaseUrl(e.currentTarget.value)} />
         </label>
         {c.api === "openai-text" ? <PromptFormatEditor value={format} onChange={setFormat} /> : null}</>: null}
+      <GenerationSettingsEditor value={generation} onChange={setGeneration} inputClass={inputClass} apis={c.generationApis ?? [c.api ?? "pi-messages"]} />
       {!c.oauthProvider ? <ModelsEditor builtin={!!c.providerId} mode={modelsMode} setMode={setModelsMode} models={models} setModels={setModels} /> : null}
       {isOpenRouterConnection({ ...c, baseUrl }) ? <OpenRouterRoutingEditor value={routing} onChange={setRouting} inputClass={inputClass} /> : null}
       <label className="flex flex-col gap-1 text-12 text-ink-muted">
@@ -934,6 +939,7 @@ function AddConnection(props: { onCancel: () => void; onCreated: () => void }) {
         .map((p) => ({
           id: `oauth_${p.id}`,
           providerId: p.id,
+          generationApis: p.id === "openai" && p.oauth ? ["openai-codex-responses"] : p.generationApis,
           label: p.oauth ? (p.oauthLabel ?? p.label) : p.label,
           kind: "builtin" as const,
           baseUrl: null,
@@ -1033,6 +1039,8 @@ function OAuthForm(props: { pick: OAuthPick; onBack: () => void; onDone: () => v
   const [flow, setFlow] = useState<OAuthFlow | null>(null)
   const [promptValue, setPromptValue] = useState("")
   const [answering, setAnswering] = useState(false)
+  const [generation, setGeneration] = useState(() => generationDraft())
+  const generationApis = props.pick.generationApis ?? ["pi-messages"]
   const isRadius = () => props.pick.providerId === "radius"
   const poll = useRef<ReturnType<typeof setInterval>>(undefined)
   const timeout = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -1077,12 +1085,13 @@ function OAuthForm(props: { pick: OAuthPick; onBack: () => void; onDone: () => v
     setErr("")
     setFlow({ providerId: props.pick.providerId, status: "pending" })
     try {
+      const generationSettings = generationBody(generation, tr("Check the generation settings and their allowed ranges."), generationApis)
       if (isRadius()) {
         if (!/^https?:\/\/.+/.test(gateway.trim())) throw new Error(tr("enter the Radius gateway URL first"))
-        const r = await connectionsApi.create({ name: name, oauthProvider: "radius", gateway: gateway.trim() })
+        const r = await connectionsApi.create({ name: name, oauthProvider: "radius", gateway: gateway.trim(), generation: generationSettings })
         createdId.current = r.connection.id
       } else {
-        const r = await connectionsApi.create({ name: name, providerId: props.pick.providerId })
+        const r = await connectionsApi.create({ name: name, providerId: props.pick.providerId, generation: generationSettings })
         createdId.current = r.connection.id
       }
       await oauthApi.start(props.pick.providerId)
@@ -1159,6 +1168,7 @@ function OAuthForm(props: { pick: OAuthPick; onBack: () => void; onDone: () => v
           ? tr("No API key, sign in with your account. Chrysalis stores the tokens on this machine only.")
           : tr("Connect with the provider's own sign-in. Credentials stay on this machine.")}
       </p>
+      {!flow || flow.status !== "pending" ? <GenerationSettingsEditor value={generation} onChange={setGeneration} inputClass={inputClass} apis={generationApis} /> : null}
       {!flow || flow!.status !== "pending" ? <Button variant="neutral" size="normal" disabled={busy || !name.trim()} onClick={start}>
           {tr("Sign in")}
         </Button> : <div className="flex flex-col gap-2 rounded-lg border border-line-focus p-3">
@@ -1228,6 +1238,7 @@ function ProviderForm(props: { provider: ProviderPick; onBack: () => void; onDon
   const [baseUrl, setBaseUrl] = useState(props.provider.baseUrl ?? "")
   const [key, setKey] = useState("")
   const [routing, setRouting] = useState(() => routingDraft())
+  const [generation, setGeneration] = useState(() => generationDraft())
   const [err, setErr] = useState("")
   const [busy, setBusy] = useState(false)
   const [modelsMode, setModelsMode] = useState<"auto" | "manual">("auto")
@@ -1250,6 +1261,7 @@ function ProviderForm(props: { provider: ProviderPick; onBack: () => void; onDon
           }))
 
   const usingProxy = () => isBuiltin() && /^https?:\/\/.+/.test(proxyUrl.trim())
+  const generationApis = () => isCustom() ? [customApi()] : usingProxy() ? [props.provider.id === "anthropic" ? "anthropic-messages" : "openai-completions"] : "generationApis" in props.provider ? props.provider.generationApis ?? [] : []
 
   const submit = async () => {
     setBusy(true)
@@ -1257,6 +1269,7 @@ function ProviderForm(props: { provider: ProviderPick; onBack: () => void; onDon
     try {
       await connectionsApi.create({
         name: name,
+        generation: generationBody(generation, tr("Check the generation settings and their allowed ranges."), generationApis()),
         ...(isCustom()
           ? {
               api: customApi(),
@@ -1301,7 +1314,7 @@ function ProviderForm(props: { provider: ProviderPick; onBack: () => void; onDon
             current={localApi}
             value={(x) => x}
             label={(x) => (x === "openai-completions" ? tr("Chat completions") : tr("Text completions"))}
-            onSelect={(x) => setLocalApi(x ?? "openai-completions")}
+            onSelect={(x) => { setLocalApi(x ?? "openai-completions"); if (x === "openai-text") setGeneration((prev) => ({ ...prev, reasoning: "" })) }}
           />
         </label> : null}
       {isCustom() ? <label className="flex flex-col gap-1 text-12 text-ink-muted">
@@ -1312,6 +1325,7 @@ function ProviderForm(props: { provider: ProviderPick; onBack: () => void; onDon
         {usingProxy() ? tr("Proxy password / API key") : isCustom() ? tr("API key (optional)") : tr("API key")}
         <input className={inputClass} type="password" placeholder={isCustom() ? tr("leave empty if the server has none") : tr("paste key")} autoComplete="off" value={key} onChange={(e) => setKey(e.currentTarget.value)} />
       </label>
+      <GenerationSettingsEditor value={generation} onChange={setGeneration} inputClass={inputClass} apis={generationApis()} />
       {isCustom() || !usingProxy() ? <ModelsEditor builtin={isBuiltin()} mode={modelsMode} setMode={setModelsMode} models={models} setModels={setModels} /> : null}
       {isOpenRouterConnection({ providerId: props.provider.id, baseUrl, api: isCustom() ? customApi() : undefined }) ? <OpenRouterRoutingEditor value={routing} onChange={setRouting} inputClass={inputClass} /> : null}
       {isCustom() && customApi() === "openai-text" ? <PromptFormatEditor value={format} onChange={setFormat} /> : null}
