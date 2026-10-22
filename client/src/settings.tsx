@@ -88,13 +88,13 @@ export type TabValue = "general" | "api" | "speech" | "agent" | "mcp" | "backups
 export function SettingsBody(props: { onClose: () => void; me: Me; initialTab?: TabValue | null; onLogout: () => void }) {
   const [tab, setTab] = useState<TabValue>(props.initialTab ?? "api")
   const tabs: Array<{ value: TabValue; label: string; icon: ReactNode }> = [
-    { value: "general", label: tr("General"), icon: <IconSmall name="outline-sliders" /> },
     { value: "api", label: tr("API connections"), icon: <Icon name="cloud-upload" /> },
-    { value: "speech", label: tr("Speech"), icon: <Icon name="speaker" /> },
     { value: "agent", label: tr("Agent"), icon: <Icon name="brain" /> },
-    { value: "mcp", label: tr("MCP servers"), icon: <Icon name="terminal-active" /> },
-    { value: "backups", label: tr("Backups"), icon: <Icon name="backup" /> },
+    { value: "speech", label: tr("Speech"), icon: <Icon name="speaker" /> },
     { value: "spending", label: tr("Spending"), icon: <Icon name="chart" /> },
+    { value: "backups", label: tr("Backups"), icon: <Icon name="backup" /> },
+    { value: "general", label: tr("General"), icon: <IconSmall name="outline-sliders" /> },
+    { value: "mcp", label: tr("MCP servers"), icon: <Icon name="terminal-active" /> },
     ...(props.me.role === "admin"
       ? [
           { value: "server" as const, label: tr("Server"), icon: <Icon name="server" /> },
