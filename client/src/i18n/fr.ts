@@ -1,5 +1,12 @@
 // French (fr) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Agent defaults": "Valeurs de l’agent",
+  "Settings for": "Réglages pour",
+  "Use agent defaults": "Utiliser les valeurs de l’agent",
+
+  "Context window": "Fenêtre de contexte",
+  "Enter a positive whole number up to 1,000,000,000.": "Saisissez un entier positif inférieur ou égal à 1 000 000 000.",
+
   "Type “{name}” to confirm.": "Saisissez « {name} » pour confirmer.",
   "Repository changes": "Modifications du dépôt",
   "Local edits will be merged. App data stays safe.": "Les modifications locales seront fusionnées. Les données de l'app restent en sécurité.",
@@ -662,7 +669,7 @@ const dict = {
   "Search choices": "Rechercher",
   "Maximum": "Maximum",
   "Generation settings": "Paramètres de génération",
-  "Set values override app and agent requests. Leave blank to use their settings.": "Les valeurs définies remplacent celles des apps et de l’agent. Laissez vide pour utiliser leurs paramètres.",
+  "Applies only to the built-in agent. Blank fields use defaults.": "S’applique uniquement à l’agent intégré. Les champs vides utilisent les valeurs par défaut.",
   "Output token limit": "Limite de tokens de sortie",
   "Temperature": "Température",
   "Top P": "Top P",
@@ -672,6 +679,12 @@ const dict = {
   "Supported values depend on your endpoint and model.": "Les valeurs prises en charge dépendent du point de terminaison et du modèle.",
   "Clear overrides": "Effacer les remplacements",
   "Check the generation settings and their allowed ranges.": "Vérifiez les paramètres de génération et leurs plages autorisées.",
+  "Generation": "Génération",
+  "Tools": "Outils",
+  "Configure the built-in agent.": "Configurez l’agent intégré.",
+  "Advanced sampling": "Échantillonnage avancé",
+  "Added to every agent conversation.": "Ajouté à chaque conversation avec l’agent.",
+  "Summarize older messages to make room in long sessions.": "Résumez les anciens messages pour libérer de la place dans les longues sessions.",
 }
 
 export default dict

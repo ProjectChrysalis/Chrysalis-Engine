@@ -1,6 +1,4 @@
-import { clampThinkingLevel, type Api, type Model, type Provider, type StreamOptions, type TranscriptContext } from "@earendil-works/pi-ai";
-import { thinkingBudgetForLevel, clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-options";
-import { usesGoogleThinkingLevel, resolveGoogleThinkingLevel, toGoogleThinkingLevel } from "@earendil-works/pi-ai/api/google-shared";
+import type { Api, Model, MutableModels } from "@earendil-works/pi-ai";
 
 export interface GenerationSettings {
   maxTokens?: number;
@@ -108,47 +106,18 @@ function samplingPayload(payload: unknown, model: Model<Api>, settings: Generati
   return body;
 }
 
-function googleBudget(model: Model<Api>, level: GenerationSettings["reasoning"]): number {
-  const resolved = level === "xhigh" || level === "max" || level === "off" || !level ? "high" : level;
-  if (model.id.includes("2.5-pro")) return { minimal: 128, low: 2048, medium: 8192, high: 32768 }[resolved];
-  if (model.id.includes("2.5-flash-lite")) return { minimal: 512, low: 2048, medium: 8192, high: 24576 }[resolved];
-  if (model.id.includes("2.5-flash")) return { minimal: 128, low: 2048, medium: 8192, high: 24576 }[resolved];
-  return -1;
-}
+type SimpleOptions = NonNullable<Parameters<MutableModels["streamSimple"]>[2]>;
 
-function rawReasoning(model: Model<Api>, context: TranscriptContext, settings: GenerationSettings, options?: StreamOptions): Record<string, unknown> {
-  if (settings.reasoning === undefined) return {};
-  const level = model.reasoning ? clampThinkingLevel(model, settings.reasoning) : settings.reasoning;
-  const enabled = level !== "off";
-  const budget = enabled ? thinkingBudgetForLevel(level) : 0;
-  const cap = clampMaxTokensToContext(model, context, settings.maxTokens ?? options?.maxTokens ?? model.maxTokens);
-  const mapped = model.thinkingLevelMap?.[level];
-  const effort = typeof mapped === "string" ? mapped : level === "minimal" ? "low" : level === "xhigh" || level === "max" ? "high" : level;
-  if (model.api === "anthropic-messages") return { thinkingEnabled: enabled, effort, thinkingBudgetTokens: Math.min(budget, Math.max(0, cap - 1024)) };
-  if (model.api === "google-generative-ai" || model.api === "google-vertex") {
-    const google = model as Model<"google-generative-ai" | "google-vertex">;
-    return { thinking: { enabled, ...(usesGoogleThinkingLevel(google) && enabled ? { level: toGoogleThinkingLevel(resolveGoogleThinkingLevel(google, level)) } : { budgetTokens: googleBudget(google, level) }) } };
-  }
-  return { reasoning: enabled ? level : undefined, reasoningEffort: enabled ? level : undefined,
-    ...(model.api === "mistral-conversations" ? { promptMode: enabled && !model.thinkingLevelMap ? "reasoning" : undefined } : {}),
-  };
-}
-
-/** Connection overrides also cover agent turns and calls made directly through the model registry. */
-export function withGenerationSettings(provider: Provider, settings: GenerationSettings): Provider {
-  const optionsFor = <T extends StreamOptions>(model: Model<Api>, context: TranscriptContext, options: T | undefined, simple: boolean) => ({
-    ...options,
-    ...(settings.maxTokens !== undefined ? { maxTokens: settings.maxTokens } : {}),
-    ...(settings.temperature !== undefined ? { temperature: settings.temperature } : {}),
-    ...(simple ? settings.reasoning !== undefined ? { reasoning: settings.reasoning === "off" ? undefined : settings.reasoning } : {} : rawReasoning(model, context, settings, options)),
-    onPayload: async (payload: unknown, m: Model<Api>) => {
-      const subscription = m.provider === "openai" && m.baseUrl === "https://api.openai.com/v1" && options?.apiKey && !options.apiKey.startsWith("sk-");
-      return samplingPayload((await options?.onPayload?.(payload, m)) ?? payload, m, subscription ? { ...settings, maxTokens: undefined, temperature: undefined, topP: undefined } : settings);
-    },
-  });
+/** Applied only at the built-in agent's streaming boundary. */
+export function agentGenerationOptions(settings: GenerationSettings, options?: SimpleOptions): SimpleOptions {
+  const maxTokens = settings.maxTokens !== undefined ? Math.min(settings.maxTokens, options?.maxTokens ?? settings.maxTokens) : undefined;
   return {
-    ...provider,
-    stream: (model, context, options) => provider.stream(model, context, optionsFor(model, context, options, false) as NonNullable<typeof options>),
-    streamSimple: (model, context, options) => provider.streamSimple(model, context, optionsFor(model, context, options, true)),
+    ...options,
+    ...(maxTokens !== undefined ? { maxTokens } : {}),
+    ...(settings.temperature !== undefined ? { temperature: settings.temperature } : {}),
+    ...(settings.reasoning !== undefined ? { reasoning: settings.reasoning === "off" ? undefined : settings.reasoning } : {}),
+    onPayload: async (payload, model) => {
+      return samplingPayload((await options?.onPayload?.(payload, model)) ?? payload, model, { ...settings, maxTokens });
+    },
   };
 }

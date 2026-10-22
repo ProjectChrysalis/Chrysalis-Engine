@@ -1,5 +1,12 @@
 // Russian (ru) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Agent defaults": "Настройки агента",
+  "Settings for": "Настройки для",
+  "Use agent defaults": "Использовать настройки агента",
+
+  "Context window": "Окно контекста",
+  "Enter a positive whole number up to 1,000,000,000.": "Введите положительное целое число до 1 000 000 000.",
+
   "Type “{name}” to confirm.": "Введите «{name}» для подтверждения.",
   "Repository changes": "Изменения в репозитории",
   "Local edits will be merged. App data stays safe.": "Локальные правки будут объединены. Данные приложения в безопасности.",
@@ -662,7 +669,7 @@ const dict = {
   "Search choices": "Искать варианты",
   "Maximum": "Максимум",
   "Generation settings": "Настройки генерации",
-  "Set values override app and agent requests. Leave blank to use their settings.": "Заданные значения заменяют настройки приложений и агента. Оставьте пустым, чтобы использовать их настройки.",
+  "Applies only to the built-in agent. Blank fields use defaults.": "Применяется только к встроенному агенту. Пустые поля используют значения по умолчанию.",
   "Output token limit": "Лимит выходных токенов",
   "Temperature": "Температура",
   "Top P": "Top P",
@@ -672,6 +679,12 @@ const dict = {
   "Supported values depend on your endpoint and model.": "Поддерживаемые значения зависят от конечной точки и модели.",
   "Clear overrides": "Сбросить переопределения",
   "Check the generation settings and their allowed ranges.": "Проверьте настройки генерации и допустимые диапазоны.",
+  "Generation": "Генерация",
+  "Tools": "Инструменты",
+  "Configure the built-in agent.": "Настройте встроенного агента.",
+  "Advanced sampling": "Расширенные настройки сэмплирования",
+  "Added to every agent conversation.": "Добавляется в каждый разговор с агентом.",
+  "Summarize older messages to make room in long sessions.": "Суммируйте старые сообщения, чтобы освободить место в длинных сессиях.",
 }
 
 export default dict

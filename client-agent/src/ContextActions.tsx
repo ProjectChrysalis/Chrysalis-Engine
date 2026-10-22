@@ -11,10 +11,11 @@ export function ContextActions() {
   const compact = useAgent((s) => s.compact)
   const usage = useAgent((s) => s.usage)
   const model = useAgent((s) => s.model)
+  const modelOverrides = useAgent((s) => s.modelOverrides)
   const models = useAgent((s) => s.models)
   const [pending, setPending] = useState(false)
   const [open, setOpen] = useState(false)
-  const contextWindow = usage?.contextWindow ?? models.find((item) => `${item.provider}/${item.modelId}` === model)?.contextWindow
+  const contextWindow = usage?.contextWindow ?? (model ? modelOverrides[model]?.contextWindow : undefined) ?? models.find((item) => `${item.provider}/${item.modelId}` === model)?.contextWindow
   const tokens = usage ? usage.input + usage.cacheRead : null
   const percent = tokens != null && contextWindow && contextWindow > 0 ? tokens / contextWindow * 100 : null
   const severity = percent != null && percent >= 85 ? "high" : percent != null && percent >= 65 ? "moderate" : "normal"
@@ -41,6 +42,7 @@ export function ContextActions() {
             <PopoverTitle>{tr("Context usage")}</PopoverTitle>
             {percent != null && <span className="text-sm tabular-nums font-medium">{Math.round(percent)}%</span>}
           </div>
+          {contextWindow ? <p className="text-muted-foreground text-xs">{tr("Context window")}: {contextWindow.toLocaleString()}</p> : null}
           {usage ? <>
             {percent != null && <div className="agent-context-meter" data-usage={severity} role="meter" aria-label={tr("Context usage")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(percent, 100)}>
               <span style={{ width: `${Math.min(percent, 100)}%` }} />

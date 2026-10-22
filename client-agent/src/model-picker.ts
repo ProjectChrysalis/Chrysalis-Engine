@@ -43,3 +43,11 @@ export function readModelList(key: string): string[] {
 export function saveModelList(key: string, ids: readonly string[]): void {
   try { localStorage.setItem(key, JSON.stringify(ids)) } catch { /* Browser storage can be disabled. */ }
 }
+
+export function modelReasoning(level: string, supported: readonly string[]): string {
+  if (supported.includes(level)) return level;
+  const ladder = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+  const index = ladder.indexOf(level || "medium");
+  return ladder.slice(index).find((value) => supported.includes(value)) ??
+    ladder.slice(0, index).reverse().find((value) => supported.includes(value)) ?? supported[0] ?? "";
+}

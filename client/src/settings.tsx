@@ -2,9 +2,8 @@
 // API tab: provider connection flow — pick a provider
 // (all pi-ai providers, logos, search), name it, paste the key; or define a
 // custom OpenAI-compatible / Anthropic endpoint. Keys never leave the server.
-import { GenerationSettingsEditor } from "./generation-settings"
-import { generationDraft, generationBody } from "./generation-settings-state"
 import { useEffect, useRef, useState, type ReactNode } from "react"
+import { AgentModelSettings, AgentSettingsProvider } from "./agent-model-settings"
 import { Dialog } from "./ui/dialog"
 import { cn } from "./ui/cn"
 import { useResource } from "./use-resource"
@@ -77,7 +76,7 @@ const LOCAL_SERVERS: LocalPick[] = [
 ].map((s) => ({ ...s, id: s.id as LocalPick["id"], kind: "builtin" as const, apiKeyAuth: true as const, hasKey: false as const }))
 /** Sign-in pick, straight to its flow: subscription OAuth or a guided
  *  credential setup (Vertex ADC, AWS profile, Cloudflare ids). */
-type OAuthPick = { id: string; providerId: string; label: string; kind: "builtin"; baseUrl: null; apiKeyAuth: false; hasKey: false; authKind: "oauth" | "credentials"; needsGateway?: boolean; generationApis?: string[] }
+type OAuthPick = { id: string; providerId: string; label: string; kind: "builtin"; baseUrl: null; apiKeyAuth: false; hasKey: false; authKind: "oauth" | "credentials"; needsGateway?: boolean }
 type ProviderPick = EngineProvider | CustomPick | OAuthPick | LocalPick
 
 export type TabValue = "general" | "api" | "speech" | "agent" | "mcp" | "server" | "users"
@@ -440,8 +439,28 @@ function GeneralTab(props: { me: Me; onLogout: () => void }) {
   )
 }
 
-/** Agent behavior: instructions + context management. */
 function AgentTab() {
+  return (
+    <Pane title={tr("Agent")} description={tr("Configure the built-in agent.")}>
+      <AgentSettingsProvider><Tabs variant="section" defaultValue="generation">
+        <Tabs.List aria-label={tr("Agent")}>
+          <Tabs.Trigger value="generation">{tr("Generation")}</Tabs.Trigger>
+          <Tabs.Trigger value="instructions">{tr("Instructions")}</Tabs.Trigger>
+          <Tabs.Trigger value="context">{tr("Context")}</Tabs.Trigger>
+          <Tabs.Trigger value="tools">{tr("Tools")}</Tabs.Trigger>
+        </Tabs.List>
+        <Tabs.Content value="generation" keepMounted><AgentModelSettings section="generation" inputClass={inputClass} /></Tabs.Content>
+        <Tabs.Content value="instructions" keepMounted><AgentInstructions /></Tabs.Content>
+        <Tabs.Content value="context" keepMounted><AgentModelSettings section="context" inputClass={inputClass} /></Tabs.Content>
+        <Tabs.Content value="tools" keepMounted>
+          <div className="flex flex-col gap-6 pb-4"><InternetSection /><div className="border-t border-line pt-5"><AgentSkills /></div></div>
+        </Tabs.Content>
+      </Tabs></AgentSettingsProvider>
+    </Pane>
+  )
+}
+
+function AgentInstructions() {
   const persona = useResource(() => personaApi.get())
   const [draft, setDraft] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -463,39 +482,31 @@ function AgentTab() {
   }
 
   return (
-    <Pane title={tr("Agent")} description={tr("How your agent behaves and manages context across every app.")}>
-      <div className="flex flex-col gap-6 pb-4">
-        <InternetSection />
-        <AutoCompactSection />
-        <AgentSkills />
-        <div className="flex flex-col gap-2">
-          <h3 className="text-13 font-medium text-ink">{tr("Agent instructions")}</h3>
-          <p className="text-12 text-ink-muted">
-            {tr("Appended to your agent's system prompt (saved to persona.md, your agent can also edit it for you).")}
-          </p>
-          <textarea
-            className="min-h-[160px] w-full resize-y rounded-lg border border-line bg-panel px-3 py-2 text-13 leading-5 text-ink outline-none placeholder:text-ink-faint focus:border-line-focus"
-            placeholder={tr("e.g. Always answer briefly. Prefer TypeScript. When editing apps, run reload after changes.")}
-            value={value()}
-            onChange={(e) => setDraft(e.currentTarget.value)}
-          />
-          <div className="flex items-center gap-2">
-            <Button variant="neutral" size="normal" disabled={!dirty() || saving} onClick={save}>
-              {tr("Save instructions")}
-            </Button>
-            {dirty() ? <Button variant="ghost" size="normal" onClick={() => setDraft(null)}>
-                {tr("Discard")}
-              </Button> : null}
-            {saved ? <span className="text-12 text-success">{tr("Saved")}</span> : null}
-          </div>
-        </div>
+    <div className="flex flex-col gap-2">
+      <h3 className="text-13 font-medium text-ink">{tr("Agent instructions")}</h3>
+      <p className="text-12 text-ink-muted">
+        {tr("Added to every agent conversation.")}
+      </p>
+      <textarea
+        className="min-h-[160px] w-full resize-y rounded-lg border border-line bg-panel px-3 py-2 text-13 leading-5 text-ink outline-none placeholder:text-ink-faint focus:border-line-focus"
+        placeholder={tr("e.g. Always answer briefly. Prefer TypeScript. When editing apps, run reload after changes.")}
+        value={value()}
+        onChange={(e) => setDraft(e.currentTarget.value)}
+      />
+      <div className="flex items-center gap-2">
+        <Button variant="neutral" size="normal" disabled={!dirty() || saving} onClick={save}>
+          {tr("Save instructions")}
+        </Button>
+        {dirty() ? <Button variant="ghost" size="normal" onClick={() => setDraft(null)}>
+            {tr("Discard")}
+          </Button> : null}
+        {saved ? <span className="text-12 text-success">{tr("Saved")}</span> : null}
       </div>
-    </Pane>
+    </div>
   )
 }
 
-/** Whether the agent's sandbox may reach the internet. Saved outside the
- *  workspace, so the agent cannot switch it back on for itself. */
+/** Saved outside the workspace so the agent cannot enable its own internet access. */
 function InternetSection() {
   const setting = useResource(() => api<{ internet: boolean }>("GET", "/v1/settings/sandbox"))
   const [busy, setBusy] = useState(false)
@@ -529,76 +540,6 @@ function InternetSection() {
       <p className="text-12 leading-4 text-ink-muted">
         {tr("Give the agent internet access in its sandbox, for curl, wget and pip. Your own computer and local network stay blocked.")}
       </p>
-      {err ? <div className="text-12 text-danger">{err}</div> : null}
-    </div>
-  )
-}
-
-/** Auto-compact: fold the session into a summary when context grows past a
- * threshold (default: 80% of the model's context window). */
-function AutoCompactSection() {
-  const [enabled, setEnabled] = useState(true)
-  const [limit, setLimit] = useState("") // "" = automatic (80% of context window)
-  const [loaded, setLoaded] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState("")
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        const s = await api<{ autoCompact: boolean | number }>("GET", "/v1/settings")
-        if (s.autoCompact === false) setEnabled(false)
-        else if (typeof s.autoCompact === "number") setLimit(String(s.autoCompact))
-      } catch {}
-      setLoaded(true)
-    })()
-  }, [])
-
-  const save = async () => {
-    setBusy(true)
-    setErr("")
-    try {
-      const v = !enabled ? null : limit.trim() ? Math.floor(Number(limit)) : true
-      if (typeof v === "number" && (!Number.isFinite(v) || v < 1000)) throw new Error(tr("threshold must be ≥ 1000 tokens"))
-      await api("PUT", "/v1/settings", { autoCompact: v })
-    } catch (e: any) {
-      setErr(e.message ?? String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className="flex flex-col gap-2">
-      <h3 className="text-13 font-medium text-ink">{tr("Context")}</h3>
-      <label className="flex items-center gap-2 text-13 text-ink">
-        <input
-          type="checkbox"
-          className="size-4 accent-[var(--c-contrast)]"
-          checked={enabled}
-          disabled={!loaded}
-          onChange={(e) => setEnabled(e.currentTarget.checked)}
-        />
-        {tr("Auto-compact long sessions")}
-      </label>
-      <p className="text-12 leading-4 text-ink-muted">
-        {tr("When a session's context passes the threshold, the agent folds it into a summary and keeps going. Old messages stay visible behind a divider but are hidden from the AI. A model whose context size is unknown is only compacted at a threshold you set.")}
-      </p>
-      {enabled ? <label className="flex items-center gap-2 text-12 text-ink-muted">
-          {tr("Threshold (tokens)")}
-          <input
-            className={inputClass + " max-w-[160px]"}
-            placeholder={tr("auto (80% of context window)")}
-            inputMode="numeric"
-            value={limit}
-            onChange={(e) => setLimit(e.currentTarget.value.replace(/[^\d]/g, ""))}
-          />
-        </label> : null}
-      <div>
-        <Button variant="neutral" size="normal" disabled={!loaded || busy} onClick={save}>
-          {tr("Save")}
-        </Button>
-      </div>
       {err ? <div className="text-12 text-danger">{err}</div> : null}
     </div>
   )
@@ -838,7 +779,6 @@ function EditConnection(props: { connection: EngineConnection; onDone: () => voi
   const [baseUrl, setBaseUrl] = useState(c.baseUrl ?? "")
   const [key, setKey] = useState("")
   const [routing, setRouting] = useState(() => routingDraft(c.openRouterRouting))
-  const [generation, setGeneration] = useState(() => generationDraft(c.generation))
   const [err, setErr] = useState("")
   const [busy, setBusy] = useState(false)
   const [format, setFormat] = useState<FormatChoice>({ id: c.promptFormat ?? "auto", custom: c.promptFormatCustom ?? EMPTY_FORMAT })
@@ -871,7 +811,6 @@ function EditConnection(props: { connection: EngineConnection; onDone: () => voi
     try {
       await connectionsApi.update(c.id, {
         name: name.trim(),
-        generation: generationBody(generation, tr("Check the generation settings and their allowed ranges."), c.generationApis ?? [c.api ?? "pi-messages"]),
         ...(!c.providerId && baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
         ...(key.trim() ? { key: key.trim() } : {}),
         ...(!c.oauthProvider ? { models: modelDefs() } : {}),
@@ -902,7 +841,6 @@ function EditConnection(props: { connection: EngineConnection; onDone: () => voi
           <input className={inputClass} placeholder="https://…/v1" value={baseUrl} onChange={(e) => setBaseUrl(e.currentTarget.value)} />
         </label>
         {c.api === "openai-text" ? <PromptFormatEditor value={format} onChange={setFormat} /> : null}</>: null}
-      <GenerationSettingsEditor value={generation} onChange={setGeneration} inputClass={inputClass} apis={c.generationApis ?? [c.api ?? "pi-messages"]} />
       {!c.oauthProvider ? <ModelsEditor builtin={!!c.providerId} mode={modelsMode} setMode={setModelsMode} models={models} setModels={setModels} /> : null}
       {isOpenRouterConnection({ ...c, baseUrl }) ? <OpenRouterRoutingEditor value={routing} onChange={setRouting} inputClass={inputClass} /> : null}
       <label className="flex flex-col gap-1 text-12 text-ink-muted">
@@ -939,7 +877,6 @@ function AddConnection(props: { onCancel: () => void; onCreated: () => void }) {
         .map((p) => ({
           id: `oauth_${p.id}`,
           providerId: p.id,
-          generationApis: p.id === "openai" && p.oauth ? ["openai-codex-responses"] : p.generationApis,
           label: p.oauth ? (p.oauthLabel ?? p.label) : p.label,
           kind: "builtin" as const,
           baseUrl: null,
@@ -1039,8 +976,6 @@ function OAuthForm(props: { pick: OAuthPick; onBack: () => void; onDone: () => v
   const [flow, setFlow] = useState<OAuthFlow | null>(null)
   const [promptValue, setPromptValue] = useState("")
   const [answering, setAnswering] = useState(false)
-  const [generation, setGeneration] = useState(() => generationDraft())
-  const generationApis = props.pick.generationApis ?? ["pi-messages"]
   const isRadius = () => props.pick.providerId === "radius"
   const poll = useRef<ReturnType<typeof setInterval>>(undefined)
   const timeout = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -1085,13 +1020,12 @@ function OAuthForm(props: { pick: OAuthPick; onBack: () => void; onDone: () => v
     setErr("")
     setFlow({ providerId: props.pick.providerId, status: "pending" })
     try {
-      const generationSettings = generationBody(generation, tr("Check the generation settings and their allowed ranges."), generationApis)
       if (isRadius()) {
         if (!/^https?:\/\/.+/.test(gateway.trim())) throw new Error(tr("enter the Radius gateway URL first"))
-        const r = await connectionsApi.create({ name: name, oauthProvider: "radius", gateway: gateway.trim(), generation: generationSettings })
+        const r = await connectionsApi.create({ name: name, oauthProvider: "radius", gateway: gateway.trim() })
         createdId.current = r.connection.id
       } else {
-        const r = await connectionsApi.create({ name: name, providerId: props.pick.providerId, generation: generationSettings })
+        const r = await connectionsApi.create({ name: name, providerId: props.pick.providerId })
         createdId.current = r.connection.id
       }
       await oauthApi.start(props.pick.providerId)
@@ -1168,7 +1102,6 @@ function OAuthForm(props: { pick: OAuthPick; onBack: () => void; onDone: () => v
           ? tr("No API key, sign in with your account. Chrysalis stores the tokens on this machine only.")
           : tr("Connect with the provider's own sign-in. Credentials stay on this machine.")}
       </p>
-      {!flow || flow.status !== "pending" ? <GenerationSettingsEditor value={generation} onChange={setGeneration} inputClass={inputClass} apis={generationApis} /> : null}
       {!flow || flow!.status !== "pending" ? <Button variant="neutral" size="normal" disabled={busy || !name.trim()} onClick={start}>
           {tr("Sign in")}
         </Button> : <div className="flex flex-col gap-2 rounded-lg border border-line-focus p-3">
@@ -1238,7 +1171,6 @@ function ProviderForm(props: { provider: ProviderPick; onBack: () => void; onDon
   const [baseUrl, setBaseUrl] = useState(props.provider.baseUrl ?? "")
   const [key, setKey] = useState("")
   const [routing, setRouting] = useState(() => routingDraft())
-  const [generation, setGeneration] = useState(() => generationDraft())
   const [err, setErr] = useState("")
   const [busy, setBusy] = useState(false)
   const [modelsMode, setModelsMode] = useState<"auto" | "manual">("auto")
@@ -1261,7 +1193,6 @@ function ProviderForm(props: { provider: ProviderPick; onBack: () => void; onDon
           }))
 
   const usingProxy = () => isBuiltin() && /^https?:\/\/.+/.test(proxyUrl.trim())
-  const generationApis = () => isCustom() ? [customApi()] : usingProxy() ? [props.provider.id === "anthropic" ? "anthropic-messages" : "openai-completions"] : "generationApis" in props.provider ? props.provider.generationApis ?? [] : []
 
   const submit = async () => {
     setBusy(true)
@@ -1269,7 +1200,6 @@ function ProviderForm(props: { provider: ProviderPick; onBack: () => void; onDon
     try {
       await connectionsApi.create({
         name: name,
-        generation: generationBody(generation, tr("Check the generation settings and their allowed ranges."), generationApis()),
         ...(isCustom()
           ? {
               api: customApi(),
@@ -1314,7 +1244,7 @@ function ProviderForm(props: { provider: ProviderPick; onBack: () => void; onDon
             current={localApi}
             value={(x) => x}
             label={(x) => (x === "openai-completions" ? tr("Chat completions") : tr("Text completions"))}
-            onSelect={(x) => { setLocalApi(x ?? "openai-completions"); if (x === "openai-text") setGeneration((prev) => ({ ...prev, reasoning: "" })) }}
+            onSelect={(x) => setLocalApi(x ?? "openai-completions")}
           />
         </label> : null}
       {isCustom() ? <label className="flex flex-col gap-1 text-12 text-ink-muted">
@@ -1325,7 +1255,6 @@ function ProviderForm(props: { provider: ProviderPick; onBack: () => void; onDon
         {usingProxy() ? tr("Proxy password / API key") : isCustom() ? tr("API key (optional)") : tr("API key")}
         <input className={inputClass} type="password" placeholder={isCustom() ? tr("leave empty if the server has none") : tr("paste key")} autoComplete="off" value={key} onChange={(e) => setKey(e.currentTarget.value)} />
       </label>
-      <GenerationSettingsEditor value={generation} onChange={setGeneration} inputClass={inputClass} apis={generationApis()} />
       {isCustom() || !usingProxy() ? <ModelsEditor builtin={isBuiltin()} mode={modelsMode} setMode={setModelsMode} models={models} setModels={setModels} /> : null}
       {isOpenRouterConnection({ providerId: props.provider.id, baseUrl, api: isCustom() ? customApi() : undefined }) ? <OpenRouterRoutingEditor value={routing} onChange={setRouting} inputClass={inputClass} /> : null}
       {isCustom() && customApi() === "openai-text" ? <PromptFormatEditor value={format} onChange={setFormat} /> : null}

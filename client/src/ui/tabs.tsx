@@ -1,7 +1,7 @@
 import { Tabs as Base } from "@base-ui/react/tabs"
 import type { ComponentPropsWithoutRef, ReactNode } from "react"
 
-type RootProps = ComponentPropsWithoutRef<typeof Base.Root> & { variant?: "settings" }
+type RootProps = ComponentPropsWithoutRef<typeof Base.Root> & { variant?: "settings" | "section" }
 
 function Root({ variant, ...rest }: RootProps) {
   return <Base.Root data-component="tabs" data-variant={variant} {...rest} />

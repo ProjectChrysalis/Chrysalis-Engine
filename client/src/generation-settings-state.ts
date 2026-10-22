@@ -22,8 +22,8 @@ export function generationCapabilities(apis: string[]): GenerationCapabilities {
     maxTokens: !apis.length || apis.some((api) => api !== "openai-codex-responses"),
     temperature: !apis.length || apis.some((api) => api !== "openai-codex-responses"),
     temperatureMax: apis.length > 0 && apis.every((api) => api === "anthropic-messages") ? 1 : 2,
-    topP: apis.some((api) => api !== "pi-messages" && api !== "openai-codex-responses"),
-    penalties: apis.some((api) => ["openai-completions", "openai-text", "google-generative-ai", "google-vertex", "mistral-conversations"].includes(api)),
+    topP: !apis.length || apis.some((api) => api !== "pi-messages" && api !== "openai-codex-responses"),
+    penalties: !apis.length || apis.some((api) => ["openai-completions", "openai-text", "google-generative-ai", "google-vertex", "mistral-conversations"].includes(api)),
     reasoning: !apis.length || apis.some((api) => api !== "openai-text"),
   }
 }
@@ -56,4 +56,3 @@ export function generationBody(draft: GenerationDraft, invalidMessage = "Check t
   }
   return Object.keys(input).length ? input as GenerationSettings : null
 }
-

@@ -1,5 +1,12 @@
 // Italian (it) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Agent defaults": "Valori predefiniti dell’agente",
+  "Settings for": "Impostazioni per",
+  "Use agent defaults": "Usa i valori dell’agente",
+
+  "Context window": "Finestra di contesto",
+  "Enter a positive whole number up to 1,000,000,000.": "Inserisci un intero positivo fino a 1.000.000.000.",
+
   "Type “{name}” to confirm.": "Digita «{name}» per confermare.",
   "Repository changes": "Modifiche al repository",
   "Local edits will be merged. App data stays safe.": "Le modifiche locali verranno unite. I dati dell'app restano al sicuro.",
@@ -662,7 +669,7 @@ const dict = {
   "Search choices": "Cerca",
   "Maximum": "Massimo",
   "Generation settings": "Impostazioni di generazione",
-  "Set values override app and agent requests. Leave blank to use their settings.": "I valori impostati sostituiscono quelli delle app e dell’agente. Lascia vuoto per usare le loro impostazioni.",
+  "Applies only to the built-in agent. Blank fields use defaults.": "Si applica solo all’agente integrato. I campi vuoti usano i valori predefiniti.",
   "Output token limit": "Limite token di output",
   "Temperature": "Temperatura",
   "Top P": "Top P",
@@ -672,6 +679,12 @@ const dict = {
   "Supported values depend on your endpoint and model.": "I valori supportati dipendono dall’endpoint e dal modello.",
   "Clear overrides": "Cancella personalizzazioni",
   "Check the generation settings and their allowed ranges.": "Controlla le impostazioni di generazione e gli intervalli consentiti.",
+  "Generation": "Generazione",
+  "Tools": "Strumenti",
+  "Configure the built-in agent.": "Configura l’agente integrato.",
+  "Advanced sampling": "Campionamento avanzato",
+  "Added to every agent conversation.": "Aggiunto a ogni conversazione con l’agente.",
+  "Summarize older messages to make room in long sessions.": "Riassumi i messaggi precedenti per fare spazio nelle sessioni lunghe.",
 }
 
 export default dict

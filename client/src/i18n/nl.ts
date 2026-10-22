@@ -1,5 +1,12 @@
 // Dutch (nl) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Agent defaults": "Agentstandaarden",
+  "Settings for": "Instellingen voor",
+  "Use agent defaults": "Agentstandaarden gebruiken",
+
+  "Context window": "Contextvenster",
+  "Enter a positive whole number up to 1,000,000,000.": "Voer een positief geheel getal in tot 1.000.000.000.",
+
   "Type “{name}” to confirm.": "Typ “{name}” om te bevestigen.",
   "Repository changes": "Wijzigingen in de repository",
   "Local edits will be merged. App data stays safe.": "Lokale bewerkingen worden samengevoegd. App-gegevens blijven veilig.",
@@ -662,7 +669,7 @@ const dict = {
   "Search choices": "Keuzes zoeken",
   "Maximum": "Maximum",
   "Generation settings": "Generatie-instellingen",
-  "Set values override app and agent requests. Leave blank to use their settings.": "Ingestelde waarden overschrijven app- en agentverzoeken. Laat leeg om hun instellingen te gebruiken.",
+  "Applies only to the built-in agent. Blank fields use defaults.": "Geldt alleen voor de ingebouwde agent. Lege velden gebruiken standaardwaarden.",
   "Output token limit": "Limiet voor uitvoertokens",
   "Temperature": "Temperatuur",
   "Top P": "Top P",
@@ -672,6 +679,12 @@ const dict = {
   "Supported values depend on your endpoint and model.": "Ondersteunde waarden hangen af van je endpoint en model.",
   "Clear overrides": "Overschrijvingen wissen",
   "Check the generation settings and their allowed ranges.": "Controleer de generatie-instellingen en de toegestane bereiken.",
+  "Generation": "Generatie",
+  "Tools": "Gereedschap",
+  "Configure the built-in agent.": "Configureer de ingebouwde agent.",
+  "Advanced sampling": "Geavanceerde sampling",
+  "Added to every agent conversation.": "Wordt toegevoegd aan elk gesprek met de agent.",
+  "Summarize older messages to make room in long sessions.": "Vat oudere berichten samen om ruimte te maken in lange sessies.",
 }
 
 export default dict

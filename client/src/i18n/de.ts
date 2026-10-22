@@ -1,5 +1,12 @@
 // German (de) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Agent defaults": "Agent-Standardwerte",
+  "Settings for": "Einstellungen für",
+  "Use agent defaults": "Agent-Standardwerte verwenden",
+
+  "Context window": "Kontextfenster",
+  "Enter a positive whole number up to 1,000,000,000.": "Eine positive ganze Zahl bis 1.000.000.000 eingeben.",
+
   "Type “{name}” to confirm.": "Gib zur Bestätigung „{name}“ ein.",
   "Repository changes": "Änderungen im Repository",
   "Local edits will be merged. App data stays safe.": "Lokale Änderungen werden zusammengeführt. App-Daten bleiben sicher.",
@@ -662,7 +669,7 @@ const dict = {
   "Search choices": "Einträge durchsuchen",
   "Maximum": "Maximum",
   "Generation settings": "Generierungseinstellungen",
-  "Set values override app and agent requests. Leave blank to use their settings.": "Gesetzte Werte überschreiben App- und Agentenanfragen. Leer lassen, um deren Einstellungen zu nutzen.",
+  "Applies only to the built-in agent. Blank fields use defaults.": "Gilt nur für den integrierten Agenten. Leere Felder nutzen Standardwerte.",
   "Output token limit": "Ausgabe-Tokenlimit",
   "Temperature": "Temperatur",
   "Top P": "Top P",
@@ -672,6 +679,12 @@ const dict = {
   "Supported values depend on your endpoint and model.": "Unterstützte Werte hängen von Endpunkt und Modell ab.",
   "Clear overrides": "Überschreibungen löschen",
   "Check the generation settings and their allowed ranges.": "Prüfe die Generierungseinstellungen und ihre zulässigen Bereiche.",
+  "Generation": "Generierung",
+  "Tools": "Werkzeuge",
+  "Configure the built-in agent.": "Den integrierten Agenten konfigurieren.",
+  "Advanced sampling": "Erweiterte Sampling-Einstellungen",
+  "Added to every agent conversation.": "Wird jeder Agentenunterhaltung hinzugefügt.",
+  "Summarize older messages to make room in long sessions.": "Ältere Nachrichten zusammenfassen, um Platz in langen Sitzungen zu schaffen.",
 }
 
 export default dict

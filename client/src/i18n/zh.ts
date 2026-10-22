@@ -1,5 +1,12 @@
 // Simplified Chinese (zh) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Agent defaults": "智能体默认设置",
+  "Settings for": "设置对象",
+  "Use agent defaults": "使用智能体默认设置",
+
+  "Context window": "上下文窗口",
+  "Enter a positive whole number up to 1,000,000,000.": "请输入不超过1,000,000,000的正整数。",
+
   "Type “{name}” to confirm.": "输入“{name}”以确认。",
   "Repository changes": "仓库更改",
   "Local edits will be merged. App data stays safe.": "本地编辑将被合并。应用数据保持安全。",
@@ -662,7 +669,7 @@ const dict = {
   "Search choices": "搜索选项",
   "Maximum": "最大",
   "Generation settings": "生成设置",
-  "Set values override app and agent requests. Leave blank to use their settings.": "填写的值会覆盖应用和智能体的设置。留空则使用原有设置。",
+  "Applies only to the built-in agent. Blank fields use defaults.": "仅适用于内置智能体。留空则使用默认值。",
   "Output token limit": "输出令牌上限",
   "Temperature": "温度",
   "Top P": "Top P",
@@ -672,6 +679,12 @@ const dict = {
   "Supported values depend on your endpoint and model.": "支持的值取决于端点和模型。",
   "Clear overrides": "清除覆盖设置",
   "Check the generation settings and their allowed ranges.": "请检查生成设置及其允许范围。",
+  "Generation": "生成",
+  "Tools": "工具",
+  "Configure the built-in agent.": "配置内置智能体。",
+  "Advanced sampling": "高级采样",
+  "Added to every agent conversation.": "添加到与智能体的每次对话中。",
+  "Summarize older messages to make room in long sessions.": "总结较早的消息，为长会话腾出空间。",
 }
 
 export default dict

@@ -1,9 +1,11 @@
+import type { AgentModelOverrides } from "../../src/agent/model-settings.js"
 import { tr } from "./i18n"
 // Client state: sessions, the open thread, the live run, and the WS feed.
 // The stream updates a live assistant message in place; when POST /v1/agent
 // resolves it is replaced by the authoritative turn record.
 import { create } from "zustand"
 import {
+  api,
   agentApps,
   setAgentTarget,
   answerAgent,
@@ -64,6 +66,7 @@ export interface AgentState {
   modelsLoaded: boolean
   model: string | null
   reasoning: string
+  modelOverrides: Record<string, AgentModelOverrides>
   mode: "normal" | "plan" | "accept"
   wsDown: boolean
   usage: EngineUsage | null
@@ -175,6 +178,7 @@ export const useAgent = create<AgentState>()((set, get) => {
     reasoning: prefs.get("agent-ui-reasoning") ?? "",
     mode: storedMode(),
     wsDown: false,
+    modelOverrides: {},
     usage: null,
     mcp: [],
     sidebarOpen: false,
@@ -188,7 +192,8 @@ export const useAgent = create<AgentState>()((set, get) => {
           modelsLoaded: true,
           apps: catalog.apps,
           model: get().model ?? settings.model ?? null,
-          reasoning: get().reasoning || settings.reasoning || "",
+          reasoning: settings.reasoning ?? "",
+          modelOverrides: settings.agentModels ?? {},
         })
       } catch (e) {
         set({ banner: { kind: "error", text: e instanceof Error ? e.message : String(e) } })
@@ -328,7 +333,7 @@ export const useAgent = create<AgentState>()((set, get) => {
           selection: s.selection?.appId === s.appId ? s.selection : undefined,
           sessionId: sid,
           model: s.model ?? undefined,
-          reasoning: s.reasoning || undefined,
+          reasoning: (s.model ? s.modelOverrides[s.model]?.generation?.reasoning : undefined) ?? (s.reasoning || undefined),
           mode: s.mode,
           ...(s.mode === "plan" ? { planExit: workMode() } : {}),
           images: images?.length ? images : undefined,
@@ -478,18 +483,27 @@ export const useAgent = create<AgentState>()((set, get) => {
 
     setModel: (m) => {
       prefs.set("agent-ui-model", m)
-      set({ model: m })
-      const mdl = get().models.find((x) => `${x.provider}/${x.modelId}` === m)
-      if (mdl && !mdl.reasoningLevels.includes(get().reasoning)) {
-        const def = mdl.reasoningLevels[0] ?? ""
-        prefs.set("agent-ui-reasoning", def)
-        set({ reasoning: def })
-      }
+      set({ model: m, usage: null })
+
     },
 
     setReasoning: (r) => {
-      prefs.set("agent-ui-reasoning", r)
-      set({ reasoning: r })
+      const model = get().model
+      if (model) {
+        const profile = get().modelOverrides[model] ?? {}
+        const generation = { ...profile.generation }
+        if (r) generation.reasoning = r as NonNullable<AgentModelOverrides["generation"]>["reasoning"]
+        else delete generation.reasoning
+        const settings = { ...profile, generation }
+        useAgent.setState({ modelOverrides: { ...get().modelOverrides, [model]: settings } })
+        void api("PUT", "/v1/settings", { agentModel: { ref: model, settings } }).catch((err) => {
+          useAgent.setState({ modelOverrides: { ...get().modelOverrides, [model]: profile }, banner: { kind: "error", text: err instanceof Error ? err.message : String(err) } })
+        })
+      } else {
+        prefs.set("agent-ui-reasoning", r)
+        set({ reasoning: r })
+        void api("PUT", "/v1/settings", { reasoning: r || null }).catch((err) => set({ banner: { kind: "error", text: err instanceof Error ? err.message : String(err) } }))
+      }
     },
 
     setMode: (m) => {
@@ -569,7 +583,7 @@ export function connectWs(): void {
     setTimeout(connectWs, wait)
   }
   ws.onmessage = (ev) => {
-    let msg: { type?: string; build?: number; payload?: { sessionId?: string; delta?: string; ev?: StreamEvent; seq?: number; runId?: string; id?: string; appId?: string; mode?: string } }
+    let msg: { type?: string; build?: number; payload?: { sessionId?: string; delta?: string; ev?: StreamEvent; seq?: number; runId?: string; id?: string; appId?: string; mode?: string; reasoning?: string | null; agentModels?: Record<string, AgentModelOverrides> } }
     try {
       msg = JSON.parse(ev.data as string)
     } catch {
@@ -591,6 +605,15 @@ export function connectWs(): void {
             )
         }
       }
+      return
+    }
+    if (msg.type === "agent_settings_changed") {
+      if (msg.payload && "reasoning" in msg.payload) {
+        const reasoning = typeof msg.payload.reasoning === "string" ? msg.payload.reasoning : ""
+        prefs.set("agent-ui-reasoning", reasoning)
+        useAgent.setState({ reasoning })
+      }
+      if (msg.payload?.agentModels) useAgent.setState({ modelOverrides: msg.payload.agentModels, usage: null })
       return
     }
     if (msg.type === "connections_changed") {

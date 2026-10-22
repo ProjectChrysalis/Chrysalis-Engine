@@ -1,5 +1,12 @@
 // Spanish (es) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Agent defaults": "Valores del agente",
+  "Settings for": "Configuración para",
+  "Use agent defaults": "Usar valores del agente",
+
+  "Context window": "Ventana de contexto",
+  "Enter a positive whole number up to 1,000,000,000.": "Introduce un entero positivo de hasta 1.000.000.000.",
+
   "Type “{name}” to confirm.": "Escribe «{name}» para confirmar.",
   "Repository changes": "Cambios en el repositorio",
   "Local edits will be merged. App data stays safe.": "Las ediciones locales se fusionarán. Los datos de la app están a salvo.",
@@ -662,7 +669,7 @@ const dict = {
   "Search choices": "Buscar opciones",
   "Maximum": "Máximo",
   "Generation settings": "Ajustes de generación",
-  "Set values override app and agent requests. Leave blank to use their settings.": "Los valores definidos reemplazan los de las apps y el agente. Déjalos vacíos para usar sus ajustes.",
+  "Applies only to the built-in agent. Blank fields use defaults.": "Solo se aplica al agente integrado. Los campos vacíos usan los valores predeterminados.",
   "Output token limit": "Límite de tokens de salida",
   "Temperature": "Temperatura",
   "Top P": "Top P",
@@ -672,6 +679,12 @@ const dict = {
   "Supported values depend on your endpoint and model.": "Los valores admitidos dependen del endpoint y el modelo.",
   "Clear overrides": "Borrar ajustes personalizados",
   "Check the generation settings and their allowed ranges.": "Revisa los ajustes de generación y sus rangos permitidos.",
+  "Generation": "Generación",
+  "Tools": "Herramientas",
+  "Configure the built-in agent.": "Configura el agente integrado.",
+  "Advanced sampling": "Muestreo avanzado",
+  "Added to every agent conversation.": "Se añade a cada conversación con el agente.",
+  "Summarize older messages to make room in long sessions.": "Resume mensajes anteriores para dejar espacio en sesiones largas.",
 }
 
 export default dict

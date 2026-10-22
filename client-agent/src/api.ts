@@ -1,3 +1,4 @@
+import type { AgentModelOverrides } from "../../src/agent/model-settings.js"
 // Engine HTTP client. Cookie-authenticated (same-origin); errors surface as
 // readable messages, never "[object Object]".
 
@@ -174,7 +175,7 @@ export function listModels(): Promise<EngineModel[]> {
   return api<{ models: EngineModel[] }>("GET", "/v1/models").then((r) => r.models ?? [])
 }
 
-export function getSettings(): Promise<{ model: string | null; reasoning: string | null }> {
+export function getSettings(): Promise<{ model: string | null; reasoning: string | null; agentModels: Record<string, AgentModelOverrides> }> {
   return api("GET", "/v1/settings")
 }
 

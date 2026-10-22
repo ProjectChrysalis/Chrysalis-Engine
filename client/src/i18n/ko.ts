@@ -1,5 +1,12 @@
 // Korean (ko) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Agent defaults": "에이전트 기본값",
+  "Settings for": "설정 대상",
+  "Use agent defaults": "에이전트 기본값 사용",
+
+  "Context window": "컨텍스트 창",
+  "Enter a positive whole number up to 1,000,000,000.": "1,000,000,000 이하의 양의 정수를 입력하세요.",
+
   "Type “{name}” to confirm.": "확인하려면 “{name}”을(를) 입력하세요.",
   "Repository changes": "저장소 변경 사항",
   "Local edits will be merged. App data stays safe.": "로컬 편집 내용은 병합됩니다. 앱 데이터는 안전하게 유지됩니다.",
@@ -662,7 +669,7 @@ const dict = {
   "Search choices": "항목 검색",
   "Maximum": "최대",
   "Generation settings": "생성 설정",
-  "Set values override app and agent requests. Leave blank to use their settings.": "입력한 값은 앱과 에이전트의 설정을 덮어씁니다. 비워 두면 기존 설정을 사용합니다.",
+  "Applies only to the built-in agent. Blank fields use defaults.": "내장 에이전트에만 적용됩니다. 빈 필드는 기본값을 사용합니다.",
   "Output token limit": "출력 토큰 한도",
   "Temperature": "온도",
   "Top P": "Top P",
@@ -672,6 +679,12 @@ const dict = {
   "Supported values depend on your endpoint and model.": "지원하는 값은 엔드포인트와 모델에 따라 다릅니다.",
   "Clear overrides": "덮어쓰기 초기화",
   "Check the generation settings and their allowed ranges.": "생성 설정과 허용 범위를 확인하세요.",
+  "Generation": "생성",
+  "Tools": "도구",
+  "Configure the built-in agent.": "내장 에이전트를 설정합니다.",
+  "Advanced sampling": "고급 샘플링",
+  "Added to every agent conversation.": "모든 에이전트 대화에 추가됩니다.",
+  "Summarize older messages to make room in long sessions.": "긴 세션에서 이전 메시지를 요약해 공간을 확보합니다.",
 }
 
 export default dict

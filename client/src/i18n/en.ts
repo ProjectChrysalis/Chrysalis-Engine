@@ -2,9 +2,15 @@
 // {name} placeholders and falls back to the key itself, so a locale dictionary
 // only needs the entries it translates.
 const en = {
+  "Agent defaults": "",
+  "Settings for": "",
+  "Use agent defaults": "",
+
+  "Context window": "",
+  "Enter a positive whole number up to 1,000,000,000.": "",
   "Maximum": "",
   "Generation settings": "",
-  "Set values override app and agent requests. Leave blank to use their settings.": "",
+  "Applies only to the built-in agent. Blank fields use defaults.": "",
   "Output token limit": "",
   "Temperature": "",
   "Top P": "",
@@ -675,6 +681,12 @@ const en = {
   "Remove {name}": "",
   "Retry": "",
   "Search choices": "",
+  "Generation": "",
+  "Tools": "",
+  "Configure the built-in agent.": "",
+  "Advanced sampling": "",
+  "Added to every agent conversation.": "",
+  "Summarize older messages to make room in long sessions.": "",
 } as const
 
 export default en

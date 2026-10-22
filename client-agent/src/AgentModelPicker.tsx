@@ -8,7 +8,7 @@ import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from "@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { shortModelName } from "@/lib/utils"
 import { useAgent } from "./store"
-import { modelGroups, modelKey, readModelList, saveModelList, searchModels } from "./model-picker"
+import { modelGroups, modelKey, modelReasoning, readModelList, saveModelList, searchModels } from "./model-picker"
 
 const FAVORITES = "agent-model-favorites"
 const RECENT = "agent-model-recent"
@@ -17,6 +17,7 @@ export function AgentModelPicker() {
   const models = useAgent((s) => s.models)
   const modelsLoaded = useAgent((s) => s.modelsLoaded)
   const selected = useAgent((s) => s.model)
+  const modelOverrides = useAgent((s) => s.modelOverrides)
   const reasoning = useAgent((s) => s.reasoning)
   const setModel = useAgent((s) => s.setModel)
   const setReasoning = useAgent((s) => s.setReasoning)
@@ -28,11 +29,13 @@ export function AgentModelPicker() {
   const input = useRef<HTMLInputElement>(null)
   const popup = useRef<HTMLDivElement>(null)
   const model = models.find((m) => modelKey(m) === selected)
+  const contextWindow = (selected ? modelOverrides[selected]?.contextWindow : undefined) ?? model?.contextWindow
+  const effectiveReasoning = (selected ? modelOverrides[selected]?.generation?.reasoning : undefined) ?? reasoning
   const api = useAui()
   useEffect(() => {
     if (!selected) return
-    return api.modelContext.register({ getModelContext: () => ({ config: { modelName: selected, ...(reasoning ? { reasoningEffort: reasoning } : {}) } }) })
-  }, [api, selected, reasoning])
+    return api.modelContext.register({ getModelContext: () => ({ config: { modelName: selected, ...(effectiveReasoning ? { reasoningEffort: effectiveReasoning } : {}) } }) })
+  }, [api, selected, effectiveReasoning])
   const connections = useMemo(() => [...new Map(models.map((m) => [m.provider, m.connectionName ?? m.provider])).entries()].sort((a, b) => a[1].localeCompare(b[1])), [models])
   const filtered = useMemo(() => searchModels(models, query, connection), [models, query, connection])
   const groups = useMemo(() => modelGroups(filtered, selected, favorites, recent, !!query.trim()), [filtered, selected, favorites, recent, query])
@@ -99,10 +102,10 @@ export function AgentModelPicker() {
           </Command>
         </div>
         <div className="flex shrink-0 items-center justify-between gap-3 border-t px-4 py-3">
-          <div className="min-w-0"><div className="text-muted-foreground text-xs">{tr("Current model")}</div><div className="truncate text-xs font-medium" title={model?.label}>{model?.label ?? tr("None selected")}</div></div>
-          {model?.reasoning && model.reasoningLevels.length > 0 && <Select value={reasoning} onValueChange={(value) => { if (value !== null) setReasoning(value) }} items={model.reasoningLevels.map((value) => ({ value, label: reasoningLabel(value) }))}>
+          <div className="min-w-0"><div className="text-muted-foreground text-xs">{tr("Current model")}</div><div className="truncate text-xs font-medium" title={model?.label}>{model?.label ?? tr("None selected")}</div>{contextWindow ? <div className="text-muted-foreground text-xs tabular-nums">{tr("Context window")}: {contextWindow.toLocaleString()}</div> : null}</div>
+          {model?.reasoning && model.reasoningLevels.length > 0 && <Select value={modelReasoning(effectiveReasoning, model.reasoningLevels)} onValueChange={(value) => { if (value !== null) setReasoning(value) }} items={[{ value: "", label: tr("Use agent defaults") }, ...model.reasoningLevels.map((value) => ({ value, label: reasoningLabel(value) }))]}>
             <SelectTrigger className="h-8 w-auto shrink-0 text-xs" aria-label={tr("Reasoning effort")}><SelectValue /></SelectTrigger>
-            <SelectContent>{model.reasoningLevels.map((level) => <SelectItem key={level} value={level}>{reasoningLabel(level)}</SelectItem>)}</SelectContent>
+            <SelectContent><SelectItem value="">{tr("Use agent defaults")}</SelectItem>{model.reasoningLevels.map((level) => <SelectItem key={level} value={level}>{reasoningLabel(level)}</SelectItem>)}</SelectContent>
           </Select>}
         </div>
       </DialogContent>
@@ -111,6 +114,6 @@ export function AgentModelPicker() {
 }
 
 function reasoningLabel(level: string): string {
-  const key = ({ minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", off: "Off" } as const)[level as "minimal" | "low" | "medium" | "high" | "xhigh" | "off"];
+  const key = ({ minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Maximum", off: "Off" } as const)[level as "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "off"];
   return key ? tr(key) : level;
 }

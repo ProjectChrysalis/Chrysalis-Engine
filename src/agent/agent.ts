@@ -4,6 +4,7 @@
  * Sessions persist as JSONL run records (agent can read its own history);
  * resume reconstructs dialogue from past runs.
  */
+import { readAgentModels, readAgentGeneration } from "./generation.js";
 import { engineSkillsLoaded, readEngineSkillResource } from "./builtin-skills.js";
 import { readAppContext, writeAppContext, availableSkills, skillContext, skillLoadText, skillsHeld } from "./skills.js";
 import { inspectionTool, type AppInspection } from "./inspection.js";
@@ -405,7 +406,12 @@ export class UserAgent {
 
     // the user's context override is the model's window here too: it decides
     // when the session auto-compacts
-    const available = (await svc.models.getAvailable()).map((m) => svc.withOverride(m));
+    const profiles = readAgentModels(paths);
+    const available = (await svc.models.getAvailable()).map((m) => {
+      const model = svc.withOverride(m);
+      const contextWindow = profiles[`${m.provider}/${m.id}`]?.contextWindow;
+      return contextWindow ? { ...model, contextWindow } : model;
+    });
     if (available.length === 0) throw new Error("No models configured yet. Add one in Settings, API connections.");
     // Deterministic pick: request model → user settings default → instance
     // default → faux (tests) → sorted first.
@@ -420,12 +426,15 @@ export class UserAgent {
       [...available].sort((x, y) => (x.provider + "/" + x.id).localeCompare(y.provider + "/" + y.id))[0]!;
 
     const messages = loadSessionDialogue(sFile, model);
+    const ref = `${model.provider}/${model.id}`;
+    const generation = readAgentGeneration(paths, ref);
     // request level → user default → medium for reasoning-capable models,
     // clamped by pi-ai's clampThinkingLevel (walks the ladder to a supported one)
-    const level = clampThinkingLevel(
+    const requestedLevel = opts.reasoning ?? profiles[ref]?.generation?.reasoning ?? readUserReasoning(paths, model.reasoning === true);
+    const level = model.reasoning ? clampThinkingLevel(
       model as Parameters<typeof clampThinkingLevel>[0],
-      opts.reasoning ?? readUserReasoning(paths, model.reasoning === true),
-    );
+      requestedLevel,
+    ) : requestedLevel;
     // context budget: trim what is sent when it outgrows the window, and never
     // ask for more output than the window has left (see context-budget.ts)
     const budget: { force: boolean; halt?: string; planAccepted?: boolean } = { force: false };
@@ -508,8 +517,8 @@ export class UserAgent {
       },
       streamFn: (m, c, o) => {
         if (++modelSteps.value > 100) throw new Error("Model step limit reached. Start a focused run to continue.");
-        const maxTokens = clampMaxTokens(m, c, o?.maxTokens);
-        return svc.streamFn(m, c, maxTokens !== undefined ? { ...o, maxTokens } : o, sessionId);
+        const maxTokens = clampMaxTokens(m, c, generation.maxTokens ?? o?.maxTokens);
+        return svc.agentStreamFn(m, c, maxTokens !== undefined ? { ...o, maxTokens } : o, sessionId, { ...generation, reasoning: level });
       },
     });
     return new UserAgent(agent, sessionId, sFile, budget, () => { failures.clear(); toolCount.value = 0; modelSteps.value = 0; delete budget.halt; delete budget.planAccepted; });

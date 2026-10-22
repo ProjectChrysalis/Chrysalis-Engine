@@ -1,5 +1,12 @@
 // Japanese (ja) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Agent defaults": "エージェントの既定値",
+  "Settings for": "設定対象",
+  "Use agent defaults": "エージェントの既定値を使う",
+
+  "Context window": "コンテキストウィンドウ",
+  "Enter a positive whole number up to 1,000,000,000.": "1,000,000,000以下の正の整数を入力してください。",
+
   "Type “{name}” to confirm.": "確認のため「{name}」と入力してください。",
   "Repository changes": "リポジトリの変更",
   "Local edits will be merged. App data stays safe.": "ローカルの編集はマージされます。アプリのデータは保持されます。",
@@ -662,7 +669,7 @@ const dict = {
   "Search choices": "項目を検索",
   "Maximum": "最大",
   "Generation settings": "生成設定",
-  "Set values override app and agent requests. Leave blank to use their settings.": "設定した値はアプリとエージェントの指定を上書きします。空欄では元の設定を使います。",
+  "Applies only to the built-in agent. Blank fields use defaults.": "組み込みエージェントのみに適用されます。空欄では既定値を使います。",
   "Output token limit": "出力トークン上限",
   "Temperature": "温度",
   "Top P": "Top P",
@@ -672,6 +679,12 @@ const dict = {
   "Supported values depend on your endpoint and model.": "対応する値はエンドポイントとモデルによって異なります。",
   "Clear overrides": "上書きを解除",
   "Check the generation settings and their allowed ranges.": "生成設定と指定可能な範囲を確認してください。",
+  "Generation": "生成",
+  "Tools": "ツール",
+  "Configure the built-in agent.": "組み込みエージェントを設定します。",
+  "Advanced sampling": "詳細なサンプリング設定",
+  "Added to every agent conversation.": "エージェントとのすべての会話に追加されます。",
+  "Summarize older messages to make room in long sessions.": "長いセッションで古いメッセージを要約し、空きを確保します。",
 }
 
 export default dict

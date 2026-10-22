@@ -1,6 +1,6 @@
 import { expect, it } from "bun:test"
 import type { EngineModel } from "../client-agent/src/api.js"
-import { modelGroups, modelKey, searchModels } from "../client-agent/src/model-picker.js"
+import { modelGroups, modelKey, modelReasoning, searchModels } from "../client-agent/src/model-picker.js"
 
 const model = (modelId: string, label: string, provider = "router", connectionName = "OpenRouter"): EngineModel => ({ provider, connectionName, modelId, label, reasoning: false, reasoningLevels: [], contextWindow: null })
 
@@ -26,4 +26,11 @@ it("keeps current, favorite, and recent models handy without duplicate or stale 
   expect(groups.map((group) => group.title)).toEqual(["Current", "Favorites", "Recent", "All models"])
   expect(groups.flatMap((group) => group.models)).toEqual(models)
   expect(modelGroups(models, "router/a", ["router/b"], [], true)).toEqual([{ title: "Results", models }])
+})
+
+it("adapts reasoning for a model without discarding the requested effort", () => {
+  expect(modelReasoning("max", ["off", "low", "medium", "high"])).toBe("high")
+  expect(modelReasoning("minimal", ["off", "low", "high"])).toBe("low")
+  expect(modelReasoning("", ["off", "low", "medium", "high"])).toBe("medium")
+  expect(modelReasoning("off", ["off", "high"])).toBe("off")
 })

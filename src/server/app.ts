@@ -1,5 +1,7 @@
-import { validateGenerationSettings, type GenerationSettings } from "../providers/generation-settings.js";
 import { engineSkills, engineSkillsLoaded, readEngineSkillResource } from "../agent/builtin-skills.js";
+import { readAgentModels, readAgentGeneration } from "../agent/generation.js";
+import { validAgentModelOverrides, type AgentModelOverrides } from "../agent/model-settings.js";
+import { validateGenerationSettings } from "../providers/generation-settings.js";
 import { recordChange, withMutation } from '../agent/changes.js';
 import { recoverRun } from "../agent/journal.js";
 import type { AppInspection } from "../agent/inspection.js";
@@ -638,6 +640,11 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     signal?: AbortSignal,
   ): Promise<UserAgent> => {
     const key = sessionId ? `${u.username}:${sessionId}:${model ?? ""}:${reasoning ?? ""}:${mode}` : undefined;
+    // A different model or mode may have appended to the same transcript.
+    // Rebuild on return so a cached agent cannot replay an older conversation.
+    if (sessionId) for (const cached of agentInstances.keys()) {
+      if (cached.startsWith(`${u.username}:${sessionId}:`) && cached !== key) agentInstances.delete(cached);
+    }
     let a = key ? agentInstances.get(key) : undefined;
     // The instruction files ride the system prompt, which is snapshotted when
     // the agent is made. Editing a note or an AGENTS.md mid-conversation and
@@ -1772,6 +1779,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       storeSeen: typeof settings.storeSeen === "string" ? settings.storeSeen : null,
       model: typeof settings.model === "string" ? settings.model : null,
       reasoning: isReasoningLevel(settings.reasoning) ? settings.reasoning : null,
+      agentGeneration: readAgentGeneration(p),
+      agentModels: readAgentModels(p),
       autoCompact:
         settings.autoCompact === true || settings.autoCompact === false || settings.autoCompact === null
           ? settings.autoCompact
@@ -1784,10 +1793,20 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   app.put("/v1/settings", async (c) => {
     const u = c.get("user");
     const p = c.get("paths");
-    const body = await c.req.json<{ launchDefault?: string | null; storeSeen?: string; model?: string | null; reasoning?: string | null; autoCompact?: boolean | number | null }>().catch(() => null) ?? {};
-    if (!("launchDefault" in body) && !("storeSeen" in body) && !("model" in body) && !("reasoning" in body) && !("autoCompact" in body)) {
-      return c.json({ error: "launchDefault, storeSeen, model, reasoning or autoCompact required" }, 400);
+    const body = await c.req.json<{ launchDefault?: string | null; storeSeen?: string; model?: string | null; reasoning?: string | null; autoCompact?: boolean | number | null; agentGeneration?: unknown; agentModel?: { ref?: unknown; settings?: unknown } }>().catch(() => null) ?? {};
+    if (!("launchDefault" in body) && !("storeSeen" in body) && !("model" in body) && !("reasoning" in body) && !("autoCompact" in body) && !("agentGeneration" in body) && !("agentModel" in body)) {
+      return c.json({ error: "launchDefault, storeSeen, model, reasoning, autoCompact, agentGeneration or agentModel required" }, 400);
     }
+    if ("agentModel" in body) {
+      const value = body.agentModel;
+      if (!value || typeof value.ref !== "string" || !value.ref.includes("/") || value.ref.length > 400 ||
+        !(value.settings === null || validAgentModelOverrides(value.settings))) {
+        return c.json({ error: "agentModel needs a model ref and valid settings, or null to reset" }, 400);
+      }
+    }
+    const generation = validateGenerationSettings(body.agentGeneration ?? null);
+    if (!generation.ok) return c.json({ error: generation.error }, 400);
+    if (generation.value?.reasoning !== undefined) return c.json({ error: "Set the agent thinking level with reasoning" }, 400);
     if (body.storeSeen !== undefined && !(typeof body.storeSeen === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.storeSeen))) {
       return c.json({ error: "storeSeen must be a date (YYYY-MM-DD)" }, 400);
     }
@@ -1816,6 +1835,17 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     if (body.storeSeen !== undefined) settings.storeSeen = body.storeSeen;
     if (body.model !== undefined) settings.model = body.model;
     if (body.reasoning !== undefined) settings.reasoning = body.reasoning;
+    if (body.agentGeneration !== undefined) {
+      if (generation.value) settings.agentGeneration = generation.value;
+      else delete settings.agentGeneration;
+    }
+    if (body.agentModel) {
+      const profiles = readAgentModels(p);
+      const ref = body.agentModel.ref as string;
+      if (body.agentModel.settings === null || !Object.keys(body.agentModel.settings as object).length) delete profiles[ref];
+      else profiles[ref] = body.agentModel.settings as AgentModelOverrides;
+      settings.agentModels = profiles;
+    }
     if (body.autoCompact !== undefined) settings.autoCompact = body.autoCompact;
     fs.writeFileSync(p.settings, JSON.stringify(settings, null, 2) + "\n");
     const changes: string[] = [];
@@ -1823,9 +1853,15 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     if (body.storeSeen !== undefined) changes.push("store seen");
     if (body.model !== undefined) changes.push("default model");
     if (body.reasoning !== undefined) changes.push("thinking level");
+    if (body.agentGeneration !== undefined) changes.push("agent generation");
+    if (body.agentModel) changes.push("agent model settings");
     if (body.autoCompact !== undefined) changes.push("auto-compact");
     await git.commitAll(p.root, u.username, `settings: ${changes.join(", ")}`).catch(() => undefined);
     evictAgents(u.username); // agents snapshot model + reasoning at creation
+    if (body.reasoning !== undefined || body.agentModel) bus.emit(u.username, "agent_settings_changed", {
+      ...(body.reasoning !== undefined ? { reasoning: body.reasoning } : {}),
+      ...(body.agentModel ? { agentModels: readAgentModels(p) } : {}),
+    });
     return c.json({ ok: true });
   });
 
@@ -1843,7 +1879,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const p = c.get("paths");
     const auth = readAuth(p);
     const curated = new Set(curatedProviders().map((x) => x.id));
-    const byId = new Map<string, { id: string; label: string; kind: string; generationApis: string[]; baseUrl: string | null; apiKeyAuth: boolean; oauth: boolean; oauthLabel: string | null; signIn: boolean; signInLabel: string | null }>();
+    const byId = new Map<string, { id: string; label: string; kind: string; baseUrl: string | null; apiKeyAuth: boolean; oauth: boolean; oauthLabel: string | null; signIn: boolean; signInLabel: string | null }>();
     for (const provider of [...builtinProviders(), ...curatedProviders(), ...loadCustomProviders(p.root + "/providers.json")]) {
       // radius OAuth needs gateway options we don't expose yet
       const oauth = provider.auth?.oauth && provider.id !== "radius" ? provider.auth.oauth : undefined;
@@ -1860,7 +1896,6 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       byId.set(provider.id, {
         id: provider.id,
         label: provider.name ?? provider.id,
-        generationApis: [...new Set(provider.getModels().map((model) => model.api))],
         kind: curated.has(provider.id) ? "curated" : connectable ? "builtin" : "needs-setup",
         baseUrl: provider.baseUrl ?? null,
         apiKeyAuth: !!provider.auth?.apiKey,
@@ -2612,7 +2647,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       // automatic limit needs the model's real window; a model whose size is
       // unknown only compacts at a threshold the user set.
       let autoCompacted = false;
-      const autoCompact = readSetting(u.username, "autoCompact", true);
+      const autoCompact = readAgentModels(paths)[agent.model.ref]?.autoCompact ?? readSetting(u.username, "autoCompact", true);
       const limit =
         autoCompact === true && result.contextWindow
           ? Math.floor(result.contextWindow * 0.8)
@@ -2982,7 +3017,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   app.patch("/v1/settings/connections/:id", async (c) => {
     const u = c.get("user");
     const p = c.get("paths");
-    const body = await c.req.json<{ name?: string; baseUrl?: string; key?: string; models?: unknown; promptFormat?: unknown; promptFormatCustom?: unknown; openRouterRouting?: unknown; generation?: unknown }>().catch(() => null) ?? {};
+    const body = await c.req.json<{ name?: string; baseUrl?: string; key?: string; models?: unknown; promptFormat?: unknown; promptFormatCustom?: unknown; openRouterRouting?: unknown }>().catch(() => null) ?? {};
     let baseUrl: string | undefined;
     if (body.baseUrl !== undefined) {
       const check = validateConnectionInput({ name: "x", api: "openai-completions", baseUrl: body.baseUrl });
@@ -3002,14 +3037,6 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       if (!check.ok) return c.json({ error: check.error }, 400);
       format = check.value;
     }
-    let generation: { generation?: GenerationSettings | null } = {};
-    if (body.generation !== undefined) {
-      const checked = validateGenerationSettings(body.generation);
-      if (!checked.ok) return c.json({ error: checked.error }, 400);
-      const def = readConnections(p).connections[c.req.param("id")];
-      if (!def) return c.json({ error: "connection not found" }, 404);
-      generation = { generation: checked.value };
-    }
     let routing: { openRouterRouting?: OpenRouterRouting | null } = {};
     if (body.openRouterRouting !== undefined) {
       const checked = validateOpenRouterRouting(body.openRouterRouting);
@@ -3028,7 +3055,6 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       ...(models !== undefined ? { models } : {}),
       ...format,
       ...routing,
-      ...generation,
     });
     if (!updated) return c.json({ error: "connection not found" }, 404);
     connectionsMutated(u, updated.id);

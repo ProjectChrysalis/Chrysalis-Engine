@@ -1,5 +1,12 @@
 // Turkish (tr) shell dictionary. Keys are the English source strings; values are the translation.
 const dict = {
+  "Agent defaults": "Ajan varsayılanları",
+  "Settings for": "Ayarların hedefi",
+  "Use agent defaults": "Ajan varsayılanlarını kullan",
+
+  "Context window": "Bağlam penceresi",
+  "Enter a positive whole number up to 1,000,000,000.": "1.000.000.000’a kadar pozitif bir tam sayı girin.",
+
   "Type “{name}” to confirm.": "Onaylamak için “{name}” yaz.",
   "Repository changes": "Depo değişiklikleri",
   "Local edits will be merged. App data stays safe.": "Yerel düzenlemeler birleştirilecek. Uygulama verileri güvende kalır.",
@@ -662,7 +669,7 @@ const dict = {
   "Search choices": "Seçeneklerde ara",
   "Maximum": "Maksimum",
   "Generation settings": "Üretim ayarları",
-  "Set values override app and agent requests. Leave blank to use their settings.": "Girilen değerler uygulama ve aracı ayarlarını geçersiz kılar. Kendi ayarlarını kullanmak için boş bırakın.",
+  "Applies only to the built-in agent. Blank fields use defaults.": "Yalnızca yerleşik aracıya uygulanır. Boş alanlar varsayılanları kullanır.",
   "Output token limit": "Çıktı token sınırı",
   "Temperature": "Sıcaklık",
   "Top P": "Top P",
@@ -672,6 +679,12 @@ const dict = {
   "Supported values depend on your endpoint and model.": "Desteklenen değerler uç noktaya ve modele bağlıdır.",
   "Clear overrides": "Geçersiz kılmaları temizle",
   "Check the generation settings and their allowed ranges.": "Üretim ayarlarını ve izin verilen aralıkları kontrol edin.",
+  "Generation": "Üretim",
+  "Tools": "Araçlar",
+  "Configure the built-in agent.": "Yerleşik aracıyı yapılandırın.",
+  "Advanced sampling": "Gelişmiş örnekleme",
+  "Added to every agent conversation.": "Her aracı konuşmasına eklenir.",
+  "Summarize older messages to make room in long sessions.": "Uzun oturumlarda yer açmak için eski mesajları özetleyin.",
 }
 
 export default dict
