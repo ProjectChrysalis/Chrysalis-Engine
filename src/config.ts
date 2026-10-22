@@ -43,6 +43,8 @@ export interface InstanceConfig {
   };
   /** Model the agent uses when a user has not picked one ("provider/model"). */
   defaultModel: string | null;
+  /** The Google sign-in Drive backups use; null is the one Chrysalis ships. */
+  google: { clientId: string | null; clientSecret: string | null };
 }
 
 /** Where the Store's list of apps comes from unless config.yaml says otherwise. */
@@ -61,6 +63,7 @@ export function defaultInstanceConfig(): InstanceConfig {
     apps: { packageDownloads: true, store: DEFAULT_STORE_URL },
     agent: { shell: sandbox.provider !== "off", shellTimeoutSeconds: sandbox.timeoutMs / 1000 },
     defaultModel: null,
+    google: { clientId: null, clientSecret: null },
   };
 }
 
@@ -76,7 +79,7 @@ export function sandboxConfigOf(cfg: InstanceConfig): SandboxConfig {
 
 // ---------- schema ----------
 
-type Kind = "string" | "path" | "port" | "bool" | "hosts" | "seconds" | "model" | "address" | "feed";
+type Kind = "string" | "text" | "path" | "port" | "bool" | "hosts" | "seconds" | "model" | "address" | "feed";
 
 interface Setting {
   key: string;
@@ -99,6 +102,8 @@ export const SETTINGS: readonly Setting[] = [
   { key: "agent.shell", kind: "bool" },
   { key: "agent.shellTimeoutSeconds", kind: "seconds" },
   { key: "defaultModel", kind: "model" },
+  { key: "google.clientId", kind: "text" },
+  { key: "google.clientSecret", kind: "text" },
 ];
 
 const SETTING_KEYS = new Set(SETTINGS.map((s) => s.key));
@@ -163,6 +168,10 @@ function coerce(kind: Kind, raw: unknown, textual: boolean): { value: unknown } 
     case "path":
       if (typeof text === "string" && text.length > 0) return { value: text };
       return { error: "must be a non-empty text value" };
+    case "text":
+      if (text === null || text === "" || (textual && text === "null")) return { value: null };
+      if (typeof text === "string") return { value: text };
+      return { error: "must be a text value or null" };
     case "address":
       if (typeof text === "string" && (text === "auto" || /^[0-9a-f.:]+$/i.test(text))) return { value: text };
       return { error: 'must be "auto" or an IP address' };
@@ -294,6 +303,16 @@ agent:
 # Model the agent uses when an account has not chosen one, as
 # "provider/model". null picks the first available model.
 defaultModel: ${c.defaultModel === null ? "null" : yamlString(c.defaultModel)}
+
+# ---- Google Drive backups ----
+
+# A Google OAuth client of your own for Drive backups: a "Web application"
+# client that redirects to
+#   https://projectchrysalis.github.io/assets/google-drive.html
+# null uses the one Chrysalis ships.
+google:
+  clientId: ${c.google.clientId === null ? "null" : yamlString(c.google.clientId)}
+  clientSecret: ${c.google.clientSecret === null ? "null" : yamlString(c.google.clientSecret)}
 `;
 }
 

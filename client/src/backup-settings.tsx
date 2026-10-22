@@ -3,7 +3,7 @@
 // pulled by another device with a one-time code.
 import { useEffect, useRef, useState } from "react"
 import { renderSVG } from "uqr"
-import { backupApi, type AccountBackup, type BackupJob, type TransferOffer, type TransferPeek } from "./api"
+import { backupApi, type AccountBackup, type BackupJob, type DriveBackup, type DriveStatus, type TransferOffer, type TransferPeek } from "./api"
 import { tr } from "./i18n/index"
 import { Pane, inputClass } from "./settings"
 import { CopyButton, Section, Toggle } from "./server-settings"
@@ -33,6 +33,8 @@ function jobText(job: BackupJob): string {
   if (job.phase === "done") return job.kind === "backup" ? tr("Backup done") : tr("Restored. Reloading…")
   if (job.phase === "receiving") return [tr("Receiving"), progress].filter(Boolean).join(" ")
   if (job.phase === "restoring") return tr("Restoring…")
+  if (job.phase === "uploading") return [tr("Copying to Google Drive"), progress].filter(Boolean).join(" ")
+  if (job.phase === "downloading") return [tr("Downloading from Google Drive"), progress].filter(Boolean).join(" ")
   return [tr("Backing up"), progress].filter(Boolean).join(" ")
 }
 
@@ -322,6 +324,111 @@ function BackupRow(props: { backup: AccountBackup; busy: boolean; onRestore: () 
   )
 }
 
+/** What the trip to Google's sign-in page came back with (…/#drive=…). */
+function driveOutcome(): string | null {
+  const m = /(?:^#|&)drive=([^&]*)/.exec(window.location.hash)
+  if (!m) return null
+  history.replaceState(null, "", window.location.pathname + window.location.search)
+  return decodeURIComponent(m[1] ?? "")
+}
+
+function DriveRow(props: { backup: DriveBackup; me: string; busy: boolean; onRestore: () => void }) {
+  const [confirm, setConfirm] = useState(false)
+  const b = props.backup
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg border border-line px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex min-w-0 flex-1 basis-48 flex-col">
+          <span className="truncate text-13 text-ink">{new Date(b.createdAt).toLocaleString()}</span>
+          <span className="text-12 text-ink-muted">
+            {formatBytes(b.bytes)}
+            {b.from && b.from !== props.me ? ` · ${tr("from {user}", { user: b.from })}` : ""}
+          </span>
+        </div>
+        <Button variant="neutral" size="small" disabled={props.busy} onClick={() => setConfirm(!confirm)}>{tr("Restore")}</Button>
+      </div>
+      {confirm ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="min-w-0 flex-1 basis-48 text-12 text-ink-muted">{tr("Everything in your account here is replaced. A backup of it is kept on this device first.")}</span>
+          <Button variant="danger" size="small" onClick={() => { setConfirm(false); props.onRestore() }}>{tr("Replace my account")}</Button>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function DriveSection(props: { drive: DriveStatus; me: string; busy: boolean; act: (fn: () => Promise<unknown>) => Promise<void>; onJob: (job: BackupJob) => void }) {
+  const [outcome] = useState(driveOutcome)
+  const [list, setList] = useState<DriveBackup[] | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState("")
+  const d = props.drive
+  const connect = async () => {
+    setErr("")
+    try {
+      window.location.assign((await backupApi.driveConnect()).url)
+    } catch (e) {
+      setErr((e as Error).message ?? String(e))
+    }
+  }
+  const load = async () => {
+    setErr("")
+    setLoading(true)
+    try {
+      setList(await backupApi.driveBackups())
+    } catch (e) {
+      setErr((e as Error).message ?? String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+  const note =
+    outcome === null || outcome === "cancelled" ? null :
+    outcome === "connected" ? <p className="text-12 text-ink">{tr("Google Drive is connected. Your first backup is on its way there.")}</p> :
+    <p className="text-12 text-danger">{outcome === "failed" ? tr("Connecting Google Drive failed. Try again.") : outcome}</p>
+  if (!d.available) return <p className="text-12 text-ink-muted">{tr("Google Drive is not set up on this server.")}</p>
+  if (!d.connected) {
+    return (
+      <div className="flex flex-col gap-2.5">
+        {note}
+        <p className="text-12 leading-4 text-ink-muted">{tr("Every backup also goes to your Google Drive, so you can restore it on any device.")}</p>
+        <div>
+          <Button variant="primary" size="small" onClick={() => void connect()}>{tr("Connect Google Drive")}</Button>
+        </div>
+        {err ? <p className="text-12 text-danger">{err}</p> : null}
+      </div>
+    )
+  }
+  return (
+    <div className="flex flex-col gap-2.5">
+      {note}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="min-w-0 flex-1 basis-48 truncate text-13 text-ink">{d.email ? tr("Connected as {email}", { email: d.email }) : tr("Connected")}</span>
+        <Button variant="ghost" size="small" disabled={props.busy} onClick={() => void props.act(() => backupApi.driveDisconnect())}>{tr("Disconnect")}</Button>
+      </div>
+      {d.last ? (
+        d.last.error
+          ? <p className="text-12 text-danger">{tr("Last copy to Drive failed: {error}", { error: d.last.error })}</p>
+          : <p className="text-12 text-ink-muted">{tr("Last copied {when}", { when: new Date(d.last.at).toLocaleString() })}</p>
+      ) : null}
+      <p className="text-12 text-ink-muted">{tr("Drive keeps the 2 newest daily copies. API keys and sign-ins are not copied.")}</p>
+      <div>
+        <Button variant="neutral" size="small" disabled={loading} onClick={() => void load()}>{list ? tr("Refresh") : tr("Show backups in Drive")}</Button>
+      </div>
+      {list ? (
+        list.length ? (
+          <div className="flex flex-col gap-1.5">
+            {list.map((b) => (
+              <DriveRow key={b.id} backup={b} me={props.me} busy={props.busy} onRestore={() => void props.act(async () => props.onJob((await backupApi.driveRestore(b.id)).job))} />
+            ))}
+          </div>
+        ) : <p className="text-12 text-ink-muted">{tr("No backups in Drive yet.")}</p>
+      ) : null}
+      {err ? <p className="text-12 text-danger">{err}</p> : null}
+    </div>
+  )
+}
+
 export function BackupsTab(props: { me: Me }) {
   const state = useResource(() => backupApi.state())
   const [mode, setMode] = useState<"send" | "receive">("send")
@@ -373,6 +480,12 @@ export function BackupsTab(props: { me: Me }) {
         {job ? <Progress job={job} /> : null}
         {uploading ? <Progress job={{ kind: "restore", phase: "receiving", done: uploading.sent, total: uploading.total }} /> : null}
 
+        {d ? (
+          <Section title={tr("Google Drive")}>
+            <DriveSection drive={d.drive} me={props.me.username} busy={busy} act={act} onJob={(j) => state.mutate({ ...d, job: j })} />
+          </Section>
+        ) : null}
+
         <Section title={tr("Move to another device")}>
           <div className="flex gap-1.5">
             <Button variant={mode === "send" ? "contrast" : "neutral"} size="small" onClick={() => setMode("send")}>{tr("Send")}</Button>
@@ -395,7 +508,7 @@ export function BackupsTab(props: { me: Me }) {
                 onChange={(auto) => void act(() => backupApi.settings(auto, d.settings.keep))}
               />
               <div className="flex items-center gap-2 pl-6">
-                <span className="text-13 text-ink-muted">{tr("Keep")}</span>
+                <span className="text-13 text-ink-muted">{tr("Daily backups to keep")}</span>
                 <select
                   className="rounded-lg border border-line bg-panel px-2 py-1 text-13 text-ink"
                   value={d.settings.keep}
@@ -407,6 +520,7 @@ export function BackupsTab(props: { me: Me }) {
                   ))}
                 </select>
               </div>
+              <p className="pl-6 text-12 text-ink-muted">{tr("When there are more, the oldest is deleted. Backups you make with Back up now stay until you delete them.")}</p>
               {d.autoError ? <p className="pl-6 text-12 text-danger">{tr("Last automatic backup failed: {error}", { error: d.autoError })}</p> : null}
               <div className="flex flex-wrap items-center gap-2">
                 <Button variant="primary" size="small" disabled={busy} onClick={() => void act(() => backupApi.create())}>{tr("Back up now")}</Button>

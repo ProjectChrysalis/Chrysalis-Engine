@@ -20,6 +20,7 @@ import { ENGINE_VERSION, INSTALL_KIND, IN_CONTAINER, resolveHomeDir } from "./in
 import { UserService } from "./users.js";
 import { SessionService } from "./sessions.js";
 import { runAutoBackups } from "./account-backup.js";
+import { GoogleDrive, googleClientOf } from "./google-drive.js";
 import { bootstrapUserDir, ensureGitignoreEntries, ensureNotesDir, ensureWorkspaceAgentsMd, migrateConnectionsIntoDataRoot, migrateCredentialsIntoDataRoot, migrateMcpIntoDataRoot, migrateSpeechIntoDataRoot, migrateWebSearchPreset, userPaths } from "./paths.js";
 import { initRepo, untrackBoundary, commitAll as gitCommitAll, commitPaths as gitCommitPaths } from "./git.js";
 import { renameAppDir } from "./apps/manager.js";
@@ -675,7 +676,8 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
     await stopServing();
     runReplacement({ dataDir });
   };
-  const app = buildApp({ users, sessions, config, dataDir, bus, sandbox, instance, setupToken, settings, restart, services });
+  const drive = new GoogleDrive({ dataDir, client: googleClientOf(config) });
+  const app = buildApp({ users, sessions, config, dataDir, bus, sandbox, instance, setupToken, settings, restart, services, drive });
   bus.attach(users, sessions);
 
   listener = new Listener({ homeDir, bus, handle: (req, peerAddress) => app.fetch(req, { peerAddress }) });
@@ -744,7 +746,10 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
 
   // daily automatic backups (account-backup.ts): checked a few minutes
   // after start, then every hour; each account is backed up once a day
-  const autoBackups = () => void runAutoBackups(dataDir, users.list().map((u) => u.username)).catch((e) => log.warn(`[backups] ${(e as Error).message}`));
+  const toDrive = async (username: string, made: Parameters<GoogleDrive["upload"]>[1]) => {
+    if (drive.connected(username)) await drive.upload(username, made);
+  };
+  const autoBackups = () => void runAutoBackups(dataDir, users.list().map((u) => u.username), toDrive).catch((e) => log.warn(`[backups] ${(e as Error).message}`));
   setTimeout(autoBackups, 5 * 60 * 1000).unref();
   setInterval(autoBackups, 60 * 60 * 1000).unref();
 

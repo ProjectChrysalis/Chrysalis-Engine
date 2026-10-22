@@ -34,6 +34,7 @@ import {
   incomingDir, listBackups, liveSources, readAutoError, readBackupSettings, restoreAccount, stageBackup, startJob, tarStream, writeBackupSettings,
   type BackupJob,
 } from "../account-backup.js";
+import { GoogleDrive, googleClientOf } from "../google-drive.js";
 import { engineUrls } from "./listen.js";
 import type { UserService, UserRecord } from "../users.js";
 import type { SessionService } from "../sessions.js";
@@ -116,6 +117,8 @@ export interface AppDeps {
   firewall?: { host: FirewallHost; spawn?: (argv: string[]) => Promise<{ code: number; err: string }> };
   /** Programs run for service apps (constructed here when absent). */
   services?: ServiceManager;
+  /** Backups in Google Drive (constructed from config when absent). */
+  drive?: GoogleDrive;
 }
 
 export const SESSION_COOKIE = "chrysalis_session";
@@ -256,6 +259,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   const { users, sessions, config, dataDir, bus } = deps;
   initNetTokens(dataDir);
   const sandbox = deps.sandbox ?? createSandbox(sandboxConfigOf(config), bus);
+  const drive = deps.drive ?? new GoogleDrive({ dataDir, client: googleClientOf(config) });
   const services = deps.services ?? new ServiceManager({ config, sessionUser: sessionUserOf(sessions, users), sessionCookie: SESSION_COOKIE });
   const officialSources = deps.officialSources ?? OFFICIAL_SOURCES;
   /** Official = this engine installed the app from a maintainers' repository.
@@ -5550,6 +5554,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
       autoError: readAutoError(dataDir, username),
       job: currentJob(username),
       free,
+      drive: drive.status(username),
     });
   });
   app.put("/v1/account/backups/settings", async (c) => {
@@ -5563,7 +5568,12 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
   app.post("/v1/account/backups", (c) => {
     const username = c.get("user").username;
     try {
-      return c.json({ job: startJob(username, "backup", async (job) => void (await createBackup(dataDir, username, "manual", job))) }, 202);
+      return c.json({
+        job: startJob(username, "backup", async (job) => {
+          const made = await createBackup(dataDir, username, "manual", job);
+          if (made && drive.connected(username)) await drive.upload(username, made, job);
+        }),
+      }, 202);
     } catch (e) {
       return backupError(c, e);
     }
@@ -5639,27 +5649,97 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
     fs.appendFileSync(file, body.bytes);
     return c.json({ uploaded: have + body.bytes.length });
   });
+  /** Unpack a backup file and restore the account from it; the file goes. */
+  const restoreTar = async (u: UserRecord, file: string, job: BackupJob): Promise<void> => {
+    const staged = incomingDir(dataDir, u.username);
+    try {
+      job.phase = "restoring";
+      job.done = 0;
+      job.total = fs.statSync(file).size;
+      await extractAccountTar(Bun.file(file).stream(), staged, { maxBytes: ACCOUNT_MAX_BYTES, job });
+    } catch (e) {
+      fs.rmSync(staged, { recursive: true, force: true });
+      throw e;
+    } finally {
+      fs.rmSync(file, { force: true });
+    }
+    await restoreInto(u, staged, false, job);
+  };
+
+  // ---------- Google Drive ----------
+  app.post("/v1/account/drive/connect", async (c) => {
+    const body = await c.req.json<{ origin?: unknown }>().catch(() => ({}) as { origin?: unknown });
+    if (typeof body.origin !== "string" || !/^https?:\/\/[^\s/?#]+$/.test(body.origin)) return c.json({ error: "invalid origin" }, 400);
+    try {
+      return c.json({ url: drive.begin(c.get("user").username, body.origin) });
+    } catch (e) {
+      return backupError(c, e);
+    }
+  });
+  // Google's page sends the browser here through the relay page; the shell
+  // then opens Settings > Backups and says how it went
+  app.get("/v1/account/drive/callback", async (c) => {
+    const code = c.req.query("code");
+    const state = c.req.query("state");
+    let outcome = "connected";
+    if (!code || !state) outcome = c.req.query("error") === "access_denied" ? "cancelled" : "failed";
+    else {
+      try {
+        const username = c.get("user").username;
+        await drive.finish(username, state, code);
+        // the first copy goes up now rather than with tomorrow's backup
+        try {
+          startJob(username, "backup", async (job) => {
+            const made = (await createBackup(dataDir, username, "auto", job)) ?? listBackups(dataDir, username)[0];
+            if (made) await drive.upload(username, made, job);
+          });
+        } catch { /* a backup or restore is running; the next backup uploads */ }
+      } catch (e) {
+        outcome = (e as Error).message;
+      }
+    }
+    return c.redirect(`/#drive=${encodeURIComponent(outcome)}`, 302);
+  });
+  app.delete("/v1/account/drive", async (c) => {
+    await drive.disconnect(c.get("user").username);
+    return c.json({ ok: true });
+  });
+  app.get("/v1/account/drive/backups", async (c) => {
+    try {
+      return c.json({ backups: await drive.list(c.get("user").username) });
+    } catch (e) {
+      return backupError(c, e);
+    }
+  });
+  app.post("/v1/account/drive/backups/:id/restore", (c) => {
+    const u = c.get("user");
+    const id = c.req.param("id");
+    try {
+      return c.json({
+        job: startJob(u.username, "restore", async (job) => {
+          const file = uploadFile(u.username, nodeCrypto.randomBytes(16).toString("hex"));
+          fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+          try {
+            await drive.download(u.username, id, file, job);
+          } catch (e) {
+            fs.rmSync(file, { force: true });
+            throw e;
+          }
+          await restoreTar(u, file, job);
+        }),
+      }, 202);
+    } catch (e) {
+      return backupError(c, e);
+    }
+  });
+
   app.post("/v1/account/import/:id/finish", (c) => {
     const u = c.get("user");
     const id = c.req.param("id");
     if (!ACCOUNT_UPLOAD.test(id) || !fs.existsSync(uploadFile(u.username, id))) return c.json({ error: "the upload expired: choose the file again" }, 404);
     const file = uploadFile(u.username, id);
     try {
-      return c.json({
-        job: startJob(u.username, "restore", async (job) => {
-          const staged = incomingDir(dataDir, u.username);
-          try {
-            job.total = fs.statSync(file).size;
-            await extractAccountTar(Bun.file(file).stream(), staged, { maxBytes: ACCOUNT_MAX_BYTES, job });
-          } catch (e) {
-            fs.rmSync(staged, { recursive: true, force: true });
-            throw e;
-          } finally {
-            fs.rmSync(file, { force: true });
-          }
-          await restoreInto(u, staged, false, job);
-        }),
-      }, 202);
+      return c.json({ job: startJob(u.username, "restore", (job) => restoreTar(u, file, job)) }, 202);
     } catch (e) {
       return backupError(c, e);
     }

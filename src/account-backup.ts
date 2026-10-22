@@ -52,7 +52,7 @@ export interface BackupSettings {
 
 export interface BackupJob {
   kind: "backup" | "restore" | "receive";
-  phase: "copying" | "receiving" | "restoring" | "done" | "failed";
+  phase: "copying" | "uploading" | "downloading" | "receiving" | "restoring" | "done" | "failed";
   done: number;
   total: number;
   error?: string;
@@ -68,7 +68,7 @@ export class AccountBackupError extends Error {
 /** Largest account a backup file or a transfer may bring in. */
 export const ACCOUNT_MAX_BYTES = 64 * 1024 ** 3;
 
-const DEFAULT_SETTINGS: BackupSettings = { auto: true, keep: 5 };
+const DEFAULT_SETTINGS: BackupSettings = { auto: false, keep: 3 };
 const AUTO_EVERY_MS = 24 * 60 * 60 * 1000;
 const KEEP_BEFORE_RESTORE = 3;
 const BACKUP_ID = /^\d{8}-\d{9}-[0-9a-f]{4}$/;
@@ -419,7 +419,13 @@ function pruneBackups(dataDir: string, username: string): void {
 
 /** Take the daily automatic backup of every account that has them on and
  *  is due. Accounts run one after another. */
-export async function runAutoBackups(dataDir: string, usernames: readonly string[]): Promise<void> {
+export async function runAutoBackups(
+  dataDir: string,
+  usernames: readonly string[],
+  /** Runs after each new backup (the Google Drive upload); its failure is
+   *  its own to report and leaves the backup in place. */
+  after?: (username: string, made: BackupInfo) => Promise<void>,
+): Promise<void> {
   for (const username of usernames) {
     if (!readBackupSettings(dataDir, username).auto) continue;
     const last = listBackups(dataDir, username).find((b) => b.label !== "before-restore");
@@ -430,6 +436,7 @@ export async function runAutoBackups(dataDir: string, usernames: readonly string
       const made = await createBackup(dataDir, username, "auto");
       writeAutoError(dataDir, username, null);
       if (made) log.info(`[backups] backed up ${username} (${formatBytes(made.added)} new)`);
+      if (made && after) await after(username, made).catch((e) => log.warn(`[backups] upload of ${username}'s backup failed: ${(e as Error).message}`));
     } catch (e) {
       writeAutoError(dataDir, username, (e as Error).message);
       log.warn(`[backups] automatic backup of ${username} failed: ${(e as Error).message}`);
