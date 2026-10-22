@@ -33,7 +33,7 @@ describe("plugin discovery (apps)", () => {
     expect(discoverPlugins(path.join(dir, "plugins")).map((p) => p.id)).toEqual(["user-plugin"]);
 
     const bundled = discoverAppPlugins(path.join(dir, "apps"), "vn");
-    expect(bundled.map((p) => p.id)).toEqual(["vn__engine"]);
+    expect(bundled.map((p) => p.id)).toEqual(["vn.engine"]);
     expect(bundled[0]!.appId).toBe("vn");
     expect(bundled[0]!.fsRoot).toBe(path.join(dir, "apps", "vn", "data"));
   });

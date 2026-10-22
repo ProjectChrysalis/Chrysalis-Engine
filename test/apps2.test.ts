@@ -70,7 +70,7 @@ describe("app plugin primitives (module level)", () => {
     createAppSkeleton(p.apps, { id: "vn", name: "VN" });
     writeAppPlugin(p.apps, "vn", "engine", { name: "E", version: "1", permissions: ["hooks", "fs", "tools", "routes"] }, "export const TOOLS=[];");
     const plugins = discoverAppPlugins(p.apps, "vn");
-    expect(plugins[0]!.id).toBe("vn__engine");
+    expect(plugins[0]!.id).toBe("vn.engine");
     expect(plugins[0]!.fsRoot).toBe(appDataDir(p.apps, "vn"));
   });
 
@@ -103,7 +103,7 @@ export function handleTool(name, args, host) {
     // file landed in the app data dir (git-tracked userland!)
     expect(fs.readFileSync(path.join(appDataDir(p.apps, "vn"), "choices", "2.json"), "utf8")).toContain("stay in the dark");
     // store persisted host-side
-    expect(deps.store.namespace("vn__engine").get("choices")).toBe(2);
+    expect(deps.store.namespace("vn.engine").get("choices")).toBe(2);
   }, 30_000);
 
   it("fs scope blocks escapes from the app data dir", async () => {

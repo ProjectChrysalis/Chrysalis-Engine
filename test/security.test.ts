@@ -128,6 +128,45 @@ export function uiPanel(ctx) {
 });
 
 describe("S2 API keys", () => {
+  it("app and plugin names cannot share another plugin's store or grants", async () => {
+    const apps = path.join(dir, "apps");
+    const make = (app: string, plugin: string) => {
+      const folder = path.join(apps, app, "plugins", plugin);
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, "manifest.json"), JSON.stringify({ name: plugin, version: "1", origin: "imported", permissions: ["routes", "store"] }));
+      fs.writeFileSync(path.join(folder, "plugin.js"), 'export function handleRoute(req, host) { if (req.body) host.store.put("secret", req.body); return { json: { secret: host.store.get("secret") } }; }');
+      return discoverAppPlugins(apps, app)[0]!;
+    };
+    const pairs = [
+      [make("a", "b__c"), make("a__b", "c")],
+      [make("x_", "y"), make("x", "_y")],
+    ];
+    writePlugin("normal__engine", { name: "Standalone", version: "1", origin: "imported", permissions: ["routes", "store"] },
+      'export function handleRoute(req, host) { return { json: { secret: host.store.get("secret") } }; }');
+    pairs.push([make("normal", "engine"), discoverPlugins(path.join(dir, "plugins"))[0]!]);
+    for (const [first, second] of pairs) {
+      expect(first).toBeDefined();
+      expect(second).toBeDefined();
+      expect(first!.id).not.toBe(second!.id);
+      const store = new PluginStoreService(path.join(dir, "store"));
+      const permitted = { store, models: {} as never, grantsFor: () => ["routes", "store"] };
+      await runPluginRoute(first!, { method: "POST", path: "/", query: {}, body: "SYNTHETIC-PRIVATE-STORE" }, permitted);
+      const other = await runPluginRoute(second!, { method: "GET", path: "/", query: {}, body: null }, permitted);
+      expect(other?.json).toEqual({ secret: null });
+      const victimGrants = { ...permitted, grantsFor: (id: string) => id === first!.id ? ["routes", "store"] : [] };
+      expect(await runPluginRoute(second!, { method: "GET", path: "/", query: {}, body: null }, victimGrants)).toBeNull();
+    }
+    const store = new PluginStoreService(path.join(dir, "legacy-store"));
+    store.namespace("normal__engine").put("secret", "SYNTHETIC-LEGACY-SECRET");
+    const legacyGrants = { store, models: {} as never, grantsFor: (id: string) => id === "normal__engine" ? ["routes", "store"] : [] };
+    for (const plugin of pairs.at(-1)!) {
+      const request = { method: "GET", path: "/", query: {}, body: null };
+      expect(await runPluginRoute(plugin!, request, legacyGrants)).toBeNull();
+      expect((await runPluginRoute(plugin!, request, { ...legacyGrants, grantsFor: () => ["routes", "store"] }))?.json).toEqual({ secret: null });
+    }
+    expect(store.namespace("normal__engine").get("secret")).toBe("SYNTHETIC-LEGACY-SECRET");
+  });
+
   it("agent denylist: root credentials/state protected; APP DATA writable (SPEC-v2 §1)", () => {
     expect(agentWriteDenied("auth.json")).toBeTruthy();
     expect(agentWriteDenied(".git/config")).toBeTruthy();
@@ -1007,7 +1046,7 @@ describe("A2 the bridge's second lock (server side)", () => {
     // engine must not fetch anything on the app's behalf
     expect((await img()).status).toBe(403);
     const settings = JSON.parse(fs.readFileSync(p.settings, "utf8")) as { pluginGrants?: Record<string, string[]> };
-    settings.pluginGrants = { evil__net: ["network"] };
+    settings.pluginGrants = { "evil.net": ["network"] };
     fs.writeFileSync(p.settings, JSON.stringify(settings));
     // granted: the host passes the gate (the fetch itself may fail offline)
     expect((await img()).status).not.toBe(403);

@@ -10,7 +10,7 @@ export class PluginStoreService {
   constructor(private storeDir: string) {}
 
   private fileFor(pluginId: string): string {
-    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(pluginId)) throw new Error(`invalid plugin id: ${pluginId}`);
+    if (pluginId.length > 200 || !/^[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9_-]+){0,2}$/i.test(pluginId)) throw new Error(`invalid plugin id: ${pluginId}`);
     return path.join(this.storeDir, `${pluginId}.json`);
   }
 

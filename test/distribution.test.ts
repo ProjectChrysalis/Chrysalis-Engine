@@ -154,7 +154,7 @@ describe("shareable plugins (git import, scoped to an app)", () => {
 
     // reviewed capabilities pre-granted (app plugin ids are namespaced)
     const settings = JSON.parse(fs.readFileSync(path.join(root, "settings.json"), "utf8")) as { pluginGrants?: Record<string, string[]> };
-    expect(settings.pluginGrants?.[`${appId}__${cr.id}`]).toContain("store");
+    expect(settings.pluginGrants?.[`${appId}.${cr.id}`]).toContain("store");
 
     // a git-imported app with an imported plugin has diverged from its source
     const upd = await call(`/v1/apps/${appId}/updates`);
@@ -166,7 +166,7 @@ describe("shareable plugins (git import, scoped to an app)", () => {
     expect(del.status).toBe(200);
     expect(fs.existsSync(installedDir)).toBe(false);
     const settings2 = JSON.parse(fs.readFileSync(path.join(root, "settings.json"), "utf8")) as { pluginGrants?: Record<string, string[]> };
-    expect(settings2.pluginGrants?.[`${appId}__${cr.id}`]).toBeUndefined();
+    expect(settings2.pluginGrants?.[`${appId}.${cr.id}`]).toBeUndefined();
   }, 60_000);
 
   it("update merges: overlapping edits stop it, taking the update keeps data + imported plugins", async () => {
@@ -308,6 +308,14 @@ describe("shareable plugins (git import, scoped to an app)", () => {
     expect(hit.status).toBe(200);
     expect(((await hit.json()) as { pong?: boolean }).pong).toBe(true);
 
+    const legacySettingsPath = userPaths(dataDir, "root").settings;
+    const legacySettings = JSON.parse(fs.readFileSync(legacySettingsPath, "utf8"));
+    legacySettings.disabledPlugins = [`${appId}__${pid}`];
+    fs.writeFileSync(legacySettingsPath, JSON.stringify(legacySettings));
+    expect((await call(`/v1/apps/${appId}/ping`)).status).toBe(404);
+    expect((await call(`/v1/apps/${appId}/plugins/${pid}/enable`, { method: "POST" })).status).toBe(200);
+    expect((await call(`/v1/apps/${appId}/ping`)).status).toBe(200);
+
     // off: no route answers, both listings say disabled
     const off = await call(`/v1/apps/${appId}/plugins/${pid}/disable`, { method: "POST" });
     expect(off.status).toBe(200);
@@ -318,7 +326,7 @@ describe("shareable plugins (git import, scoped to an app)", () => {
     const row = ((await list.json()) as { plugins: { id: string; disabled?: boolean }[] }).plugins.find((x) => x.id === pid);
     expect(row?.disabled).toBe(true);
     const reg = await call("/v1/plugins");
-    const regRow = ((await reg.json()) as { plugins: { id: string; disabled?: boolean }[] }).plugins.find((x) => x.id === `${appId}__${pid}`);
+    const regRow = ((await reg.json()) as { plugins: { id: string; disabled?: boolean }[] }).plugins.find((x) => x.id === `${appId}.${pid}`);
     expect(regRow?.disabled).toBe(true);
 
     // back on: the route answers again
@@ -333,7 +341,7 @@ describe("shareable plugins (git import, scoped to an app)", () => {
     expect(del.status).toBe(200);
     const root = userPaths(dataDir, "root").root;
     const settings = JSON.parse(fs.readFileSync(path.join(root, "settings.json"), "utf8")) as { disabledPlugins?: string[] };
-    expect(settings.disabledPlugins ?? []).not.toContain(`${appId}__${pid}`);
+    expect(settings.disabledPlugins ?? []).not.toContain(`${appId}.${pid}`);
   }, 90_000);
 });
 
@@ -478,7 +486,7 @@ describe("bundled plugins of git-imported apps (grant system)", () => {
 
     // grants recorded under the namespaced id (empty perms → empty grant list)
     const settings = JSON.parse(fs.readFileSync(path.join(root, "settings.json"), "utf8")) as { pluginGrants?: Record<string, string[]> };
-    expect(Array.isArray(settings.pluginGrants?.[`${cr.id}__greeter`])).toBe(true);
+    expect(Array.isArray(settings.pluginGrants?.[`${cr.id}.greeter`])).toBe(true);
 
     // and the stamp happened BEFORE the content hash: the app is not "modified"
     const upd = await call(`/v1/apps/${cr.id}/updates`);

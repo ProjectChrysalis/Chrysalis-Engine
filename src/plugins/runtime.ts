@@ -33,6 +33,7 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { appPluginId, userPluginId, validPluginFolder } from "./ids.js";
 import { PluginSandbox, sandbox, type SandboxRequest, type SandboxResponse } from "./sandbox.js";
 import { JsonFieldStreamDecoder, normalizeStreamDecodeSpec } from "./stream-decode.js";
 import type { PluginStoreService } from "./store.js";
@@ -231,6 +232,7 @@ export function discoverPlugins(pluginsDir: string): LoadedPlugin[] {
 
   const plugins: LoadedPlugin[] = [];
   for (const id of fs.readdirSync(pluginsDir)) {
+    if (!validPluginFolder(id)) continue;
     const dir = path.join(pluginsDir, id);
     try {
       const manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8")) as PluginManifest;
@@ -246,7 +248,8 @@ export function discoverPlugins(pluginsDir: string): LoadedPlugin[] {
         mtimeMs = Math.max(mtimeMs, m.mtimeMs);
       }
       const bundled = Object.keys(modules).length ? bundleFor(pluginsDir, dir, source, modules) : null;
-      plugins.push(bundled ? { id, dir, manifest, source: bundled, mtimeMs } : { id, dir, manifest, source, modules, mtimeMs });
+      const pluginId = userPluginId(id);
+      plugins.push(bundled ? { id: pluginId, dir, manifest, source: bundled, mtimeMs } : { id: pluginId, dir, manifest, source, modules, mtimeMs });
     } catch (e) {
       log.warn(`plugin "${id}" skipped: ${(e as Error).message}`);
     }
@@ -269,15 +272,16 @@ export function invalidatePluginCache(pluginsDir?: string): void {
 }
 
 /**
- * App-bundled plugins (SPEC-v2 §3): apps/<app>/plugins/<id>/. Ids namespaced
- * `<app>__<pluginId>`; fs scope = the app's data/ dir (git-tracked).
+ * App-bundled plugins (SPEC-v2 §3): apps/<app>/plugins/<id>/.
+ * IDs identify the app and folder without collisions; fs scope is the
+ * app's data/ dir (git-tracked).
  */
 export function discoverAppPlugins(appsDir: string, appId: string): LoadedPlugin[] {
   const pluginsDir = path.join(appsDir, appId, "plugins");
   const dataDir = path.join(appsDir, appId, "data");
   return discoverPlugins(pluginsDir).map((pl) => ({
     ...pl,
-    id: `${appId}__${pl.id}`,
+    id: appPluginId(appId, path.basename(pl.dir)),
     manifest: { ...pl.manifest, name: pl.manifest.name ?? pl.id },
     fsRoot: dataDir,
     appId,

@@ -4,7 +4,7 @@
  *   package.json, index.html, src/
  *                  the app's UI — index.html + src/, built in the user's
  *                  browser by src/builder (a bundler config is never run)
- *   plugins/<id>/  bundled backend behavior (namespaced <app>__<plugin>)
+ *   plugins/<id>/  bundled backend behavior (namespaced <app>.<plugin>)
  *   data/          app-owned data (git-tracked; plugins get scoped fs here)
  *   node_modules/, dist/  derived, engine-managed, outside git
  *

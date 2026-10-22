@@ -304,7 +304,7 @@ describe("installing from the store", () => {
     expect(fs.readFileSync(path.join(p.apps, "studio-2", "data", "notes.json"), "utf8")).toBe("{\"hello\":1}");
     expect(fs.existsSync(path.join(p.apps, "studio-2", ".__backup"))).toBe(false);
     expect(readInstallSource(p.appUpstream, "studio-2")).toEqual({ git: url, ref: "HEAD", restored: true });
-    expect(grantsOf()["studio-2__api"]).toEqual(["routes"]);
+    expect(grantsOf()["studio-2.api"]).toEqual(["routes"]);
     // the file's code is not the maintainers' release, whatever it says
     expect((await launchApps()).find((a) => a.id === "studio-2")).toMatchObject({ official: false, repository: url });
     // a token is used once
@@ -349,13 +349,13 @@ describe("installing from the store", () => {
     const review = (await (await call(`/v1/apps/${id}/update`, { method: "POST", body: "{}" })).json()) as { needsDepConfirm?: boolean; head: string; permissions: unknown };
     expect(review.needsDepConfirm).toBe(true);
     expect(review.permissions).toEqual([{ id: "api", name: "API", added: ["network"], hosts: [] }]);
-    expect(grantsOf()[`${id}__api`]).toEqual(["routes"]);
+    expect(grantsOf()[`${id}.api`]).toEqual(["routes"]);
 
     const moved = await call(`/v1/apps/${id}/update`, { method: "POST", body: JSON.stringify({ confirmDeps: true, head: "0".repeat(40) }) });
     expect(moved.status).toBe(409);
     const applied = (await (await call(`/v1/apps/${id}/update`, { method: "POST", body: JSON.stringify({ confirmDeps: true, head: review.head }) })).json()) as { status: string };
     expect(applied.status).toBe("applied");
-    expect(grantsOf()[`${id}__api`]).toEqual(["routes", "network"]);
+    expect(grantsOf()[`${id}.api`]).toEqual(["routes", "network"]);
   }, 60_000);
 
   it("asks before a community update points a networked plugin at a new host", async () => {
@@ -364,7 +364,7 @@ describe("installing from the store", () => {
     const withHosts = (hosts: string[]) => JSON.stringify({ name: "API", version: "1.0.0", permissions: ["routes", "network"], networkHosts: hosts });
     await republish("feed", (work) => fs.writeFileSync(manifestFile(work), withHosts(["cards.example"])), "someone");
     const id = await importApp(url);
-    expect(grantsOf()[`${id}__api`]).toEqual(["routes", "network"]);
+    expect(grantsOf()[`${id}.api`]).toEqual(["routes", "network"]);
 
     // same permissions, one more host: nothing new is granted, yet the plugin
     // could send what it reads somewhere it could not before
@@ -410,7 +410,7 @@ describe("installing from the store", () => {
     expect(updated.status).toBe("applied");
     expect(updated.conflicts.map((c) => c.path)).toContain("plugins/api/manifest.json");
     expect(fs.readFileSync(manifestPath, "utf8")).toContain("<<<<<<<");
-    expect(grantsOf()[`${id}__api`]).toEqual(["routes"]);
+    expect(grantsOf()[`${id}.api`]).toEqual(["routes"]);
     const broken = (await (await call(`/v1/apps/${id}/ping`)).json()) as { error: string };
     expect(broken.error).toContain("plugin api did not load");
 
@@ -420,7 +420,7 @@ describe("installing from the store", () => {
     expect((await call(`/v1/apps/${id}/ping`)).status).toBe(200);
 
     const settingsNow = JSON.parse(fs.readFileSync(p.settings, "utf8")) as { pluginGrants: Record<string, string[]> };
-    delete settingsNow.pluginGrants[`${id}__api`];
+    delete settingsNow.pluginGrants[`${id}.api`];
     fs.writeFileSync(p.settings, JSON.stringify(settingsNow));
     const locked = (await (await call(`/v1/apps/${id}/ping`)).json()) as { error: string };
     expect(locked.error).toBe("no route: plugin api is waiting for its routes permission to be approved");

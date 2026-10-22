@@ -22,6 +22,7 @@ import nodeCrypto from "node:crypto";
 import { PluginStoreService } from "../plugins/store.js";
 import { discoverPlugins, discoverAppPlugins, runPluginHook, runPluginHookOutcome, runPluginRoute, runPluginTool, readPluginExport, syncSchedules, stopSchedules, invalidatePluginCache, collectSiblingTools, collectSiblingLlmHooks, mergeToolBridges, pluginMentions, type LoadedPlugin, type PluginRuntimeDeps, type PluginToolBridge } from "../plugins/runtime.js";
 import { ServiceManager, serviceApproved, servicePorts, writeServiceApproval, type ServiceTarget } from "../apps/service.js";
+import { appPluginId, disabledPluginIds, pluginBelongsToApp, validPluginFolder } from "../plugins/ids.js";
 import { McpRegistry, WEB_SEARCH_PRESET, readStdioApprovals, stdioFingerprint, writeStdioApproval, type CredentialMap, type McpServerConfig } from "../mcp/registry.js";
 import { listApps, readApp, createAppSkeleton, renameAppDir, appTree, validateAppManifest, hashAppTree, receivesKind, SHARE_KIND, type AppInfo } from "../apps/manager.js";
 import { UPDATE_STRATEGIES, applyWrites, mergeBrief, restoreWrites, forgetInstall, mergeTrees, moveInstall, readBaseline, readCodeTree, readInstallSource, readPendingUpgrade, recoverBaseline, satisfiesRange, seedDataTemplates, writeBaseline, writeInstallSource, writePendingUpgrade, type InstallSource } from "../apps/update.js";
@@ -597,7 +598,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   const disabledAppPlugins = (settingsPath: string): Set<string> => {
     try {
       const s = JSON.parse(fs.readFileSync(settingsPath, "utf8")) as { disabledPlugins?: unknown };
-      return new Set(Array.isArray(s.disabledPlugins) ? s.disabledPlugins.filter((x): x is string => typeof x === "string") : []);
+      return disabledPluginIds(Array.isArray(s.disabledPlugins) ? s.disabledPlugins.filter((x): x is string => typeof x === "string") : []);
     } catch {
       return new Set();
     }
@@ -3391,8 +3392,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     fs.rmSync(stagedHeadFile, { force: true });
     if (installed) fs.rmSync(path.join(pluginsDir, id), { recursive: true, force: true });
     fs.renameSync(staging, path.join(pluginsDir, id));
-    // provenance + pre-grant exactly what the user just reviewed (app plugin
-    // ids are namespaced <app>__<plugin> — grants key on the namespaced id)
+    // Grants use the same app-scoped identity as plugin execution.
     manifest.origin = "imported";
     manifest.source = { git: gitUrl, head: staged.head };
     fs.writeFileSync(path.join(pluginsDir, id, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
@@ -3401,7 +3401,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         ? (JSON.parse(fs.readFileSync(p.settings, "utf8")) as { pluginGrants?: Record<string, string[]> })
         : {};
       settings.pluginGrants ??= {};
-      settings.pluginGrants[`${appId}__${id}`] = declaredPermissions(manifest);
+      settings.pluginGrants[appPluginId(appId, id)] = declaredPermissions(manifest);
       fs.writeFileSync(p.settings, JSON.stringify(settings, null, 2) + "\n", "utf8");
     } catch { /* grants best-effort — the approve flow still works */ }
     invalidatePluginCache();
@@ -3460,13 +3460,12 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       if (settings.appMcp?.[id]) { delete settings.appMcp[id]; touched = true; }
       // the app's plugins die with it — their namespaced grants and disabled
       // flags must not linger in settings.json forever
-      const prefix = `${id}__`;
       const grants = settings.pluginGrants ?? {};
       for (const key of Object.keys(grants)) {
-        if (key.startsWith(prefix)) { delete grants[key]; touched = true; }
+        if (pluginBelongsToApp(key, id)) { delete grants[key]; touched = true; }
       }
-      if (Array.isArray(settings.disabledPlugins) && settings.disabledPlugins.some((x) => x.startsWith(prefix))) {
-        settings.disabledPlugins = settings.disabledPlugins.filter((x) => !x.startsWith(prefix));
+      if (Array.isArray(settings.disabledPlugins) && settings.disabledPlugins.some((x) => pluginBelongsToApp(x, id))) {
+        settings.disabledPlugins = settings.disabledPlugins.filter((x) => !pluginBelongsToApp(x, id));
         touched = true;
       }
       if (touched) fs.writeFileSync(p.settings, JSON.stringify(settings, null, 2) + "\n", "utf8");
@@ -3698,10 +3697,11 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     } catch { /* fresh settings */ }
     let touched = false;
     for (const pid of dirs) {
+      if (!validPluginFolder(pid)) continue;
       try {
         const m = JSON.parse(fs.readFileSync(path.join(pluginsDir, pid, "manifest.json"), "utf8")) as { permissions?: unknown; source?: { git?: unknown } };
         if (!chosen(m)) continue;
-        const key = `${appId}__${pid}`;
+        const key = appPluginId(appId, pid);
         grants[key] = [...new Set([...(grants[key] ?? []), ...declaredPermissions(m)])];
         touched = true;
       } catch { /* not a plugin dir */ }
@@ -4244,7 +4244,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       for (const pid of fs.readdirSync(path.join(incoming, "plugins"))) {
         try {
           const m = JSON.parse(fs.readFileSync(path.join(incoming, "plugins", pid, "manifest.json"), "utf8")) as { name?: unknown; permissions?: unknown; networkHosts?: unknown };
-          const granted = settingsNow.pluginGrants?.[`${id}__${pid}`] ?? [];
+          const granted = settingsNow.pluginGrants?.[appPluginId(id, pid)] ?? [];
           const declared = declaredPermissions(m);
           const added = declared.filter((x) => !granted.includes(x));
           const installedHosts = new Set(pluginHosts(path.join(info.dir, "plugins", pid)));
@@ -4419,7 +4419,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       const git = (pl.manifest as { source?: { git?: unknown } }).source?.git;
       const repository = typeof git === "string" && isValidGitUrl(git) && (!appSource || normalizeGitUrl(git) !== normalizeGitUrl(appSource)) ? git : null;
       return {
-        id: pl.id.replace(/^.*__/, ""),
+        id: path.basename(pl.dir),
         name: pl.manifest.name ?? pl.id,
         version: pl.manifest.version ?? null,
         description: pl.manifest.description ?? null,
@@ -4441,15 +4441,15 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     pid: string,
     enabled: boolean,
   ): Promise<{ status: 200 | 400 | 404; body: Record<string, unknown> }> => {
-    if (!/^[a-z0-9][a-z0-9-_]*$/i.test(pid)) return { status: 400, body: { error: "bad plugin id" } };
+    if (!validPluginFolder(pid)) return { status: 400, body: { error: "bad plugin id" } };
     const appDir = safeResolve(p.apps, id);
     const pluginDir = path.join(appDir, "plugins", pid);
     if (!fs.existsSync(path.join(pluginDir, "manifest.json"))) return { status: 404, body: { error: "no such plugin" } };
-    const key = `${id}__${pid}`;
+    const key = appPluginId(id, pid);
     const settings = fs.existsSync(p.settings)
       ? (JSON.parse(fs.readFileSync(p.settings, "utf8")) as { disabledPlugins?: string[] })
       : {};
-    const cur = new Set(Array.isArray(settings.disabledPlugins) ? settings.disabledPlugins : []);
+    const cur = disabledAppPlugins(p.settings);
     if (enabled) cur.delete(key);
     else cur.add(key);
     settings.disabledPlugins = [...cur];
@@ -4471,7 +4471,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const p = c.get("paths");
     const id = c.req.param("id");
     const pid = c.req.param("pid");
-    if (!/^[a-z0-9][a-z0-9-_]*$/i.test(pid)) {
+    if (!validPluginFolder(pid)) {
       return c.json({ error: "bad plugin id" }, 400);
     }
     const appDir = safeResolve(p.apps, id);
@@ -4486,12 +4486,13 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         ? (JSON.parse(fs.readFileSync(p.settings, "utf8")) as { pluginGrants?: Record<string, string[]>; disabledPlugins?: string[] })
         : {};
       let touched = false;
-      if (settings.pluginGrants?.[`${id}__${pid}`]) {
-        delete settings.pluginGrants[`${id}__${pid}`];
+      const key = appPluginId(id, pid);
+      if (settings.pluginGrants?.[key]) {
+        delete settings.pluginGrants[key];
         touched = true;
       }
-      if (settings.disabledPlugins?.includes(`${id}__${pid}`)) {
-        settings.disabledPlugins = settings.disabledPlugins.filter((x) => x !== `${id}__${pid}`);
+      if (settings.disabledPlugins?.includes(key)) {
+        settings.disabledPlugins = settings.disabledPlugins.filter((x) => x !== key);
         touched = true;
       }
       if (touched) fs.writeFileSync(p.settings, JSON.stringify(settings, null, 2) + "\n", "utf8");
@@ -5130,7 +5131,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
     const grants = pluginGrants(p.settings);
     const disabled = disabledAppPlugins(p.settings);
     for (const dir of dirs) {
-      const pid = `${appId}__${dir}`;
+      const pid = appPluginId(appId, dir);
       if (!fs.existsSync(path.join(p.apps, appId, "plugins", dir, "plugin.js"))) continue;
       const pl = loaded.get(pid);
       if (!pl) reasons.push(`plugin ${dir} did not load: its manifest.json is missing or not valid JSON`);
