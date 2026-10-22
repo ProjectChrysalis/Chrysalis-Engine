@@ -35,6 +35,7 @@ import {
   type BackupJob,
 } from "../account-backup.js";
 import { GoogleDrive, googleClientOf } from "../google-drive.js";
+import type { ModelCatalog } from "../model-catalog.js";
 import { engineUrls } from "./listen.js";
 import type { UserService, UserRecord } from "../users.js";
 import type { SessionService } from "../sessions.js";
@@ -60,7 +61,7 @@ import { createRoutingCatalog } from "../providers/openrouter-catalog.js";
 import { PROMPT_FORMATS, type PromptFormat } from "../providers/prompt-formats.js";
 import {
   EDGE_FORMATS, EDGE_VOICES, SPEECH_KIND_INFO, SPEECH_TEXT_MAX, createSpeechEndpoint, defaultVoice, deleteSpeechEndpoint, edgeSpeakFmt, isOpenAiStock,
-  listSpeechEndpoints, speechEndpointKey, speechVoices, synthesize, updateSpeechEndpoint, validateSpeechEndpointInput,
+  listSpeechEndpoints, speechEndpointKey, speechModels, speechVoices, synthesize, updateSpeechEndpoint, validateSpeechEndpointInput,
 } from "../speech.js";
 import type { EdgeFormat } from "../speech.js";
 import * as assets from "../assets/store.js";
@@ -119,6 +120,8 @@ export interface AppDeps {
   services?: ServiceManager;
   /** Backups in Google Drive (constructed from config when absent). */
   drive?: GoogleDrive;
+  /** Model lists kept current between engine releases. */
+  catalog?: ModelCatalog;
 }
 
 export const SESSION_COOKIE = "chrysalis_session";
@@ -241,7 +244,7 @@ export function appBridgeAllows(appId: string, method: string, path: string, tru
   if (method === "GET") {
     if (path === "/v1/models" || path.startsWith("/v1/models/")) return true;
     if (["/v1/images/models", "/v1/embeddings/config", "/v1/audio/voices", "/v1/audio/speech/endpoints", "/v1/settings/connections", "/v1/settings/providers", "/v1/plugins"].includes(path)) return true;
-    if (/^\/v1\/audio\/speech\/endpoints\/[^/]+\/voices$/.test(path)) return true;
+    if (/^\/v1\/audio\/speech\/endpoints\/[^/]+\/(voices|models)$/.test(path)) return true;
     if (path === "/v1/assets" || path.startsWith("/v1/assets/")) return true;
   }
   // Paid generation (images, speech) is open to every app and deliberately
@@ -1641,6 +1644,11 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     } catch (e) {
       return c.json({ error: (e as Error).message }, 502);
     }
+  });
+  app.get("/v1/audio/speech/endpoints/:id/models", async (c) => {
+    const ep = listSpeechEndpoints(c.get("paths")).find((x) => x.id === c.req.param("id"));
+    if (!ep) return c.json({ error: "no such speech endpoint" }, 404);
+    return c.json(await speechModels(`${c.get("user").username}/${ep.id}`, { kind: ep.kind, baseUrl: ep.baseUrl, key: speechEndpointKey(c.get("paths"), ep.id) }));
   });
   app.get("/v1/audio/voices", (c) => {
     const kinds = Object.fromEntries(Object.entries(SPEECH_KIND_INFO).map(([k, v]) => [k, { models: v.models, controls: v.controls }]));
@@ -5918,6 +5926,25 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
     }
     if (!deps.settings) return c.json({ error: "server settings are not available in this engine" }, 404);
     return c.json(deps.settings.describe());
+  });
+  app.get("/v1/admin/server/models", (c) => {
+    try {
+      requireAdmin(c);
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 403);
+    }
+    if (!deps.catalog) return c.json({ error: "model updates are not available in this engine" }, 404);
+    return c.json(deps.catalog.status());
+  });
+  app.post("/v1/admin/server/models/refresh", async (c) => {
+    try {
+      requireAdmin(c);
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 403);
+    }
+    if (!deps.catalog) return c.json({ error: "model updates are not available in this engine" }, 404);
+    await deps.catalog.refresh().catch(() => undefined);
+    return c.json(deps.catalog.status());
   });
   app.get("/v1/admin/server/release", async (c) => {
     try {

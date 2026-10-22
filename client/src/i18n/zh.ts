@@ -751,7 +751,6 @@ const dict = {
   "from {user}": "来自 {user}",
   "Google Drive is connected. Your first backup is on its way there.": "Google 云端硬盘已连接。第一份备份正在上传。",
   "Connecting Google Drive failed. Try again.": "连接 Google 云端硬盘失败。请重试。",
-  "Google Drive is not set up on this server.": "此服务器未设置 Google 云端硬盘。",
   "Every backup also goes to your Google Drive, so you can restore it on any device.": "每份备份也会存到你的 Google 云端硬盘，可在任何设备上恢复。",
   "Connect Google Drive": "连接 Google 云端硬盘",
   "Connected as {email}": "已连接为 {email}",
@@ -785,6 +784,18 @@ const dict = {
   "Add speech service": "添加语音服务",
   "API key (empty uses your {name} key)": "API 密钥（留空则用 {name} 的密钥）",
   "API key (if the server needs one)": "API 密钥（服务器需要时填写）",
+  "Google Drive is not set up yet. Add a Google client in Settings > Server.": "尚未设置 Google 云端硬盘。请在 设置 > 服务器 中添加 Google 客户端。",
+  "Google Drive is not set up on this server. Ask an admin.": "此服务器未设置 Google 云端硬盘。请联系管理员。",
+  "Back up now copies to Drive. Turn on daily backups to keep it current. API keys and sign-ins are not copied.": "“立即备份”会复制到云端硬盘。开启每日备份以保持最新。API 密钥和登录信息不会被复制。",
+  "Last check failed: {error}": "上次检查失败：{error}",
+  "{count} new models added.": "已添加 {count} 个新模型。",
+  "Not checked yet.": "尚未检查。",
+  "Check now": "立即检查",
+  "Get new models without waiting for an update": "无需等待更新即可获取新模型",
+  "Checked once a day. Only model names, prices and limits are downloaded.": "每天检查一次。只下载模型名称、价格和限制。",
+  "Client ID": "客户端 ID",
+  "Client secret": "客户端密钥",
+  "Backups to Google Drive need a web OAuth client from Google Cloud. Its redirect URI is {url}": "备份到 Google 云端硬盘需要 Google Cloud 的 Web OAuth 客户端。其重定向 URI 为 {url}",
 }
 
 export default dict

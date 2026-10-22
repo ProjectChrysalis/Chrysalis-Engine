@@ -751,7 +751,6 @@ const dict = {
   "from {user}": "da {user}",
   "Google Drive is connected. Your first backup is on its way there.": "Google Drive è collegato. Il primo backup è in arrivo.",
   "Connecting Google Drive failed. Try again.": "Collegamento a Google Drive non riuscito. Riprova.",
-  "Google Drive is not set up on this server.": "Google Drive non è configurato su questo server.",
   "Every backup also goes to your Google Drive, so you can restore it on any device.": "Ogni backup va anche nel tuo Google Drive, così puoi ripristinarlo su qualsiasi dispositivo.",
   "Connect Google Drive": "Collega Google Drive",
   "Connected as {email}": "Collegato come {email}",
@@ -785,6 +784,18 @@ const dict = {
   "Add speech service": "Aggiungi servizio vocale",
   "API key (empty uses your {name} key)": "Chiave API (vuota usa la tua chiave {name})",
   "API key (if the server needs one)": "Chiave API (se il server la richiede)",
+  "Google Drive is not set up yet. Add a Google client in Settings > Server.": "Google Drive non è ancora configurato. Aggiungi un client Google in Impostazioni > Server.",
+  "Google Drive is not set up on this server. Ask an admin.": "Google Drive non è configurato su questo server. Chiedi a un admin.",
+  "Back up now copies to Drive. Turn on daily backups to keep it current. API keys and sign-ins are not copied.": "Esegui backup ora copia su Drive. Attiva i backup giornalieri per tenerlo aggiornato. Chiavi API e accessi non vengono copiati.",
+  "Last check failed: {error}": "Ultimo controllo non riuscito: {error}",
+  "{count} new models added.": "{count} nuovi modelli aggiunti.",
+  "Not checked yet.": "Non ancora controllato.",
+  "Check now": "Controlla ora",
+  "Get new models without waiting for an update": "Nuovi modelli senza aspettare un aggiornamento",
+  "Checked once a day. Only model names, prices and limits are downloaded.": "Controllato una volta al giorno. Si scaricano solo nomi, prezzi e limiti dei modelli.",
+  "Client ID": "ID client",
+  "Client secret": "Segreto client",
+  "Backups to Google Drive need a web OAuth client from Google Cloud. Its redirect URI is {url}": "I backup su Google Drive richiedono un client OAuth web di Google Cloud. Il suo URI di reindirizzamento è {url}",
 }
 
 export default dict

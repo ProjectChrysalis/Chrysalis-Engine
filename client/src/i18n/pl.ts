@@ -751,7 +751,6 @@ const dict = {
   "from {user}": "od {user}",
   "Google Drive is connected. Your first backup is on its way there.": "Dysk Google jest połączony. Pierwsza kopia jest w drodze.",
   "Connecting Google Drive failed. Try again.": "Nie udało się połączyć z Dyskiem Google. Spróbuj ponownie.",
-  "Google Drive is not set up on this server.": "Dysk Google nie jest skonfigurowany na tym serwerze.",
   "Every backup also goes to your Google Drive, so you can restore it on any device.": "Każda kopia trafia też na Twój Dysk Google, więc przywrócisz ją na dowolnym urządzeniu.",
   "Connect Google Drive": "Połącz z Dyskiem Google",
   "Connected as {email}": "Połączono jako {email}",
@@ -785,6 +784,18 @@ const dict = {
   "Add speech service": "Dodaj usługę mowy",
   "API key (empty uses your {name} key)": "Klucz API (puste używa klucza {name})",
   "API key (if the server needs one)": "Klucz API (jeśli serwer go wymaga)",
+  "Google Drive is not set up yet. Add a Google client in Settings > Server.": "Dysk Google nie jest jeszcze skonfigurowany. Dodaj klienta Google w Ustawienia > Serwer.",
+  "Google Drive is not set up on this server. Ask an admin.": "Dysk Google nie jest skonfigurowany na tym serwerze. Poproś administratora.",
+  "Back up now copies to Drive. Turn on daily backups to keep it current. API keys and sign-ins are not copied.": "Utwórz kopię teraz kopiuje na Dysk. Włącz codzienne kopie, by był aktualny. Klucze API i logowania nie są kopiowane.",
+  "Last check failed: {error}": "Ostatnie sprawdzenie nie powiodło się: {error}",
+  "{count} new models added.": "Dodano nowe modele: {count}.",
+  "Not checked yet.": "Jeszcze nie sprawdzono.",
+  "Check now": "Sprawdź teraz",
+  "Get new models without waiting for an update": "Nowe modele bez czekania na aktualizację",
+  "Checked once a day. Only model names, prices and limits are downloaded.": "Sprawdzane raz dziennie. Pobierane są tylko nazwy, ceny i limity modeli.",
+  "Client ID": "ID klienta",
+  "Client secret": "Sekret klienta",
+  "Backups to Google Drive need a web OAuth client from Google Cloud. Its redirect URI is {url}": "Kopie na Dysku Google wymagają webowego klienta OAuth z Google Cloud. Jego URI przekierowania to {url}",
 }
 
 export default dict

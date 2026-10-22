@@ -751,7 +751,6 @@ const dict = {
   "from {user}": "van {user}",
   "Google Drive is connected. Your first backup is on its way there.": "Google Drive is gekoppeld. Je eerste back-up is onderweg.",
   "Connecting Google Drive failed. Try again.": "Koppelen met Google Drive mislukt. Probeer het opnieuw.",
-  "Google Drive is not set up on this server.": "Google Drive is niet ingesteld op deze server.",
   "Every backup also goes to your Google Drive, so you can restore it on any device.": "Elke back-up gaat ook naar je Google Drive, zodat je hem op elk apparaat kunt terugzetten.",
   "Connect Google Drive": "Google Drive koppelen",
   "Connected as {email}": "Gekoppeld als {email}",
@@ -785,6 +784,18 @@ const dict = {
   "Add speech service": "Spraakdienst toevoegen",
   "API key (empty uses your {name} key)": "API-sleutel (leeg gebruikt je {name}-sleutel)",
   "API key (if the server needs one)": "API-sleutel (als de server er een nodig heeft)",
+  "Google Drive is not set up yet. Add a Google client in Settings > Server.": "Google Drive is nog niet ingesteld. Voeg een Google-client toe in Instellingen > Server.",
+  "Google Drive is not set up on this server. Ask an admin.": "Google Drive is niet ingesteld op deze server. Vraag een beheerder.",
+  "Back up now copies to Drive. Turn on daily backups to keep it current. API keys and sign-ins are not copied.": "Nu back-up maken kopieert naar Drive. Zet dagelijkse back-ups aan om het actueel te houden. API-sleutels en aanmeldingen worden niet gekopieerd.",
+  "Last check failed: {error}": "Laatste controle mislukt: {error}",
+  "{count} new models added.": "{count} nieuwe modellen toegevoegd.",
+  "Not checked yet.": "Nog niet gecontroleerd.",
+  "Check now": "Nu controleren",
+  "Get new models without waiting for an update": "Nieuwe modellen zonder op een update te wachten",
+  "Checked once a day. Only model names, prices and limits are downloaded.": "Eén keer per dag gecontroleerd. Alleen modelnamen, prijzen en limieten worden gedownload.",
+  "Client ID": "Client-ID",
+  "Client secret": "Clientgeheim",
+  "Backups to Google Drive need a web OAuth client from Google Cloud. Its redirect URI is {url}": "Back-ups naar Google Drive hebben een web-OAuth-client uit Google Cloud nodig. De omleidings-URI is {url}",
 }
 
 export default dict

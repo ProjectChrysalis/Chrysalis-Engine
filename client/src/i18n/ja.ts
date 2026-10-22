@@ -751,7 +751,6 @@ const dict = {
   "from {user}": "{user} から",
   "Google Drive is connected. Your first backup is on its way there.": "Google ドライブに接続しました。最初のバックアップを送信中です。",
   "Connecting Google Drive failed. Try again.": "Google ドライブに接続できませんでした。もう一度お試しください。",
-  "Google Drive is not set up on this server.": "このサーバーでは Google ドライブが設定されていません。",
   "Every backup also goes to your Google Drive, so you can restore it on any device.": "すべてのバックアップを Google ドライブにも保存し、どのデバイスでも復元できます。",
   "Connect Google Drive": "Google ドライブに接続",
   "Connected as {email}": "{email} として接続中",
@@ -785,6 +784,18 @@ const dict = {
   "Add speech service": "音声サービスを追加",
   "API key (empty uses your {name} key)": "API キー (空なら {name} のキーを使用)",
   "API key (if the server needs one)": "API キー (サーバーが必要な場合)",
+  "Google Drive is not set up yet. Add a Google client in Settings > Server.": "Google ドライブはまだ設定されていません。設定 > サーバーで Google クライアントを追加してください。",
+  "Google Drive is not set up on this server. Ask an admin.": "このサーバーでは Google ドライブが設定されていません。管理者に依頼してください。",
+  "Back up now copies to Drive. Turn on daily backups to keep it current. API keys and sign-ins are not copied.": "今すぐバックアップでドライブにコピーされます。最新に保つには毎日のバックアップをオンにしてください。API キーとサインイン情報はコピーされません。",
+  "Last check failed: {error}": "前回の確認に失敗しました: {error}",
+  "{count} new models added.": "{count} 個の新しいモデルを追加しました。",
+  "Not checked yet.": "まだ確認していません。",
+  "Check now": "今すぐ確認",
+  "Get new models without waiting for an update": "アップデートを待たずに新しいモデルを取得",
+  "Checked once a day. Only model names, prices and limits are downloaded.": "1 日 1 回確認します。モデル名、価格、上限だけをダウンロードします。",
+  "Client ID": "クライアント ID",
+  "Client secret": "クライアントシークレット",
+  "Backups to Google Drive need a web OAuth client from Google Cloud. Its redirect URI is {url}": "Google ドライブへのバックアップには Google Cloud のウェブ OAuth クライアントが必要です。リダイレクト URI は {url}",
 }
 
 export default dict

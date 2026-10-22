@@ -179,6 +179,8 @@ export const speechApi = {
   voices: () => api<{ edge: string[] }>("GET", "/v1/audio/voices").then((r) => r.edge ?? []),
   endpointVoices: (id: string) =>
     api<{ voices: SpeechVoice[] }>("GET", `/v1/audio/speech/endpoints/${encodeURIComponent(id)}/voices`).then((r) => r.voices ?? []),
+  endpointModels: (id: string) =>
+    api<{ models: string[] }>("GET", `/v1/audio/speech/endpoints/${encodeURIComponent(id)}/models`).then((r) => r.models ?? []),
   /** Synthesize through the engine; resolves an audio data URL the caller plays. */
   speak: (body: { text: string; provider?: "edge" | "endpoint"; endpointId?: string; voice?: string; model?: string; speed?: number; pitch?: number; style?: string }) =>
     api<{ dataUrl: string }>("POST", "/v1/audio/speech", body),
@@ -339,6 +341,8 @@ export interface ServerConfig {
   apps: { packageDownloads: boolean; store: string | null }
   agent: { shell: boolean; shellTimeoutSeconds: number }
   defaultModel: string | null
+  modelUpdates: boolean
+  google: { clientId: string | null; clientSecret: null }
   dataRoot: string
 }
 
@@ -365,7 +369,21 @@ export interface ServerInfo {
   effective: ServerConfig
   /** setting → the environment variable or flag overriding it this run */
   locked: Record<string, string>
+  /** the client secret itself is never sent back */
+  googleSecretSet: boolean
   urls: { local: string; lan: string[] }
+}
+
+export interface ModelCatalogStatus {
+  enabled: boolean
+  /** model details this copy of Chrysalis shipped with */
+  bundled: string
+  /** the newer model details in use, if any */
+  version: string | null
+  checkedAt: string | null
+  /** models known only from the newer details */
+  added: number
+  error: string | null
 }
 
 export interface EngineRelease {
@@ -390,6 +408,8 @@ export const serverApi = {
   installUpdate: () => api<EngineUpdateState>("POST", "/v1/admin/server/update"),
   updateState: () => api<EngineUpdateState>("GET", "/v1/admin/server/update"),
   update: (changes: Record<string, unknown>) => api<ServerInfo & { moved: boolean }>("PUT", "/v1/admin/server", { changes }),
+  models: () => api<ModelCatalogStatus>("GET", "/v1/admin/server/models"),
+  refreshModels: () => api<ModelCatalogStatus>("POST", "/v1/admin/server/models/refresh"),
   firewall: () => api<FirewallState>("GET", "/v1/admin/server/firewall"),
   allowFirewall: () => api<FirewallState>("POST", "/v1/admin/server/firewall"),
 }

@@ -374,10 +374,17 @@ function SpeechEndpointRow(props: { ep: SpeechEndpoint; testing: string | null; 
     )
     return () => { live = false }
   }, [ep.id, ep.baseUrl, ep.hasKey])
+  const [models, setModels] = useState<string[]>([])
+  useEffect(() => {
+    let live = true
+    speechApi.endpointModels(ep.id).then((list) => live && setModels(list), () => undefined)
+    return () => { live = false }
+  }, [ep.id, ep.baseUrl, ep.hasKey])
+  const modelIds = models.includes(ep.model) ? models : [ep.model, ...models]
   const byId = new Map((voices.list ?? []).map((v) => [v.id, v]))
   const ids = (voices.list ?? []).map((v) => v.id)
   if (ep.voice && !byId.has(ep.voice)) ids.unshift(ep.voice)
-  const save = async (body: { voice?: string; style?: string }) => {
+  const save = async (body: { voice?: string; style?: string; model?: string }) => {
     try {
       await speechApi.update(ep.id, body)
       props.onChanged()
@@ -392,7 +399,7 @@ function SpeechEndpointRow(props: { ep: SpeechEndpoint; testing: string | null; 
         <span className="min-w-0 flex-1">
           <span className="block truncate font-medium">{ep.name}</span>
           <span className="block truncate text-11 text-ink-faint">
-            {[SPEECH_KIND_LABEL[ep.kind], ep.model, keyNote].filter(Boolean).join(" · ")}
+            {[SPEECH_KIND_LABEL[ep.kind], keyNote].filter(Boolean).join(" · ")}
           </span>
         </span>
         <Button variant="ghost-muted" size="small" disabled={props.testing !== null} onClick={() => props.onTest()}>
@@ -414,6 +421,14 @@ function SpeechEndpointRow(props: { ep: SpeechEndpoint; testing: string | null; 
         />
       </div>
       <div className="flex flex-wrap items-center gap-2">
+        <Select
+          className="min-w-[160px] flex-1"
+          options={modelIds}
+          current={ep.model}
+          value={(m) => m}
+          label={(m) => m}
+          onSelect={(m) => m && m !== ep.model && save({ model: m })}
+        />
         <Select
           className="min-w-[180px] flex-1"
           placeholder={voices.error ? tr("Voices unavailable") : voices.list ? tr("Default voice") : tr("Loading voices…")}

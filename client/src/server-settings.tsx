@@ -3,7 +3,7 @@
 // page follows the engine to its new address.
 import { useEffect, useState, type ReactNode } from "react"
 import { renderSVG } from "uqr"
-import { serverApi, type EngineRelease, type ServerInfo } from "./api"
+import { serverApi, type EngineRelease, type ModelCatalogStatus, type ServerInfo } from "./api"
 import { tr } from "./i18n/index"
 import { Pane, inputClass } from "./settings"
 import { Button, IconButton } from "./ui/button"
@@ -343,6 +343,42 @@ function InstallRow(props: { release: EngineRelease }) {
   )
 }
 
+/** Model details newer than the ones this copy shipped with, and a check
+ *  on demand. `on` re-reads the status after the setting changed. */
+function ModelUpdatesRow(props: { on: boolean }) {
+  const status = useResource(() => serverApi.models(), [props.on])
+  const [checking, setChecking] = useState(false)
+  const s = status.data
+  if (!s) return null
+  const check = async () => {
+    setChecking(true)
+    try {
+      status.mutate(await serverApi.refreshModels())
+    } catch {
+      void status.refetch()
+    } finally {
+      setChecking(false)
+    }
+  }
+  const line = s.error
+    ? tr("Last check failed: {error}", { error: s.error })
+    : s.version
+      ? tr("{count} new models added.", { count: String(s.added) })
+      : s.checkedAt
+        ? tr("Up to date.")
+        : tr("Not checked yet.")
+  return (
+    <div className="flex items-center gap-2 pl-6">
+      <p className={`min-w-0 flex-1 text-12 leading-4 ${s.error ? "text-danger" : "text-ink-muted"}`}>{line}</p>
+      {s.enabled ? (
+        <Button variant="neutral" size="small" disabled={checking} onClick={() => void check()}>
+          {checking ? tr("Checking…") : tr("Check now")}
+        </Button>
+      ) : null}
+    </div>
+  )
+}
+
 export function ServerTab() {
   const info = useResource(() => serverApi.get())
   const [busy, setBusy] = useState(false)
@@ -456,6 +492,39 @@ export function ServerTab() {
               onChange={(v) => void save({ openBrowser: v })}
             />
           ) : null}
+        </Section>
+
+        <Section title={tr("Models")}>
+          <Toggle
+            label={tr("Get new models without waiting for an update")}
+            hint={tr("Checked once a day. Only model names, prices and limits are downloaded.")}
+            checked={e.modelUpdates}
+            locked={locked.modelUpdates}
+            disabled={busy}
+            onChange={(v) => void save({ modelUpdates: v })}
+          />
+          <ModelUpdatesRow on={e.modelUpdates} />
+        </Section>
+
+        <Section title={tr("Google Drive")}>
+          <TextSetting
+            label={tr("Client ID")}
+            value={f.google.clientId ?? ""}
+            locked={locked["google.clientId"]}
+            disabled={busy}
+            onSave={(v) => void save({ "google.clientId": v.trim() || null })}
+          />
+          <TextSetting
+            label={tr("Client secret")}
+            value=""
+            locked={locked["google.clientSecret"]}
+            disabled={busy}
+            placeholder={d.googleSecretSet ? tr("Saved") : ""}
+            onSave={(v) => void save({ "google.clientSecret": v.trim() || null })}
+          />
+          <p className="text-12 leading-4 text-ink-muted">
+            {tr("Backups to Google Drive need a web OAuth client from Google Cloud. Its redirect URI is {url}", { url: "https://projectchrysalis.github.io/assets/google-drive.html" })}
+          </p>
         </Section>
 
         <Section title={tr("Files")}>

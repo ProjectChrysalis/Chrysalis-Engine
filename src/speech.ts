@@ -493,6 +493,42 @@ export async function speechVoices(cacheKey: string, t: SpeechTarget): Promise<S
   return voices;
 }
 
+const modelCache = new Map<string, { at: number; models: string[] }>();
+
+async function fetchModels(t: SpeechTarget): Promise<string[]> {
+  const base = normalizeUrl(t.baseUrl);
+  if (t.kind === "elevenlabs") {
+    const body = await getJson<{ model_id: string; can_do_text_to_speech?: boolean }[]>(`${base}/v1/models`, t.key ? { "xi-api-key": t.key } : {}, "ElevenLabs");
+    return body.filter((m) => m.can_do_text_to_speech !== false).map((m) => m.model_id);
+  }
+  if (t.kind === "gemini") {
+    const body = await getJson<{ models?: { name: string; supportedGenerationMethods?: string[] }[] }>(`${base}/models?pageSize=1000`, t.key ? { "x-goog-api-key": t.key } : {}, "Gemini");
+    return (body.models ?? [])
+      .filter((m) => /tts/i.test(m.name) && (m.supportedGenerationMethods ?? ["generateContent"]).includes("generateContent"))
+      .map((m) => m.name.replace(/^models\//, ""));
+  }
+  if (t.kind === "openai") {
+    const body = await getJson<{ data?: { id: string }[] }>(`${base}/models`, t.key ? { authorization: `Bearer ${t.key}` } : {}, "speech endpoint");
+    const ids = (body.data ?? []).map((m) => m.id).filter(Boolean);
+    const speech = ids.filter((id) => /tts|speech/i.test(id));
+    // a small list is a local server's own models, named however it likes
+    return speech.length ? speech : ids.length <= 20 ? ids : [];
+  }
+  return [];
+}
+
+/** Speech models an endpoint offers, asked from the service so new ones show
+ *  up without a Chrysalis update; the built-in list when it cannot say. */
+export async function speechModels(cacheKey: string, t: SpeechTarget): Promise<{ models: string[]; live: boolean }> {
+  const key = `${cacheKey}\0${t.kind}\0${t.baseUrl}`;
+  const hit = modelCache.get(key);
+  if (hit && Date.now() - hit.at < VOICE_TTL) return { models: hit.models, live: true };
+  const models = await fetchModels(t).catch(() => []);
+  if (!models.length) return { models: SPEECH_KIND_INFO[t.kind].models, live: false };
+  modelCache.set(key, { at: Date.now(), models });
+  return { models, live: true };
+}
+
 /** True for OpenAI's own voice and model names, which a caller written for
  *  OpenAI-style services may send to any service. */
 export function isOpenAiStock(kind: SpeechKind, name: string): boolean {

@@ -751,7 +751,6 @@ const dict = {
   "from {user}": "{user}에서",
   "Google Drive is connected. Your first backup is on its way there.": "Google 드라이브가 연결되었습니다. 첫 백업을 보내는 중입니다.",
   "Connecting Google Drive failed. Try again.": "Google 드라이브 연결에 실패했습니다. 다시 시도하세요.",
-  "Google Drive is not set up on this server.": "이 서버에는 Google 드라이브가 설정되어 있지 않습니다.",
   "Every backup also goes to your Google Drive, so you can restore it on any device.": "모든 백업이 Google 드라이브에도 저장되어 어느 기기에서든 복원할 수 있습니다.",
   "Connect Google Drive": "Google 드라이브 연결",
   "Connected as {email}": "{email}(으)로 연결됨",
@@ -785,6 +784,18 @@ const dict = {
   "Add speech service": "음성 서비스 추가",
   "API key (empty uses your {name} key)": "API 키 (비우면 {name} 키 사용)",
   "API key (if the server needs one)": "API 키 (서버에 필요한 경우)",
+  "Google Drive is not set up yet. Add a Google client in Settings > Server.": "Google 드라이브가 아직 설정되지 않았습니다. 설정 > 서버에서 Google 클라이언트를 추가하세요.",
+  "Google Drive is not set up on this server. Ask an admin.": "이 서버에는 Google 드라이브가 설정되어 있지 않습니다. 관리자에게 요청하세요.",
+  "Back up now copies to Drive. Turn on daily backups to keep it current. API keys and sign-ins are not copied.": "지금 백업하면 드라이브에 복사됩니다. 최신 상태를 유지하려면 매일 백업을 켜세요. API 키와 로그인 정보는 복사되지 않습니다.",
+  "Last check failed: {error}": "마지막 확인 실패: {error}",
+  "{count} new models added.": "새 모델 {count}개가 추가되었습니다.",
+  "Not checked yet.": "아직 확인하지 않았습니다.",
+  "Check now": "지금 확인",
+  "Get new models without waiting for an update": "업데이트를 기다리지 않고 새 모델 받기",
+  "Checked once a day. Only model names, prices and limits are downloaded.": "하루에 한 번 확인합니다. 모델 이름, 가격, 한도만 내려받습니다.",
+  "Client ID": "클라이언트 ID",
+  "Client secret": "클라이언트 보안 비밀",
+  "Backups to Google Drive need a web OAuth client from Google Cloud. Its redirect URI is {url}": "Google 드라이브 백업에는 Google Cloud의 웹 OAuth 클라이언트가 필요합니다. 리디렉션 URI는 {url}",
 }
 
 export default dict

@@ -357,7 +357,7 @@ function DriveRow(props: { backup: DriveBackup; me: string; busy: boolean; onRes
   )
 }
 
-function DriveSection(props: { drive: DriveStatus; me: string; busy: boolean; act: (fn: () => Promise<unknown>) => Promise<void>; onJob: (job: BackupJob) => void }) {
+function DriveSection(props: { drive: DriveStatus; me: string; admin: boolean; daily: boolean; busy: boolean; act: (fn: () => Promise<unknown>) => Promise<void>; onJob: (job: BackupJob) => void }) {
   const [outcome] = useState(driveOutcome)
   const [list, setList] = useState<DriveBackup[] | null>(null)
   const [loading, setLoading] = useState(false)
@@ -386,7 +386,9 @@ function DriveSection(props: { drive: DriveStatus; me: string; busy: boolean; ac
     outcome === null || outcome === "cancelled" ? null :
     outcome === "connected" ? <p className="text-12 text-ink">{tr("Google Drive is connected. Your first backup is on its way there.")}</p> :
     <p className="text-12 text-danger">{outcome === "failed" ? tr("Connecting Google Drive failed. Try again.") : outcome}</p>
-  if (!d.available) return <p className="text-12 text-ink-muted">{tr("Google Drive is not set up on this server.")}</p>
+  if (!d.available) {
+    return <p className="text-12 text-ink-muted">{props.admin ? tr("Google Drive is not set up yet. Add a Google client in Settings > Server.") : tr("Google Drive is not set up on this server. Ask an admin.")}</p>
+  }
   if (!d.connected) {
     return (
       <div className="flex flex-col gap-2.5">
@@ -411,7 +413,9 @@ function DriveSection(props: { drive: DriveStatus; me: string; busy: boolean; ac
           ? <p className="text-12 text-danger">{tr("Last copy to Drive failed: {error}", { error: d.last.error })}</p>
           : <p className="text-12 text-ink-muted">{tr("Last copied {when}", { when: new Date(d.last.at).toLocaleString() })}</p>
       ) : null}
-      <p className="text-12 text-ink-muted">{tr("Drive keeps the 2 newest daily copies. API keys and sign-ins are not copied.")}</p>
+      <p className="text-12 text-ink-muted">
+        {props.daily ? tr("Drive keeps the 2 newest daily copies. API keys and sign-ins are not copied.") : tr("Back up now copies to Drive. Turn on daily backups to keep it current. API keys and sign-ins are not copied.")}
+      </p>
       <div>
         <Button variant="neutral" size="small" disabled={loading} onClick={() => void load()}>{list ? tr("Refresh") : tr("Show backups in Drive")}</Button>
       </div>
@@ -482,7 +486,7 @@ export function BackupsTab(props: { me: Me }) {
 
         {d ? (
           <Section title={tr("Google Drive")}>
-            <DriveSection drive={d.drive} me={props.me.username} busy={busy} act={act} onJob={(j) => state.mutate({ ...d, job: j })} />
+            <DriveSection drive={d.drive} me={props.me.username} admin={props.me.role === "admin"} daily={d.settings.auto} busy={busy} act={act} onJob={(j) => state.mutate({ ...d, job: j })} />
           </Section>
         ) : null}
 

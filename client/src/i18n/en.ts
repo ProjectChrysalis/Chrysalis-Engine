@@ -753,7 +753,6 @@ const en = {
   "from {user}": "",
   "Google Drive is connected. Your first backup is on its way there.": "",
   "Connecting Google Drive failed. Try again.": "",
-  "Google Drive is not set up on this server.": "",
   "Every backup also goes to your Google Drive, so you can restore it on any device.": "",
   "Connect Google Drive": "",
   "Connected as {email}": "",
@@ -787,6 +786,18 @@ const en = {
   "Add speech service": "",
   "API key (empty uses your {name} key)": "",
   "API key (if the server needs one)": "",
+  "Google Drive is not set up yet. Add a Google client in Settings > Server.": "",
+  "Google Drive is not set up on this server. Ask an admin.": "",
+  "Back up now copies to Drive. Turn on daily backups to keep it current. API keys and sign-ins are not copied.": "",
+  "Last check failed: {error}": "",
+  "{count} new models added.": "",
+  "Not checked yet.": "",
+  "Check now": "",
+  "Get new models without waiting for an update": "",
+  "Checked once a day. Only model names, prices and limits are downloaded.": "",
+  "Client ID": "",
+  "Client secret": "",
+  "Backups to Google Drive need a web OAuth client from Google Cloud. Its redirect URI is {url}": "",
 } as const
 
 export default en

@@ -751,7 +751,6 @@ const dict = {
   "from {user}": "{user} hesabından",
   "Google Drive is connected. Your first backup is on its way there.": "Google Drive bağlandı. İlk yedeğin yolda.",
   "Connecting Google Drive failed. Try again.": "Google Drive bağlanamadı. Tekrar dene.",
-  "Google Drive is not set up on this server.": "Bu sunucuda Google Drive ayarlanmamış.",
   "Every backup also goes to your Google Drive, so you can restore it on any device.": "Her yedek Google Drive'ına da gider, böylece herhangi bir cihazda geri yükleyebilirsin.",
   "Connect Google Drive": "Google Drive'ı bağla",
   "Connected as {email}": "{email} olarak bağlı",
@@ -785,6 +784,18 @@ const dict = {
   "Add speech service": "Ses hizmeti ekle",
   "API key (empty uses your {name} key)": "API anahtarı (boşsa {name} anahtarın kullanılır)",
   "API key (if the server needs one)": "API anahtarı (sunucu isterse)",
+  "Google Drive is not set up yet. Add a Google client in Settings > Server.": "Google Drive henüz ayarlanmadı. Ayarlar > Sunucu'dan bir Google istemcisi ekleyin.",
+  "Google Drive is not set up on this server. Ask an admin.": "Bu sunucuda Google Drive ayarlanmamış. Bir yöneticiye sorun.",
+  "Back up now copies to Drive. Turn on daily backups to keep it current. API keys and sign-ins are not copied.": "Şimdi yedekle Drive'a kopyalar. Güncel tutmak için günlük yedeklemeyi açın. API anahtarları ve oturumlar kopyalanmaz.",
+  "Last check failed: {error}": "Son kontrol başarısız: {error}",
+  "{count} new models added.": "{count} yeni model eklendi.",
+  "Not checked yet.": "Henüz kontrol edilmedi.",
+  "Check now": "Şimdi kontrol et",
+  "Get new models without waiting for an update": "Güncelleme beklemeden yeni modeller",
+  "Checked once a day. Only model names, prices and limits are downloaded.": "Günde bir kez kontrol edilir. Yalnızca model adları, fiyatları ve sınırları indirilir.",
+  "Client ID": "İstemci kimliği",
+  "Client secret": "İstemci gizli anahtarı",
+  "Backups to Google Drive need a web OAuth client from Google Cloud. Its redirect URI is {url}": "Google Drive yedekleri için Google Cloud'dan bir web OAuth istemcisi gerekir. Yönlendirme URI'si {url}",
 }
 
 export default dict

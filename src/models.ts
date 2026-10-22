@@ -8,7 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createModels, getSupportedThinkingLevels, uuidv7, type Api, type AssistantMessage, type AssistantMessageEvent, type Context, type Credential, type CredentialInfo, type Message, type Model, type MutableModels, type Tool as PiTool, type ToolResultMessage, type Usage } from "@earendil-works/pi-ai";
 import type { AuthOperationOptions, CredentialStore } from "@earendil-works/pi-ai";
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { catalogProviders } from "./model-catalog.js";
 import { radiusProvider } from "@earendil-works/pi-ai/providers/radius";
 import { loadCustomProviders, curatedProviders, buildProvider, withAdditionalModels, reservedProviderIds, isLocalEndpoint, abortLocalGeneration, type CredentialWithBinding } from "./providers/custom.js";
 import { readConnections, authTarget, connectionKeyUsable, readAuth } from "./connections.js";
@@ -320,7 +320,7 @@ export class UserModelService {
   ) {
     const credentials = new FileCredentialStore(paths.auth);
     const models = createModels({ credentials });
-    for (const provider of builtinProviders()) models.setProvider(provider);
+    for (const provider of catalogProviders()) models.setProvider(provider);
     // curated (NanoGPT etc. — inert until key exists) + user-defined providers;
     // user providers.json upserts over curated by id (setProvider semantics)
     const readCredential = (id: string): CredentialWithBinding => readAuth(paths)[id] as CredentialWithBinding;

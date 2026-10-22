@@ -43,6 +43,8 @@ export interface InstanceConfig {
   };
   /** Model the agent uses when a user has not picked one ("provider/model"). */
   defaultModel: string | null;
+  /** Fetch newer model lists and prices once a day (data only, no code). */
+  modelUpdates: boolean;
   /** The Google sign-in Drive backups use; null is the one Chrysalis ships. */
   google: { clientId: string | null; clientSecret: string | null };
 }
@@ -63,6 +65,7 @@ export function defaultInstanceConfig(): InstanceConfig {
     apps: { packageDownloads: true, store: DEFAULT_STORE_URL },
     agent: { shell: sandbox.provider !== "off", shellTimeoutSeconds: sandbox.timeoutMs / 1000 },
     defaultModel: null,
+    modelUpdates: true,
     google: { clientId: null, clientSecret: null },
   };
 }
@@ -102,6 +105,7 @@ export const SETTINGS: readonly Setting[] = [
   { key: "agent.shell", kind: "bool" },
   { key: "agent.shellTimeoutSeconds", kind: "seconds" },
   { key: "defaultModel", kind: "model" },
+  { key: "modelUpdates", kind: "bool" },
   { key: "google.clientId", kind: "text" },
   { key: "google.clientSecret", kind: "text" },
 ];
@@ -304,12 +308,16 @@ agent:
 # "provider/model". null picks the first available model.
 defaultModel: ${c.defaultModel === null ? "null" : yamlString(c.defaultModel)}
 
+# New models and price changes, checked once a day, so they show up without
+# waiting for a Chrysalis update. Only model details are downloaded.
+modelUpdates: ${c.modelUpdates}
+
 # ---- Google Drive backups ----
 
 # A Google OAuth client of your own for Drive backups: a "Web application"
 # client that redirects to
 #   https://projectchrysalis.github.io/assets/google-drive.html
-# null uses the one Chrysalis ships.
+# null uses the built-in one, when this build has one.
 google:
   clientId: ${c.google.clientId === null ? "null" : yamlString(c.google.clientId)}
   clientSecret: ${c.google.clientSecret === null ? "null" : yamlString(c.google.clientSecret)}

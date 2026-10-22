@@ -15,7 +15,7 @@ import { EventBus } from "../src/server/ws.js";
 import { SessionService } from "../src/sessions.js";
 import { UserService } from "../src/users.js";
 import {
-  createSpeechEndpoint, edgeSpeakFmt, listSpeechEndpoints, speechEndpointKey, speechVoices, splitForSpeech, synthesize, validateSpeechEndpointInput,
+  createSpeechEndpoint, edgeSpeakFmt, listSpeechEndpoints, speechEndpointKey, speechModels, speechVoices, splitForSpeech, synthesize, validateSpeechEndpointInput,
 } from "../src/speech.js";
 
 interface Seen { path: string; headers: Record<string, string>; body: any }
@@ -37,6 +37,13 @@ beforeEach(() => {
       if (url.pathname.endsWith(":generateContent")) {
         return Response.json({ candidates: [{ content: { parts: [{ inlineData: { mimeType: "audio/L16;codec=pcm;rate=24000", data: Buffer.alloc(480, 1).toString("base64") } }] } }] });
       }
+      if (url.pathname === "/v1/models") {
+        return req.headers.get("xi-api-key")
+          ? Response.json([{ model_id: "eleven_v4", can_do_text_to_speech: true }, { model_id: "scribe", can_do_text_to_speech: false }])
+          : Response.json({ data: [{ id: "gpt-5" }, { id: "gpt-5-tts" }, { id: "whisper-1" }] });
+      }
+      if (url.pathname === "/models") return Response.json({ models: [{ name: "models/gemini-3-flash" }, { name: "models/gemini-3-flash-tts", supportedGenerationMethods: ["generateContent"] }] });
+      if (url.pathname === "/local/models") return Response.json({ data: [{ id: "kokoro" }] });
       if (url.pathname === "/v1/voices") return Response.json({ voices: [{ voice_id: "v1", name: "Rachel", labels: { gender: "female", accent: "american" }, preview_url: "https://x/p.mp3" }] });
       if (url.pathname === "/model") {
         return Response.json({ items: url.searchParams.get("self") ? [{ _id: "mine", title: "My voice" }] : [{ _id: "mine", title: "My voice" }, { _id: "pop", title: "Popular", languages: ["en"] }] });
@@ -107,6 +114,15 @@ it("lists voices for each kind", async () => {
   expect((await speechVoices("a", { kind: "openai", baseUrl: `${base}/local` })).map((v) => v.id)).toEqual(["af_bella", "am_adam"]);
   expect((await speechVoices("a", { kind: "openai", baseUrl: `${base}/v1` })).map((v) => v.id)).toContain("alloy");
   expect((await speechVoices("a", { kind: "gemini", baseUrl: base })).length).toBe(30);
+});
+
+it("asks each service for its speech models, falling back to the built-in list", async () => {
+  expect(await speechModels("m", { kind: "elevenlabs", baseUrl: base, key: "k" })).toEqual({ models: ["eleven_v4"], live: true });
+  expect((await speechModels("m", { kind: "gemini", baseUrl: base, key: "k" })).models).toEqual(["gemini-3-flash-tts"]);
+  expect((await speechModels("m", { kind: "openai", baseUrl: `${base}/v1` })).models).toEqual(["gpt-5-tts"]);
+  expect((await speechModels("m", { kind: "openai", baseUrl: `${base}/local` })).models).toEqual(["kokoro"]);
+  expect(await speechModels("m", { kind: "openai", baseUrl: `${base}/fail` })).toMatchObject({ live: false, models: ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"] });
+  expect((await speechModels("m", { kind: "fish", baseUrl: base })).live).toBe(false);
 });
 
 it("fills kind defaults and uses a connection's key only for its own origin", () => {

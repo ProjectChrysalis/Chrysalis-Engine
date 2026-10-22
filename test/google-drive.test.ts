@@ -1,6 +1,7 @@
 /**
  * Backups in Google Drive, against a stand-in for Google's sign-in and
- * Drive APIs: the PKCE sign-in, resumable uploads in chunks, keeping only
+ * Drive APIs: the PKCE sign-in, resumable uploads in chunks that survive a
+ * dropped connection, keeping only
  * the newest automatic copies, refusing a full Drive, and restoring.
  */
 import { afterEach, beforeEach, expect, it } from "bun:test";
@@ -26,6 +27,7 @@ function fakeGoogle() {
   const challenges = new Map<string, string>();
   const quota = { limit: 15 * 1024 ** 3, usage: 0 };
   const revoked: string[] = [];
+  const flaky = { drops: 0 };
   let seq = 0;
   const server = Bun.serve({
     port: 0,
@@ -80,12 +82,22 @@ function fakeGoogle() {
         const s = sessions.get(session[1]!)!;
         const range = /^bytes (?:(\d+)-(\d+)|\*)\/(\d+|\*)$/.exec(req.headers.get("content-range") ?? "")!;
         const body = Buffer.from(await req.arrayBuffer());
+        const held = () => s.parts.reduce((n, b) => n + b.length, 0);
+        const resume = () => new Response(null, { status: 308, headers: held() ? { range: `bytes=0-${held() - 1}` } : {} });
         if (range[1] !== undefined) {
-          // every chunk but the last is a multiple of 256 KiB
+          // every chunk but the last is a multiple of 256 KiB, and starts where the file ends
           if (range[3] === "*" && body.length % (256 * 1024) !== 0) return new Response("bad chunk", { status: 400 });
+          if (Number(range[1]) !== held()) return new Response("bad offset", { status: 400 });
+          if (flaky.drops > 0 && s.parts.length === 1 && body.length > 256 * 1024) {
+            // the connection drops after part of the chunk arrived
+            flaky.drops--;
+            s.parts.push(body.subarray(0, 256 * 1024));
+            return new Response("unavailable", { status: 503 });
+          }
           s.parts.push(body);
         }
-        if (range[3] === "*") return new Response(null, { status: 308 });
+        if (range[3] === "*") return resume();
+        if (range[1] === undefined && held() < Number(range[3])) return resume();
         const id = `file${++seq}xxxxxxxx`;
         const data = Buffer.concat(s.parts);
         files.set(id, { id, ...s.meta, createdTime: new Date().toISOString(), data });
@@ -104,7 +116,7 @@ function fakeGoogle() {
     challenges.set(code, u.searchParams.get("code_challenge")!);
     return { code, state: u.searchParams.get("state")!, url: u };
   };
-  return { server, files, quota, revoked, endpoints, consent };
+  return { server, files, quota, revoked, endpoints, consent, flaky };
 }
 
 let dataDir: string;
@@ -146,7 +158,10 @@ it("signs in with PKCE, uploads in chunks, keeps the newest automatic copies and
   // big enough to need more than one chunk
   fs.writeFileSync(path.join(p.root, "notes", "big.bin"), crypto.randomBytes(9 * 1024 * 1024));
   const manual = (await createBackup(dataDir, "alice", "manual"))!;
+  // one dropped connection mid-chunk: the upload asks what arrived and sends the rest
+  google.flaky.drops = 1;
   await drive.upload("alice", manual);
+  expect(google.flaky.drops).toBe(0);
   for (let i = 0; i < 3; i++) {
     fs.writeFileSync(path.join(p.root, "notes", "day.md"), `day ${i}\n`);
     await drive.upload("alice", (await createBackup(dataDir, "alice", "auto"))!);

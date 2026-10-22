@@ -20,6 +20,7 @@ import { ENGINE_VERSION, INSTALL_KIND, IN_CONTAINER, resolveHomeDir } from "./in
 import { UserService } from "./users.js";
 import { SessionService } from "./sessions.js";
 import { runAutoBackups } from "./account-backup.js";
+import { ModelCatalog } from "./model-catalog.js";
 import { GoogleDrive, googleClientOf } from "./google-drive.js";
 import { bootstrapUserDir, ensureGitignoreEntries, ensureNotesDir, ensureWorkspaceAgentsMd, migrateConnectionsIntoDataRoot, migrateCredentialsIntoDataRoot, migrateMcpIntoDataRoot, migrateSpeechIntoDataRoot, migrateWebSearchPreset, userPaths } from "./paths.js";
 import { initRepo, untrackBoundary, commitAll as gitCommitAll, commitPaths as gitCommitPaths } from "./git.js";
@@ -643,6 +644,7 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
     sessionCookie: SESSION_COOKIE,
   });
   let listener: Listener | null = null;
+  const catalog = new ModelCatalog({ dataDir, enabled: () => config.modelUpdates });
   const settings = new ServerSettings({
     homeDir,
     dataDir,
@@ -655,7 +657,10 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
       if (moved) writeLock(dataDir, { pid: process.pid, instance, url: selfUrl(next), startedAt: Date.now() });
       return moved;
     },
-    applyRuntime: (next) => Object.assign(sandbox.config, sandboxConfigOf(next)),
+    applyRuntime: (next) => {
+      Object.assign(sandbox.config, sandboxConfigOf(next));
+      catalog.settingChanged();
+    },
   });
   // declared before the app so an installed update can stop serving first
   let stopping = false;
@@ -676,8 +681,9 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
     await stopServing();
     runReplacement({ dataDir });
   };
-  const drive = new GoogleDrive({ dataDir, client: googleClientOf(config) });
-  const app = buildApp({ users, sessions, config, dataDir, bus, sandbox, instance, setupToken, settings, restart, services, drive });
+  const drive = new GoogleDrive({ dataDir, client: () => googleClientOf(config) });
+  const app = buildApp({ users, sessions, config, dataDir, bus, sandbox, instance, setupToken, settings, restart, services, drive, catalog });
+  catalog.start();
   bus.attach(users, sessions);
 
   listener = new Listener({ homeDir, bus, handle: (req, peerAddress) => app.fetch(req, { peerAddress }) });

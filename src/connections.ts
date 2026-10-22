@@ -16,6 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { catalogProviders } from "./model-catalog.js";
 import type { UserPaths } from "./paths.js";
 import { CURATED_PROVIDERS, keyBoundTo, reservedProviderIds } from "./providers/custom.js";
 import { parsePromptFormat, promptFormatById, type PromptFormat } from "./providers/prompt-formats.js";
@@ -242,7 +243,7 @@ export function validateConnectionInput(input: {
     const checked = validateConnectionModels(input.models);
     if (!checked.ok) return checked;
     if (Array.isArray(checked.value)) {
-      const catalog = builtinProviders().find((provider) => provider.id === builtin.id)?.getModels() ?? [];
+      const catalog = catalogProviders().find((provider) => provider.id === builtin.id)?.getModels() ?? [];
       for (const model of checked.value) {
         if (!catalog.some((m) => m.id === model.id) && (!model.contextWindow || !model.maxTokens)) {
           return { ok: false, error: `model "${model.id}" needs a context window and max output tokens` };

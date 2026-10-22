@@ -84,7 +84,8 @@ export class GoogleDrive {
   private readonly ep: GoogleEndpoints;
   private readonly fetch: typeof fetch;
 
-  constructor(private readonly opts: { dataDir: string; client: GoogleClient | null; endpoints?: GoogleEndpoints; fetch?: typeof fetch }) {
+  /** `client` may be a function so a client saved in Settings applies at once. */
+  constructor(private readonly opts: { dataDir: string; client: GoogleClient | null | (() => GoogleClient | null); endpoints?: GoogleEndpoints; fetch?: typeof fetch }) {
     this.ep = opts.endpoints ?? GOOGLE;
     this.fetch = opts.fetch ?? fetch;
   }
@@ -108,18 +109,23 @@ export class GoogleDrive {
     fs.writeFileSync(file, JSON.stringify(link, null, 2) + "\n", { mode: 0o600 });
   }
 
+  private get configured(): GoogleClient | null {
+    return typeof this.opts.client === "function" ? this.opts.client() : this.opts.client;
+  }
+
   private client(): GoogleClient {
-    if (!this.opts.client) throw new AccountBackupError("Google Drive is not set up on this server", 422);
-    return this.opts.client;
+    const client = this.configured;
+    if (!client) throw new AccountBackupError("Google Drive is not set up on this server", 422);
+    return client;
   }
 
   status(username: string): DriveStatus {
     const link = this.read(username);
-    return { available: !!this.opts.client, connected: !!link, email: link?.email ?? null, last: link?.last ?? null };
+    return { available: !!this.configured, connected: !!link, email: link?.email ?? null, last: link?.last ?? null };
   }
 
   connected(username: string): boolean {
-    return !!this.opts.client && !!this.read(username);
+    return !!this.configured && !!this.read(username);
   }
 
   /** The Google sign-in page for this account. `origin` is where the engine
@@ -269,15 +275,38 @@ export class GoogleDrive {
     let buf = new Uint8Array(CHUNK);
     let fill = 0;
     let sent = 0;
+    // Google says how much of the file it holds after every request; a dropped
+    // connection asks again and sends only the rest, so a chunk is never lost
+    // or written twice.
+    const kept = (res: Response) => {
+      const m = /bytes=0-(\d+)/.exec(res.headers.get("range") ?? "");
+      return m ? Number(m[1]) + 1 : 0;
+    };
+    const lost = (e: unknown) => {
+      if (e instanceof AccountBackupError) throw e;
+      return null;
+    };
     const put = async (bytes: Uint8Array, total: number | null) => {
-      const range = bytes.length ? `bytes ${sent}-${sent + bytes.length - 1}/${total ?? "*"}` : `bytes */${total}`;
-      for (let attempt = 0; ; attempt++) {
-        const res = await this.call(username, "PUT", session, { headers: { "content-range": range }, body: bytes });
-        if (res.status === 308 || res.ok) break;
-        if (res.status < 500 || attempt >= 3) throw new AccountBackupError(`Google Drive stopped the upload (${res.status})`, 422);
-        await Bun.sleep(1000 * 2 ** attempt);
+      const end = sent + bytes.length;
+      let at = sent;
+      for (let attempt = 0; ; ) {
+        const part = bytes.subarray(at - sent);
+        const range = part.length ? `bytes ${at}-${end - 1}/${total ?? "*"}` : `bytes */${total}`;
+        const res = await this.call(username, "PUT", session, { headers: { "content-range": range }, body: part }).catch(lost);
+        if (res?.ok) break;
+        // a 308 only finishes a chunk mid-file; the last one ends with a 200
+        if (res?.status === 308 && total === null && kept(res) >= end) break;
+        if (res?.status === 308 && kept(res) > at) {
+          at = kept(res);
+          continue;
+        }
+        if ((res && res.status !== 308 && res.status < 500) || attempt >= 4) throw new AccountBackupError(`Google Drive stopped the upload (${res?.status ?? "connection lost"})`, 422);
+        await Bun.sleep(1000 * 2 ** attempt++);
+        const asked = await this.call(username, "PUT", session, { headers: { "content-range": `bytes */${total ?? "*"}` } }).catch(lost);
+        if (asked?.ok) break;
+        if (asked?.status === 308) at = Math.min(end, Math.max(sent, kept(asked)));
       }
-      sent += bytes.length;
+      sent = end;
       if (job) job.done = sent;
     };
     for (;;) {

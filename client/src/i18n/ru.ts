@@ -751,7 +751,6 @@ const dict = {
   "from {user}": "от {user}",
   "Google Drive is connected. Your first backup is on its way there.": "Google Диск подключён. Первая копия уже отправляется.",
   "Connecting Google Drive failed. Try again.": "Не удалось подключить Google Диск. Попробуйте ещё раз.",
-  "Google Drive is not set up on this server.": "Google Диск не настроен на этом сервере.",
   "Every backup also goes to your Google Drive, so you can restore it on any device.": "Каждая копия попадает и в ваш Google Диск, чтобы восстановить её на любом устройстве.",
   "Connect Google Drive": "Подключить Google Диск",
   "Connected as {email}": "Подключено как {email}",
@@ -785,6 +784,18 @@ const dict = {
   "Add speech service": "Добавить голосовой сервис",
   "API key (empty uses your {name} key)": "API-ключ (пусто: ключ {name})",
   "API key (if the server needs one)": "API-ключ (если сервер его требует)",
+  "Google Drive is not set up yet. Add a Google client in Settings > Server.": "Google Диск ещё не настроен. Добавьте клиент Google в Настройки > Сервер.",
+  "Google Drive is not set up on this server. Ask an admin.": "Google Диск не настроен на этом сервере. Попросите администратора.",
+  "Back up now copies to Drive. Turn on daily backups to keep it current. API keys and sign-ins are not copied.": "«Создать копию» отправляет её на Диск. Включите ежедневные копии, чтобы он оставался актуальным. Ключи API и входы не копируются.",
+  "Last check failed: {error}": "Последняя проверка не удалась: {error}",
+  "{count} new models added.": "Добавлено новых моделей: {count}.",
+  "Not checked yet.": "Ещё не проверялось.",
+  "Check now": "Проверить",
+  "Get new models without waiting for an update": "Новые модели без ожидания обновления",
+  "Checked once a day. Only model names, prices and limits are downloaded.": "Проверяется раз в день. Загружаются только названия, цены и лимиты моделей.",
+  "Client ID": "ID клиента",
+  "Client secret": "Секрет клиента",
+  "Backups to Google Drive need a web OAuth client from Google Cloud. Its redirect URI is {url}": "Для копий в Google Диске нужен веб-клиент OAuth из Google Cloud. Его URI перенаправления: {url}",
 }
 
 export default dict
