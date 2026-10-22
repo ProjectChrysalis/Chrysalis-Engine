@@ -194,6 +194,8 @@ describe("a backup folder", () => {
     await a.call("/v1/account/backups", { method: "POST" });
     await settle(a);
     expect((await put({ folder })).status).toBe(200);
+    const auth = path.join(dataDirCreds(a, "admin"), "auth.json");
+    fs.writeFileSync(auth, JSON.stringify({ openai: { key: "sk-1" } }));
     fs.writeFileSync(path.join(dir, "data", "chat.jsonl"), "second\n");
     await a.call("/v1/account/backups", { method: "POST" });
     await settle(a);
@@ -203,11 +205,15 @@ describe("a backup folder", () => {
     expect(onDevice!.inFolder).toBeUndefined();
     const real = fs.realpathSync(folder);
     expect(fs.readFileSync(path.join(real, "Chrysalis", "admin", inFolder!.id, "workspace", "apps", "studio", "data", "chat.jsonl"), "utf8")).toBe("second\n");
+    // API keys and sign-ins never go to the folder, and a restore keeps the ones here
+    expect(fs.existsSync(path.join(real, "Chrysalis", "admin", inFolder!.id, "credentials", "auth.json"))).toBe(false);
+    expect((inFolder as { keys?: boolean }).keys).toBe(false);
 
     fs.writeFileSync(path.join(dir, "data", "chat.jsonl"), "third\n");
     await a.call(`/v1/account/backups/${inFolder!.id}/restore`, { method: "POST" });
     expect((await settle(a)).phase).toBe("done");
     expect(fs.readFileSync(path.join(dir, "data", "chat.jsonl"), "utf8")).toBe("second\n");
+    expect(fs.readFileSync(auth, "utf8")).toContain("sk-1");
 
     // going back to the data folder keeps the folder's backups out of the list
     expect((await put({ folder: null })).status).toBe(200);

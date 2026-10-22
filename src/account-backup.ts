@@ -440,7 +440,10 @@ export async function createBackup(
   if (folder && !isDir(folder)) throw new AccountBackupError(`the backup folder is not reachable: ${folder}`, 422);
   const base = backupBases(dataDir, username)[0]!;
   fs.mkdirSync(base, { recursive: true, mode: 0o700 });
-  const files = accountFiles(dataDir, username, true);
+  // a chosen folder is usually synced to someone's cloud: API keys and
+  // sign-ins stay on this device, and a restore keeps the ones it finds
+  const keys = !folder;
+  const files = accountFiles(dataDir, username, keys);
   const total = files.reduce((n, f) => n + f.size, 0);
   const previous = listBackups(dataDir, username)[0];
   const prevDir = previous ? backupDir(dataDir, username, previous.id) : null;
@@ -501,7 +504,7 @@ export async function createBackup(
       createdAt: new Date().toISOString(),
       engine: ENGINE_VERSION,
       from: username,
-      keys: true,
+      keys,
       files: files.length,
       bytes: total,
       label,
