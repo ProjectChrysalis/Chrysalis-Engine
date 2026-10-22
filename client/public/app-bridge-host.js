@@ -79,6 +79,7 @@
       // TTS endpoint LISTING only; management (where a stored key could be
       // redirected) is shell settings business
       if (path === "/v1/audio/speech/endpoints") return true;
+      if (/^\/v1\/audio\/speech\/endpoints\/[^/]+\/voices$/.test(path)) return true;
       // read-only catalogs the app renders (no keys, no control)
       if (path === "/v1/settings/connections" || path === "/v1/settings/providers" || path === "/v1/plugins") return true;
       if (path === "/v1/assets" || path.indexOf("/v1/assets/") === 0) return true;

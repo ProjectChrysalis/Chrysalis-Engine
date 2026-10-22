@@ -29,6 +29,8 @@ import {
   listPromptFormats,
   type PromptFormat,
   type SpeechEndpoint,
+  type SpeechKind,
+  type SpeechVoice,
   type EngineConnection,
   type EngineProvider,
   type OAuthFlow,
@@ -262,10 +264,24 @@ function edgeVoiceLabel(v: string): string {
 
 /** Play a synthesized sample through the engine so a provider can be
  *  verified with one click before any app uses it. */
-async function playSample(body: { provider: "edge" | "endpoint"; endpointId?: string; voice?: string; model?: string }) {
+async function playSample(body: { provider: "edge" | "endpoint"; endpointId?: string; voice?: string }) {
   const r = await speechApi.speak({ text: tr("Hello. This is your speech connection, working."), ...body })
   await new Audio(r.dataUrl).play()
 }
+
+/** Services the add form knows. `provider` names the model connection whose
+ *  key the engine reuses for the same address. */
+const SPEECH_SERVICES: Array<{ id: string; label: string; kind: SpeechKind; baseUrl?: string; model?: string; provider?: string; custom?: boolean }> = [
+  { id: "elevenlabs", label: "ElevenLabs", kind: "elevenlabs" },
+  { id: "openai", label: "OpenAI", kind: "openai", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-tts", provider: "openai" },
+  { id: "gemini", label: "Gemini", kind: "gemini", provider: "google" },
+  { id: "fish", label: "Fish Audio", kind: "fish" },
+  { id: "openrouter", label: "OpenRouter", kind: "openai", baseUrl: "https://openrouter.ai/api/v1", model: "openai/gpt-4o-mini-tts-2025-12-15", provider: "openrouter" },
+  { id: "local", label: tr("Local server"), kind: "openai", baseUrl: "http://localhost:8880/v1", model: "kokoro", custom: true },
+  { id: "other", label: tr("Other (OpenAI-compatible)"), kind: "openai", custom: true },
+]
+
+const SPEECH_KIND_LABEL: Record<SpeechKind, string> = { openai: "OpenAI-compatible", elevenlabs: "ElevenLabs", fish: "Fish Audio", gemini: "Gemini" }
 
 function SpeechTab() {
   const endpoints = useResource(() => speechApi.list())
@@ -275,23 +291,11 @@ function SpeechTab() {
   const [err, setErr] = useState("")
   const [adding, setAdding] = useState(false)
 
-  const test = async (id: string) => {
+  const test = async (id: string, body: Parameters<typeof playSample>[0]) => {
     setTesting(id)
     setErr("")
     try {
-      await playSample({ provider: "endpoint", endpointId: id })
-    } catch (e: any) {
-      setErr(e.message ?? String(e))
-    } finally {
-      setTesting(null)
-    }
-  }
-
-  const testEdge = async () => {
-    setTesting("edge")
-    setErr("")
-    try {
-      await playSample({ provider: "edge", voice: edgeVoice })
+      await playSample(body)
     } catch (e: any) {
       setErr(e.message ?? String(e))
     } finally {
@@ -300,14 +304,12 @@ function SpeechTab() {
   }
 
   return (
-    <Pane title={tr("Speech")} description={tr("Text-to-speech for every app. Free Edge voices, or your own speech endpoints. Keys stay on your machine.")}>
+    <Pane title={tr("Speech")} description={tr("Voices every app can use. Keys stay on your machine.")}>
       <div className="flex flex-col gap-4 pb-4">
         <section className="flex flex-col gap-2 rounded-lg border border-line p-3">
           <div className="flex items-center gap-2">
             <h3 className="flex-1 text-13 font-medium text-ink">{tr("Edge voices")}</h3>
-            <Button variant="neutral" size="small" className="gap-1.5" disabled={testing !== null} onClick={() => testEdge()}>
-              {testing === "edge" ? tr("Testing…") : tr("Test")}
-            </Button>
+            <span className="text-11 text-ink-faint">{tr("Free, no key")}</span>
           </div>
           <div className="flex items-center gap-2">
             <Select
@@ -319,48 +321,20 @@ function SpeechTab() {
               label={(v) => edgeVoiceLabel(v)}
               onSelect={(v) => v && setEdgeVoice(v)}
             />
+            <Button variant="neutral" size="small" disabled={testing !== null} onClick={() => test("edge", { provider: "edge", voice: edgeVoice })}>
+              {testing === "edge" ? tr("Testing…") : tr("Test")}
+            </Button>
           </div>
         </section>
 
         <section className="flex flex-col gap-2">
           <div className="flex items-center gap-2">
-            <h3 className="flex-1 text-13 font-medium text-ink">{tr("Speech endpoints")}</h3>
+            <h3 className="flex-1 text-13 font-medium text-ink">{tr("Speech services")}</h3>
             {!adding ? <Button variant="neutral" size="small" className="gap-1.5" onClick={() => { setErr(""); setAdding(true) }}>
                 <IconSmall name="grid-plus" />
-                {tr("Add endpoint")}
+                {tr("Add service")}
               </Button> : null}
           </div>
-          {!endpoints.loading ? <>{(endpoints.data ?? []).map((ep: SpeechEndpoint) => (
-                <div key={ep.id} className="flex items-center gap-3 rounded-lg border border-line px-3 py-2 text-13">
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-medium">{ep.name}</span>
-                    <span className="block truncate text-11 text-ink-faint">
-                      {ep.model} · {ep.baseUrl}
-                    </span>
-                  </span>
-                  <span className={cn("size-1.5 shrink-0 rounded-full", { "bg-success": ep.hasKey, "bg-ink-faint": !ep.hasKey })} />
-                  <Button variant="ghost-muted" size="small" disabled={testing !== null} onClick={() => test(ep.id)}>
-                    {testing === ep.id ? tr("Testing…") : tr("Test")}
-                  </Button>
-                  <IconButton
-                    icon={<IconSmall name="outline-xmark" />}
-                    variant="ghost-muted"
-                    size="small"
-                    title={tr("Delete endpoint")}
-                    onClick={async () => {
-                      try {
-                        await speechApi.remove(ep.id)
-                        endpoints.refetch()
-                      } catch (e: any) {
-                        setErr(e.message ?? String(e))
-                      }
-                    }}
-                  />
-                </div>
-              ))}
-            {(endpoints.data ?? []).length === 0 && !adding ? <div className="rounded-lg border border-dashed border-line px-3 py-4 text-center text-13 text-ink-faint">
-                {tr("No speech endpoints. OpenAI, Groq or a local server (Kokoro, openedai-speech) all speak /audio/speech.")}
-              </div> : null}</>: <div className="text-13 text-ink-faint">{tr("Loading…")}</div>}
           {adding ? <AddSpeechEndpoint
               onCancel={() => setAdding(false)}
               onCreated={() => {
@@ -368,6 +342,19 @@ function SpeechTab() {
                 endpoints.refetch()
               }}
             /> : null}
+          {!endpoints.loading ? <>{(endpoints.data ?? []).map((ep: SpeechEndpoint) => (
+                <SpeechEndpointRow
+                  key={ep.id}
+                  ep={ep}
+                  testing={testing}
+                  onTest={(voice) => test(ep.id, { provider: "endpoint", endpointId: ep.id, ...(voice ? { voice } : {}) })}
+                  onChanged={() => endpoints.refetch()}
+                  onError={setErr}
+                />
+              ))}
+            {(endpoints.data ?? []).length === 0 && !adding ? <div className="rounded-lg border border-dashed border-line px-3 py-4 text-center text-13 text-ink-faint">
+                {tr("No speech services yet. Add ElevenLabs, OpenAI, Gemini, Fish Audio, OpenRouter or a local server.")}
+              </div> : null}</>: <div className="text-13 text-ink-faint">{tr("Loading…")}</div>}
           {err ? <div className="text-12 text-danger">{err}</div> : null}
         </section>
       </div>
@@ -375,20 +362,106 @@ function SpeechTab() {
   )
 }
 
+function SpeechEndpointRow(props: { ep: SpeechEndpoint; testing: string | null; onTest: (voice?: string) => void; onChanged: () => void; onError: (e: string) => void }) {
+  const { ep } = props
+  const [voices, setVoices] = useState<{ list?: SpeechVoice[]; error?: string }>({})
+  const [style, setStyle] = useState(ep.style ?? "")
+  useEffect(() => {
+    let live = true
+    speechApi.endpointVoices(ep.id).then(
+      (list) => live && setVoices({ list }),
+      (e: any) => live && setVoices({ error: e.message ?? String(e) }),
+    )
+    return () => { live = false }
+  }, [ep.id, ep.baseUrl, ep.hasKey])
+  const byId = new Map((voices.list ?? []).map((v) => [v.id, v]))
+  const ids = (voices.list ?? []).map((v) => v.id)
+  if (ep.voice && !byId.has(ep.voice)) ids.unshift(ep.voice)
+  const save = async (body: { voice?: string; style?: string }) => {
+    try {
+      await speechApi.update(ep.id, body)
+      props.onChanged()
+    } catch (e: any) {
+      props.onError(e.message ?? String(e))
+    }
+  }
+  const keyNote = ep.keyFrom ? tr("Key from {name}", { name: ep.keyFrom }) : ep.hasKey ? null : tr("No key")
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-line px-3 py-2 text-13">
+      <div className="flex items-center gap-3">
+        <span className="min-w-0 flex-1">
+          <span className="block truncate font-medium">{ep.name}</span>
+          <span className="block truncate text-11 text-ink-faint">
+            {[SPEECH_KIND_LABEL[ep.kind], ep.model, keyNote].filter(Boolean).join(" · ")}
+          </span>
+        </span>
+        <Button variant="ghost-muted" size="small" disabled={props.testing !== null} onClick={() => props.onTest()}>
+          {props.testing === ep.id ? tr("Testing…") : tr("Test")}
+        </Button>
+        <IconButton
+          icon={<IconSmall name="outline-xmark" />}
+          variant="ghost-muted"
+          size="small"
+          title={tr("Remove service")}
+          onClick={async () => {
+            try {
+              await speechApi.remove(ep.id)
+              props.onChanged()
+            } catch (e: any) {
+              props.onError(e.message ?? String(e))
+            }
+          }}
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Select
+          className="min-w-[180px] flex-1"
+          placeholder={voices.error ? tr("Voices unavailable") : voices.list ? tr("Default voice") : tr("Loading voices…")}
+          options={ids}
+          current={ep.voice}
+          value={(v) => v}
+          label={(v) => {
+            const voice = byId.get(v)
+            return voice ? [voice.name, voice.description].filter(Boolean).join(" · ") : v
+          }}
+          onSelect={(v) => v && v !== ep.voice && save({ voice: v })}
+        />
+        {voices.error ? <span className="w-full text-11 text-danger">{voices.error}</span> : null}
+        {ep.controls.includes("style") ? <input
+            className={inputClass}
+            placeholder={tr("Style (e.g. warm and calm)")}
+            value={style}
+            onChange={(e) => setStyle(e.currentTarget.value)}
+            onBlur={() => style !== (ep.style ?? "") && save({ style })}
+          /> : null}
+      </div>
+    </div>
+  )
+}
+
 function AddSpeechEndpoint(props: { onCancel: () => void; onCreated: () => void }) {
-  const [name, setName] = useState("")
+  const connections = useResource(() => connectionsApi.list())
+  const [serviceId, setServiceId] = useState(SPEECH_SERVICES[0]!.id)
+  const service = SPEECH_SERVICES.find((s) => s.id === serviceId) ?? SPEECH_SERVICES[0]!
   const [baseUrl, setBaseUrl] = useState("")
-  const [model, setModel] = useState("tts-1")
-  const [voice, setVoice] = useState("alloy")
+  const [model, setModel] = useState("")
   const [key, setKey] = useState("")
   const [err, setErr] = useState("")
   const [busy, setBusy] = useState(false)
+  const shared = service.provider ? (connections.data ?? []).find((c) => c.providerId === service.provider && c.hasKey && c.credentialType !== "oauth") : undefined
+  const url = baseUrl.trim() || service.baseUrl || ""
 
   const submit = async () => {
     setBusy(true)
     setErr("")
     try {
-      await speechApi.create({ name: name, baseUrl: baseUrl, model: model, voice: voice, ...(key ? { key: key } : {}) })
+      await speechApi.create({
+        name: service.label,
+        kind: service.kind,
+        ...(url ? { baseUrl: url } : {}),
+        ...(model.trim() || service.model ? { model: model.trim() || service.model } : {}),
+        ...(key ? { key } : {}),
+      })
       props.onCreated()
     } catch (e: any) {
       setErr(e.message ?? String(e))
@@ -400,17 +473,35 @@ function AddSpeechEndpoint(props: { onCancel: () => void; onCreated: () => void 
   return (
     <section className="flex flex-col gap-2 rounded-lg border border-line p-3">
       <div className="flex items-center gap-2">
-        <h3 className="flex-1 text-13 font-medium text-ink">{tr("New speech endpoint")}</h3>
+        <h3 className="flex-1 text-13 font-medium text-ink">{tr("Add speech service")}</h3>
         <IconButton icon={<IconSmall name="outline-xmark" />} variant="ghost-muted" size="small" title={tr("Cancel")} onClick={props.onCancel} />
       </div>
-      <input className={inputClass} placeholder={tr("Name (e.g. OpenAI speech)")} value={name} onChange={(e) => setName(e.currentTarget.value)} />
-      <input className={inputClass} placeholder="Base URL (https://api.openai.com/v1)" value={baseUrl} onChange={(e) => setBaseUrl(e.currentTarget.value)} />
-      <input className={inputClass} placeholder={tr("Model (tts-1, gpt-4o-mini-tts, playai-tts…)")} value={model} onChange={(e) => setModel(e.currentTarget.value)} />
-      <input className={inputClass} placeholder={tr("Default voice (alloy, nova…)")} value={voice} onChange={(e) => setVoice(e.currentTarget.value)} />
-      <input className={inputClass} type="password" placeholder={tr("API key (stored on this machine only)")} value={key} onChange={(e) => setKey(e.currentTarget.value)} />
+      <Select
+        options={SPEECH_SERVICES.map((s) => s.id)}
+        current={serviceId}
+        value={(v) => v}
+        label={(v) => SPEECH_SERVICES.find((s) => s.id === v)?.label ?? v}
+        onSelect={(v) => {
+          if (!v) return
+          setServiceId(v)
+          setBaseUrl("")
+          setModel("")
+        }}
+      />
+      {service.custom ? <>
+          <input className={inputClass} placeholder={service.baseUrl ?? "https://example.com/v1"} value={baseUrl} onChange={(e) => setBaseUrl(e.currentTarget.value)} />
+          <input className={inputClass} placeholder={service.model ?? tr("Model")} value={model} onChange={(e) => setModel(e.currentTarget.value)} />
+        </> : null}
+      <input
+        className={inputClass}
+        type="password"
+        placeholder={shared ? tr("API key (empty uses your {name} key)", { name: shared.name }) : service.custom ? tr("API key (if the server needs one)") : tr("API key")}
+        value={key}
+        onChange={(e) => setKey(e.currentTarget.value)}
+      />
       {err ? <div className="text-12 text-danger">{err}</div> : null}
-      <Button variant="neutral" size="small" className="self-start" disabled={busy || !name || !baseUrl} onClick={submit}>
-        {busy ? tr("Saving…") : tr("Save endpoint")}
+      <Button variant="neutral" size="small" className="self-start" disabled={busy || (service.custom && !url)} onClick={submit}>
+        {busy ? tr("Saving…") : tr("Add")}
       </Button>
     </section>
   )

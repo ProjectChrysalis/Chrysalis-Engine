@@ -144,25 +144,43 @@ export const connectionsApi = {
   remove: (id: string) => api("DELETE", `/v1/settings/connections/${encodeURIComponent(id)}`),
 }
 
+export type SpeechKind = "openai" | "elevenlabs" | "fish" | "gemini"
+export type SpeechControl = "speed" | "pitch" | "style" | "stability" | "similarity"
+
 export interface SpeechEndpoint {
   id: string
   name: string
+  kind: SpeechKind
   baseUrl: string
   model: string
   voice?: string
+  style?: string
   hasKey: boolean
+  /** the model connection whose key this endpoint uses */
+  keyFrom?: string
+  controls: SpeechControl[]
+}
+
+export interface SpeechVoice {
+  id: string
+  name: string
+  description?: string
+  language?: string
+  preview?: string
 }
 
 export const speechApi = {
   list: () => api<{ endpoints: SpeechEndpoint[] }>("GET", "/v1/audio/speech/endpoints").then((r) => r.endpoints ?? []),
-  create: (body: { name: string; baseUrl: string; model: string; voice?: string; key?: string }) =>
+  create: (body: { name: string; kind: SpeechKind; baseUrl?: string; model?: string; voice?: string; key?: string }) =>
     api<{ endpoint: SpeechEndpoint }>("POST", "/v1/audio/speech/endpoints", body),
-  update: (id: string, body: { name?: string; baseUrl?: string; model?: string; voice?: string; key?: string }) =>
+  update: (id: string, body: { name?: string; baseUrl?: string; model?: string; voice?: string; style?: string; key?: string }) =>
     api<{ endpoint: SpeechEndpoint }>("PATCH", `/v1/audio/speech/endpoints/${encodeURIComponent(id)}`, body),
   remove: (id: string) => api("DELETE", `/v1/audio/speech/endpoints/${encodeURIComponent(id)}`),
   voices: () => api<{ edge: string[] }>("GET", "/v1/audio/voices").then((r) => r.edge ?? []),
+  endpointVoices: (id: string) =>
+    api<{ voices: SpeechVoice[] }>("GET", `/v1/audio/speech/endpoints/${encodeURIComponent(id)}/voices`).then((r) => r.voices ?? []),
   /** Synthesize through the engine; resolves an audio data URL the caller plays. */
-  speak: (body: { text: string; provider?: "edge" | "endpoint"; endpointId?: string; voice?: string; model?: string; speed?: number }) =>
+  speak: (body: { text: string; provider?: "edge" | "endpoint"; endpointId?: string; voice?: string; model?: string; speed?: number; pitch?: number; style?: string }) =>
     api<{ dataUrl: string }>("POST", "/v1/audio/speech", body),
 }
 

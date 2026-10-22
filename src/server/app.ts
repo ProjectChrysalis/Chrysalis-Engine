@@ -59,8 +59,8 @@ import { supportsOpenRouterRouting, validateOpenRouterRouting, type OpenRouterRo
 import { createRoutingCatalog } from "../providers/openrouter-catalog.js";
 import { PROMPT_FORMATS, type PromptFormat } from "../providers/prompt-formats.js";
 import {
-  EDGE_FORMATS, EDGE_VOICES, createSpeechEndpoint, deleteSpeechEndpoint, edgeSpeakFmt,
-  endpointSpeak, listSpeechEndpoints, speechEndpointKey, updateSpeechEndpoint, validateSpeechEndpointInput,
+  EDGE_FORMATS, EDGE_VOICES, SPEECH_KIND_INFO, SPEECH_TEXT_MAX, createSpeechEndpoint, defaultVoice, deleteSpeechEndpoint, edgeSpeakFmt, isOpenAiStock,
+  listSpeechEndpoints, speechEndpointKey, speechVoices, synthesize, updateSpeechEndpoint, validateSpeechEndpointInput,
 } from "../speech.js";
 import type { EdgeFormat } from "../speech.js";
 import * as assets from "../assets/store.js";
@@ -241,6 +241,7 @@ export function appBridgeAllows(appId: string, method: string, path: string, tru
   if (method === "GET") {
     if (path === "/v1/models" || path.startsWith("/v1/models/")) return true;
     if (["/v1/images/models", "/v1/embeddings/config", "/v1/audio/voices", "/v1/audio/speech/endpoints", "/v1/settings/connections", "/v1/settings/providers", "/v1/plugins"].includes(path)) return true;
+    if (/^\/v1\/audio\/speech\/endpoints\/[^/]+\/voices$/.test(path)) return true;
     if (path === "/v1/assets" || path.startsWith("/v1/assets/")) return true;
   }
   // Paid generation (images, speech) is open to every app and deliberately
@@ -1616,15 +1617,12 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     return c.json({ endpoint: createSpeechEndpoint(c.get("paths"), v.value) }, 201);
   });
   app.patch("/v1/audio/speech/endpoints/:id", async (c) => {
-    const body = await c.req
-      .json<{ name?: unknown; baseUrl?: unknown; model?: unknown; voice?: unknown; key?: unknown }>()
-      .catch(() => ({}) as { name?: unknown; baseUrl?: unknown; model?: unknown; voice?: unknown; key?: unknown });
-    const patch: { name?: string; baseUrl?: string; model?: string; voice?: string; key?: string } = {};
-    if (typeof body.name === "string") patch.name = body.name;
-    if (typeof body.baseUrl === "string") patch.baseUrl = body.baseUrl;
-    if (typeof body.model === "string") patch.model = body.model;
-    if (typeof body.voice === "string") patch.voice = body.voice;
-    if (typeof body.key === "string") patch.key = body.key;
+    const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+    const patch: { name?: string; baseUrl?: string; model?: string; voice?: string; style?: string; key?: string } = {};
+    for (const k of ["name", "baseUrl", "model", "voice", "style", "key"] as const) {
+      const v = body[k];
+      if (typeof v === "string") patch[k] = v;
+    }
     const out = updateSpeechEndpoint(c.get("paths"), c.req.param("id"), patch);
     if (!out) return c.json({ error: "no such speech endpoint" }, 404);
     return c.json({ endpoint: out });
@@ -1634,19 +1632,34 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       ? c.json({ ok: true })
       : c.json({ error: "no such speech endpoint" }, 404);
   });
+  app.get("/v1/audio/speech/endpoints/:id/voices", async (c) => {
+    const ep = listSpeechEndpoints(c.get("paths")).find((x) => x.id === c.req.param("id"));
+    if (!ep) return c.json({ error: "no such speech endpoint" }, 404);
+    try {
+      const voices = await speechVoices(`${c.get("user").username}/${ep.id}`, { kind: ep.kind, baseUrl: ep.baseUrl, key: speechEndpointKey(c.get("paths"), ep.id) });
+      return c.json({ voices });
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 502);
+    }
+  });
   app.get("/v1/audio/voices", (c) => {
-    return c.json({ edge: EDGE_VOICES });
+    const kinds = Object.fromEntries(Object.entries(SPEECH_KIND_INFO).map(([k, v]) => [k, { models: v.models, controls: v.controls }]));
+    return c.json({ edge: EDGE_VOICES, kinds });
   });
 
   app.post("/v1/audio/speech", async (c) => {
-    const body = await c.req
-      .json<{ text?: unknown; model?: unknown; voice?: unknown; speed?: unknown; connection?: unknown; provider?: unknown; endpointId?: unknown; format?: unknown }>()
-      .catch(() => null) ?? ({} as { text?: unknown; model?: unknown; voice?: unknown; speed?: unknown; connection?: unknown; provider?: unknown; endpointId?: unknown; format?: unknown });
+    const body = (await c.req.json<Record<string, unknown>>().catch(() => null)) ?? {};
     const text = typeof body.text === "string" ? body.text.trim() : "";
     if (!text) return c.json({ error: "text required" }, 400);
+    if (text.length > SPEECH_TEXT_MAX) return c.json({ error: `text is longer than ${SPEECH_TEXT_MAX} characters` }, 413);
     const speed = Math.min(4, Math.max(0.25, Number(body.speed) || 1));
+    const pitch = Math.min(1.5, Math.max(0.5, Number(body.pitch) || 1));
+    const unit = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : undefined);
+    const tuning = { ...(unit(body.stability) !== undefined ? { stability: unit(body.stability) } : {}), ...(unit(body.similarity) !== undefined ? { similarity: unit(body.similarity) } : {}) };
+    const askedStyle = typeof body.style === "string" ? body.style.trim().slice(0, 500) : undefined;
     const provider = body.provider === "edge" || body.provider === "endpoint" ? body.provider : undefined;
     const endpoints = listSpeechEndpoints(c.get("paths"));
+    const clip = (audio: Buffer, mime: string, extra: Record<string, string>) => c.json({ dataUrl: `data:${mime};base64,${audio.toString("base64")}`, mime, ...extra });
 
     // explicit edge, or implicit when nothing else is configured
     if (provider === "edge" || (!provider && endpoints.length === 0 && body.endpointId === undefined && body.connection === undefined)) {
@@ -1654,31 +1667,29 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       // webm/opus exists for clients whose build lacks the proprietary mp3 decoder
       const format: EdgeFormat = body.format === "webm" ? "webm" : "mp3";
       try {
-        const clip = await edgeSpeakFmt({ text, voice, speed, format });
-        return c.json({ dataUrl: `data:${EDGE_FORMATS[format].mime};base64,${clip.toString("base64")}`, provider: "edge", voice });
+        const audio = await edgeSpeakFmt({ text, voice, speed, pitch, format });
+        return clip(audio, EDGE_FORMATS[format].mime, { provider: "edge", voice });
       } catch (e) {
         return c.json({ error: (e as Error).message }, 502);
       }
     }
     if (provider === "endpoint" && endpoints.length === 0) {
-      return c.json({ error: "no speech endpoints configured — add one in the engine client: Settings → Speech" }, 503);
+      return c.json({ error: "no speech endpoints configured. Add one in Settings > Speech." }, 503);
     }
 
     // endpoint route: explicit id, else the first configured endpoint
     const ep = (typeof body.endpointId === "string" ? endpoints.find((x) => x.id === body.endpointId) : undefined) ?? endpoints[0];
     if (ep) {
-      const model = typeof body.model === "string" && body.model ? body.model : ep.model;
-      const voice = typeof body.voice === "string" && body.voice ? body.voice : ep.voice ?? "alloy";
+      const asked = (v: unknown) => (typeof v === "string" && v && !isOpenAiStock(ep.kind, v) ? v : undefined);
+      const model = asked(body.model) ?? ep.model;
+      const voice = asked(body.voice) ?? ep.voice ?? defaultVoice(ep.kind);
+      const style = askedStyle ?? ep.style;
       try {
-        const mp3 = await endpointSpeak({
-          baseUrl: ep.baseUrl,
-          key: speechEndpointKey(c.get("paths"), ep.id),
-          model,
-          voice,
-          speed,
-          text,
-        });
-        return c.json({ dataUrl: `data:audio/mpeg;base64,${mp3.toString("base64")}`, provider: "endpoint", endpoint: ep.name });
+        const out = await synthesize(
+          { kind: ep.kind, baseUrl: ep.baseUrl, key: speechEndpointKey(c.get("paths"), ep.id) },
+          { text, model, voice, speed, ...(style ? { style } : {}), ...tuning },
+        );
+        return clip(out.audio, out.mime, { provider: "endpoint", endpoint: ep.name, voice });
       } catch (e) {
         return c.json({ error: (e as Error).message }, 502);
       }
@@ -1722,13 +1733,13 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     }
     if (!baseUrl) {
       return c.json(
-        { error: "no speech provider — configure one in the engine client: Settings → Speech (Edge voices need no key)" },
+        { error: "no speech provider. Add one in Settings > Speech (Edge voices need no key)." },
         503,
       );
     }
     try {
-      const mp3 = await endpointSpeak({ baseUrl, key, model, voice, speed, text });
-      return c.json({ dataUrl: `data:audio/mpeg;base64,${mp3.toString("base64")}`, provider: "connection", endpoint: conn!.name });
+      const out = await synthesize({ kind: "openai", baseUrl, key }, { text, model, voice, speed, ...(askedStyle ? { style: askedStyle } : {}) });
+      return clip(out.audio, out.mime, { provider: "connection", endpoint: conn!.name, voice });
     } catch (e) {
       return c.json({ error: (e as Error).message }, 502);
     }
