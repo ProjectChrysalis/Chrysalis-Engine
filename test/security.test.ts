@@ -877,6 +877,39 @@ describe("A1 public app frames never follow links out of dist", () => {
 });
 
 describe("A2 the bridge's second lock (server side)", () => {
+  it("account backups and transfers never expose keys to app requests", async () => {
+    const { app, token, p } = await auditApp(dir);
+    const { createBackup } = await import("../src/account-backup.js");
+    const appDir = path.join(p.apps, "evil");
+    fs.mkdirSync(appDir, { recursive: true });
+    fs.writeFileSync(path.join(appDir, "manifest.json"), JSON.stringify({ name: "E", version: "1", kind: "app" }));
+    fs.writeFileSync(p.auth, JSON.stringify({ example: { type: "api_key", key: "SYNTHETIC-BACKUP-SECRET" } }));
+    const backup = await createBackup(dir, "alice", "manual");
+    expect(backup).not.toBeNull();
+    const downloads = ["/v1/account/export?keys=1", `/v1/account/backups/${backup!.id}/download?keys=1`];
+    for (const url of downloads) {
+      const shell = await app.request(url, { headers: { authorization: `Bearer ${token}` } });
+      expect(shell.status).toBe(200);
+      expect(await shell.text()).toContain("SYNTHETIC-BACKUP-SECRET");
+      expect((await app.request(url)).status).toBe(401);
+    }
+    const routes = [
+      ...downloads.map((url) => ["GET", url] as const),
+      ["GET", "/v1/account/backups"], ["POST", "/v1/account/backups"],
+      ["POST", "/v1/account/transfer"], ["GET", "/v1/account/transfer"],
+      ["GET", "/v1/transfer/info"], ["GET", "/v1/transfer/pull"],
+    ] as const;
+    for (const [method, url] of routes) {
+      const res = await app.request(url, {
+        method,
+        headers: { authorization: `Bearer ${token}`, "x-chrysalis-app": "evil", "content-type": "application/json" },
+        ...(method === "POST" ? { body: JSON.stringify({ keys: true }) } : {}),
+      });
+      expect(res.status, `${method} ${url}`).toBe(403);
+      expect(await res.text()).not.toContain("SYNTHETIC-BACKUP-SECRET");
+    }
+  });
+
   it("relayed app requests reach only what the bridge allows, however the path is spelled", async () => {
     const { app, token, p } = await auditApp(dir);
     const appDir = path.join(p.apps, "evil");
@@ -919,10 +952,17 @@ describe("A2 the bridge's second lock (server side)", () => {
       "/v1/audio/speech/endpoints/e", "/v1/audio/speech/endpoints/e/voices", "/v1/audio/speech/endpoints/e/models", "/v1/audio/speech/endpoints/e/voices/x", "/v1/settings/connections", "/v1/settings/providers", "/v1/settings", "/v1/plugins", "/v1/plugins/p/approve",
       "/v1/embeddings/config", "/v1/embeddings/probe", "/v1/agent", "/v1/mcp", "/v1/shell", "/v1/apps", "/v1/apps/x/dev", "/v1/apps/x/build", "/v1/apps/x/build/fs", "/v1/apps/x/export",
       "/v1/apps/x/export/backup", "/v1/apps/x/exports", "/v1/apps/x/tree/leaf"];
+    const accountPaths = ["/v1/account/export", "/v1/account/backups", "/v1/account/backups/id/download", "/v1/account/backups/settings",
+      "/v1/account/backups/id/restore", "/v1/account/import", "/v1/account/import/id/finish", "/v1/account/transfer",
+      "/v1/account/transfer/peek", "/v1/account/transfer/receive", "/v1/transfer/info", "/v1/transfer/pull"];
     for (const trusted of [false, true]) {
       for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"]) {
         for (const p of paths) {
           expect(appBridgeAllows("x", method, p, trusted), `${method} ${p} ${trusted}`).toBe(host.allowedRequest("x", method, p, trusted));
+        }
+        for (const p of accountPaths) {
+          expect(appBridgeAllows("x", method, p, trusted), `${method} ${p} ${trusted}`).toBe(false);
+          expect(host.allowedRequest("x", method, p, trusted), `${method} ${p} ${trusted}`).toBe(false);
         }
       }
     }
