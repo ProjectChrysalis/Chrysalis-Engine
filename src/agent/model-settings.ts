@@ -15,4 +15,3 @@ export function validAgentModelOverrides(value: unknown): value is AgentModelOve
   if (profile.autoCompact !== undefined && typeof profile.autoCompact !== "boolean" && !(typeof profile.autoCompact === "number" && Number.isFinite(profile.autoCompact) && profile.autoCompact >= 1000 && profile.autoCompact <= 10_000_000)) return false;
   return true;
 }
-
