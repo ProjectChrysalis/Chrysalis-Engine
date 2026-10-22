@@ -106,6 +106,25 @@ it("reports a service's error message", async () => {
   await expect(synthesize({ kind: "openai", baseUrl: `${base}/fail` }, request)).rejects.toThrow("429: quota exceeded");
 });
 
+it("never forwards speech credentials through an endpoint redirect", async () => {
+  const gateway = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: (req) => new Response(null, { status: 307, headers: { location: `${base}${new URL(req.url).pathname}` } }),
+  });
+  try {
+    for (const kind of ["openai", "elevenlabs", "fish", "gemini"] as const) {
+      const target = { kind, baseUrl: `http://127.0.0.1:${gateway.port}`, key: "SYNTHETIC-REDIRECT-KEY" };
+      await expect(synthesize(target, request)).rejects.toThrow();
+      await speechVoices(dir, target).catch(() => undefined);
+      expect((await speechModels(dir, target)).live).toBe(false);
+    }
+    expect(seen).toEqual([]);
+  } finally {
+    gateway.stop(true);
+  }
+});
+
 it("lists voices for each kind", async () => {
   expect(await speechVoices("a", { kind: "elevenlabs", baseUrl: base, key: "k" })).toEqual([
     { id: "v1", name: "Rachel", description: "female, american", preview: "https://x/p.mp3" },

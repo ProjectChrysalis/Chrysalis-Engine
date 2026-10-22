@@ -322,6 +322,7 @@ function wav(pcm: Buffer, rate: number): Buffer {
 async function speakOpenAi(t: SpeechTarget, r: SpeakRequest): Promise<Buffer> {
   const res = await fetch(`${normalizeUrl(t.baseUrl)}/audio/speech`, {
     method: "POST",
+    redirect: "error",
     headers: { "content-type": "application/json", ...(t.key ? { authorization: `Bearer ${t.key}` } : {}) },
     body: JSON.stringify({
       model: r.model,
@@ -343,6 +344,7 @@ async function speakElevenLabs(t: SpeechTarget, r: SpeakRequest): Promise<Buffer
   const text = r.style && r.model.startsWith("eleven_v3") ? `[${r.style}] ${r.text}` : r.text;
   const res = await fetch(url, {
     method: "POST",
+    redirect: "error",
     headers: { "content-type": "application/json", accept: "audio/mpeg", ...(t.key ? { "xi-api-key": t.key } : {}) },
     body: JSON.stringify({
       text,
@@ -361,6 +363,7 @@ async function speakElevenLabs(t: SpeechTarget, r: SpeakRequest): Promise<Buffer
 async function speakFish(t: SpeechTarget, r: SpeakRequest): Promise<Buffer> {
   const res = await fetch(`${normalizeUrl(t.baseUrl)}/v1/tts`, {
     method: "POST",
+    redirect: "error",
     headers: { "content-type": "application/json", model: r.model, ...(t.key ? { authorization: `Bearer ${t.key}` } : {}) },
     body: JSON.stringify({
       text: r.style ? `[${r.style}] ${r.text}` : r.text,
@@ -383,6 +386,7 @@ async function speakGeminiPcm(t: SpeechTarget, r: SpeakRequest): Promise<{ pcm: 
     : r.text;
   const res = await fetch(`${normalizeUrl(t.baseUrl)}/models/${encodeURIComponent(r.model)}:generateContent`, {
     method: "POST",
+    redirect: "error",
     headers: { "content-type": "application/json", ...(t.key ? { "x-goog-api-key": t.key } : {}) },
     body: JSON.stringify({
       contents: [{ role: "user", parts: [{ text: prompt }] }],
@@ -437,7 +441,7 @@ const voiceCache = new Map<string, { at: number; voices: SpeechVoice[] }>();
 const VOICE_TTL = 10 * 60_000;
 
 async function getJson<T>(url: string, headers: Record<string, string>, label: string): Promise<T> {
-  const res = await fetch(url, { headers, signal: AbortSignal.timeout(20_000) });
+  const res = await fetch(url, { headers, redirect: "error", signal: AbortSignal.timeout(20_000) });
   if (!res.ok) throw await failure(res, label);
   return (await res.json()) as T;
 }
