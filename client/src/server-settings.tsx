@@ -147,7 +147,7 @@ function FirewallRow(props: { port: number }) {
             : tr("The firewall on the computer running Chrysalis may be blocking other devices.")}
         </span>
         {s.oneClick ? (
-          <Button variant={s.allowed ? "neutral" : "primary"} size="small" disabled={busy} onClick={() => void allow()}>
+          <Button variant="neutral" size="small" disabled={busy} onClick={() => void allow()}>
             {s.allowed ? tr("Allow again") : tr("Allow on this network")}
           </Button>
         ) : null}
@@ -336,7 +336,7 @@ function InstallRow(props: { release: EngineRelease }) {
   return (
     <div className="flex flex-col gap-1.5">
       <div>
-        <Button variant="primary" size="small" disabled={install.busy} onClick={() => void install.start()}>{install.label}</Button>
+        <Button variant="neutral" size="small" disabled={install.busy} onClick={() => void install.start()}>{install.label}</Button>
       </div>
       {install.err ? <p className="text-12 leading-4 text-danger">{install.err}</p> : null}
     </div>

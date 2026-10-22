@@ -409,7 +409,7 @@ function AddSpeechEndpoint(props: { onCancel: () => void; onCreated: () => void 
       <input className={inputClass} placeholder={tr("Default voice (alloy, nova…)")} value={voice} onChange={(e) => setVoice(e.currentTarget.value)} />
       <input className={inputClass} type="password" placeholder={tr("API key (stored on this machine only)")} value={key} onChange={(e) => setKey(e.currentTarget.value)} />
       {err ? <div className="text-12 text-danger">{err}</div> : null}
-      <Button variant="primary" size="small" className="self-start" disabled={busy || !name || !baseUrl} onClick={submit}>
+      <Button variant="neutral" size="small" className="self-start" disabled={busy || !name || !baseUrl} onClick={submit}>
         {busy ? tr("Saving…") : tr("Save endpoint")}
       </Button>
     </section>

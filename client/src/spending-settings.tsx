@@ -169,7 +169,7 @@ export function SpendingTab() {
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="min-w-0 flex-1 basis-48 text-12 text-ink-muted">{tr("Delete the whole spending history? This cannot be undone.")}</span>
                   <Button variant="danger" size="small" onClick={() => void clear()}>{tr("Clear history")}</Button>
-                  <Button variant="neutral" size="small" onClick={() => setConfirming(false)}>{tr("Cancel")}</Button>
+                  <Button variant="ghost" size="small" onClick={() => setConfirming(false)}>{tr("Cancel")}</Button>
                 </div>
               ) : (
                 <div>

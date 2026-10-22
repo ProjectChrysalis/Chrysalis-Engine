@@ -90,7 +90,7 @@ function SendPanel() {
       <div className="flex flex-col gap-2.5">
         <Toggle label={tr("Include API keys and sign-ins")} checked={keys} disabled={false} onChange={setKeys} />
         <div>
-          <Button variant="primary" size="small" onClick={() => void make()}>{tr("Make a code")}</Button>
+          <Button variant="neutral" size="small" onClick={() => void make()}>{tr("Make a code")}</Button>
         </div>
         {err ? <p className="text-12 text-danger">{err}</p> : null}
       </div>
@@ -132,7 +132,7 @@ function SendPanel() {
         </div>
       </div>
       <div className="flex gap-2">
-        {state === "waiting" && minutes > 0 ? <Button variant="neutral" size="small" onClick={() => void cancel()}>{tr("Cancel")}</Button> : <Button variant="neutral" size="small" onClick={() => void make()}>{tr("New code")}</Button>}
+        {state === "waiting" && minutes > 0 ? <Button variant="ghost" size="small" onClick={() => void cancel()}>{tr("Cancel")}</Button> : <Button variant="neutral" size="small" onClick={() => void make()}>{tr("New code")}</Button>}
       </div>
     </div>
   )
@@ -195,7 +195,7 @@ function Scanner(props: { onFound: (address: string, code: string) => void; onCl
     <div className="flex flex-col gap-2">
       {err ? <p className="text-12 text-danger">{err}</p> : <video ref={video} className="aspect-square w-full max-w-64 rounded-lg bg-panel object-cover" muted playsInline />}
       <div>
-        <Button variant="neutral" size="small" onClick={props.onClose}>{tr("Close camera")}</Button>
+        <Button variant="ghost" size="small" onClick={props.onClose}>{tr("Close camera")}</Button>
       </div>
     </div>
   )
@@ -393,7 +393,7 @@ function DriveSection(props: { drive: DriveStatus; me: string; busy: boolean; ac
         {note}
         <p className="text-12 leading-4 text-ink-muted">{tr("Every backup also goes to your Google Drive, so you can restore it on any device.")}</p>
         <div>
-          <Button variant="primary" size="small" onClick={() => void connect()}>{tr("Connect Google Drive")}</Button>
+          <Button variant="neutral" size="small" onClick={() => void connect()}>{tr("Connect Google Drive")}</Button>
         </div>
         {err ? <p className="text-12 text-danger">{err}</p> : null}
       </div>
@@ -523,7 +523,7 @@ export function BackupsTab(props: { me: Me }) {
               <p className="pl-6 text-12 text-ink-muted">{tr("When there are more, the oldest is deleted. Backups you make with Back up now stay until you delete them.")}</p>
               {d.autoError ? <p className="pl-6 text-12 text-danger">{tr("Last automatic backup failed: {error}", { error: d.autoError })}</p> : null}
               <div className="flex flex-wrap items-center gap-2">
-                <Button variant="primary" size="small" disabled={busy} onClick={() => void act(() => backupApi.create())}>{tr("Back up now")}</Button>
+                <Button variant="neutral" size="small" disabled={busy} onClick={() => void act(() => backupApi.create())}>{tr("Back up now")}</Button>
                 {d.free !== null ? <span className="text-12 text-ink-muted">{tr("{size} free on this disk", { size: formatBytes(d.free) })}</span> : null}
               </div>
               {d.backups.length ? (
@@ -566,7 +566,7 @@ export function BackupsTab(props: { me: Me }) {
               <p className="text-12 leading-4 text-ink-muted">{tr("Everything in your account here is replaced. A backup of it is kept on this device first.")}</p>
               <div className="flex gap-2">
                 <Button variant="danger" size="small" onClick={() => void upload(pendingFile)}>{tr("Replace my account")}</Button>
-                <Button variant="neutral" size="small" onClick={() => setPendingFile(null)}>{tr("Cancel")}</Button>
+                <Button variant="ghost" size="small" onClick={() => setPendingFile(null)}>{tr("Cancel")}</Button>
               </div>
             </div>
           ) : null}

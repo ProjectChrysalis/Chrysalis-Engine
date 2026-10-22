@@ -212,7 +212,7 @@ function SkillDialog(props: { open: Open; apps: AppSkills[]; setOpen: (open: Ope
           <div className="skill-actions">
             <span className="grow" />
             <Button variant="ghost" disabled={busy} onClick={cancel}>{tr("Cancel")}</Button>
-            <Button type="submit" variant="primary" disabled={busy || !ready}>{busy ? tr("Saving…") : adding ? tr("Add skill") : tr("Save")}</Button>
+            <Button type="submit" variant="neutral" disabled={busy || !ready}>{busy ? tr("Saving…") : adding ? tr("Add skill") : tr("Save")}</Button>
           </div>
         </form>
       ) : !detail ? (
