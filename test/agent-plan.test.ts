@@ -23,7 +23,8 @@ beforeEach(() => {
     async fetch(req) {
       const body = await req.json() as { model: string; messages: unknown[]; tools?: { function: { name: string } }[] };
       const text = JSON.stringify(body.messages);
-      const planning = text.includes("[PLAN MODE ACTIVE]");
+      // the latest mode instruction wins: a conversation keeps the prompt it began with
+      const planning = text.lastIndexOf("[PLAN MODE ACTIVE]") > text.lastIndexOf("Plan mode is off");
       requests.push({ planning, tools: (body.tools ?? []).map(tool => tool.function.name), text });
       const chunk = (delta: unknown, finish_reason: string | null) => `data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", model: body.model, choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
       // the plan is presented once; after an answer the model writes a reply

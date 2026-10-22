@@ -101,11 +101,9 @@ export function skillsHeld(p: UserPaths, context: AppContext, messages: readonly
   return held;
 }
 
-/** `held` names the loaded skills the conversation already carries (see
- *  `skillsHeld`). Their instructions are left out here: text that enters the
- *  system prompt on a load changes the start of every later request, and a
- *  provider that caches by prefix then reads the whole conversation again. */
-export function skillContext(p: UserPaths, context: AppContext, held: ReadonlySet<string> = new Set()): string {
+/** The conversation's app and the skills it can load, names and
+ *  descriptions only. */
+export function skillCatalog(p: UserPaths, context: AppContext): string {
   const { skills, errors } = availableSkills(p, context.appId);
   const out = [context.appId ? `Conversation app: ${context.appId}. Other apps mentioned in history are not the current target.` : "No conversation app selected. General questions need no app. Before app-specific work, select the app with app_target. If the request does not identify an app unambiguously, ask the user to choose."];
   if (skills.length) {
@@ -113,6 +111,16 @@ export function skillContext(p: UserPaths, context: AppContext, held: ReadonlySe
     out.push(JSON.stringify(skills.map(({ name, description, scope }) => ({ name, description, scope: scope ?? "app" }))));
   }
   if (errors.length) out.push(`Skill diagnostics: ${JSON.stringify(errors)}`);
+  return out.join("\n\n");
+}
+
+/** `held` names the loaded skills the conversation already carries (see
+ *  `skillsHeld`). Their instructions are left out here: text that enters the
+ *  system prompt on a load changes the start of every later request, and a
+ *  provider that caches by prefix then reads the whole conversation again. */
+export function loadedSkills(p: UserPaths, context: AppContext, held: ReadonlySet<string> = new Set()): string {
+  const { skills } = availableSkills(p, context.appId);
+  const out: string[] = [];
   let loadedBytes = 0;
   for (const name of context.loaded) {
     if (held.has(name)) continue;
@@ -121,6 +129,10 @@ export function skillContext(p: UserPaths, context: AppContext, held: ReadonlySe
     if (skill) out.push(skillLoadText(p, skill));
   }
   return out.join("\n\n");
+}
+
+export function skillContext(p: UserPaths, context: AppContext, held: ReadonlySet<string> = new Set()): string {
+  return [skillCatalog(p, context), loadedSkills(p, context, held)].filter(Boolean).join("\n\n");
 }
 
 export function skillResources(p: UserPaths, skill: AppSkill): string[] {

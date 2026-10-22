@@ -63,7 +63,7 @@ it("loads and reads engine docs in Plan mode, keeps them across app switches and
   expect(result.toolTrace.every(tool => tool.ok)).toBe(true);
   expect(readAppContext(p, "engine-docs")).toEqual({ appId: "first", loaded: ["chrysalis-docs"] });
   fs.appendFileSync(path.join(p.root, "agent/sessions/engine-docs.jsonl"), JSON.stringify({ type: "compact", at: Date.now(), summary: "Read the engine docs." }) + "\n");
-  faux.setResponses([context => { expect(context.messages.find(message => message.role === "system")?.content).toContain(docs); return fauxAssistantMessage("Still available."); }]);
+  faux.setResponses([context => { expect(JSON.stringify(context.messages.find(message => message.role === "system"))).toContain(JSON.stringify(docs).slice(1, -1)); return fauxAssistantMessage("Still available."); }]);
   const resumed = await UserAgent.create("alice", svc, p, users, defaultInstanceConfig(), { sessionId: "engine-docs", mode: "plan" });
   expect((await resumed.run("continue")).finalText).toBe("Still available.");
 }, 20_000);
@@ -149,10 +149,12 @@ it("agent selects an app, loads its skill, and keeps current instructions after 
   expect(prompts[1]).toContain("first contract");
   expect(prompts[1]).not.toContain("FIRST BODY");
   expect(prompts[2]).toContain("FIRST BODY");
-  // the load is answered in the conversation: the system prompt before it and
-  // after it is the same text, and the instructions are sent once
-  expect(systems[1]).toContain("first contract");
-  expect(systems[2]).toBe(systems[1]!);
+  // the app's instructions arrive after the history, and every request opens
+  // with the same system prompt: picking an app or loading a skill keeps the
+  // cached prefix
+  expect(systems[0]).not.toContain("first contract");
+  expect(systems[1]).toBe(systems[0]!);
+  expect(systems[2]).toBe(systems[0]!);
   expect(prompts[2]!.split("FIRST BODY").length).toBe(2);
   expect(prompts.join(" ")).not.toContain("SECOND BODY");
   expect(readAppContext(p, "one")).toEqual({ appId: "first", loaded: ["preset-editing"] });

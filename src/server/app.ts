@@ -50,7 +50,7 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { radiusProvider } from "@earendil-works/pi-ai/providers/radius";
 import type { AuthPrompt, Credential, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { curatedProviders, loadCustomProviders, reservedProviderIds } from "../providers/custom.js";
-import { UserAgent, instructionDocsStamp, listSessions, renameSession, archiveSession, sessionDir, isReasoningLevel, type AgentStreamEvent, type ReasoningLevel, type SessionCompactRecord } from "../agent/agent.js";
+import { UserAgent, instructionDocsStamp, promptFile, listSessions, renameSession, archiveSession, sessionDir, isReasoningLevel, type AgentStreamEvent, type ReasoningLevel, type SessionCompactRecord } from "../agent/agent.js";
 import { compactionCut, fileActivity, lastSessionModel, summarizeMessages, type FileActivity } from "../agent/compact.js";
 import { listConnections, createConnection, updateConnection, deleteConnection, validateConnectionInput, validatePromptFormatInput, readConnections, connectionKeyUsable, type ConnectionInfo } from "../connections.js";
 import { supportsOpenRouterRouting, validateOpenRouterRouting, type OpenRouterRouting } from "../providers/openrouter-routing.js";
@@ -652,10 +652,9 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       if (cached.startsWith(`${u.username}:${sessionId}:`) && cached !== key) agentInstances.delete(cached);
     }
     let a = key ? agentInstances.get(key) : undefined;
-    // The instruction files ride the system prompt, which is snapshotted when
-    // the agent is made. Editing a note or an AGENTS.md mid-conversation and
-    // having it ignored until the next chat is the kind of thing nobody works
-    // out on their own, so a changed file drops the cached agent instead.
+    // A changed instruction file or skill drops the cached agent, so what was
+    // built from them when it was made is current; the change itself reaches
+    // the model as a context update at the start of the next run.
     const docsNow = instructionDocsStamp(userPaths(dataDir, u.username), sessionId);
     if (a && a.docsStamp !== docsNow) {
       if (key) agentInstances.delete(key);
@@ -2791,6 +2790,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     if (!fs.existsSync(file)) return c.json({ error: "session not found" }, 404);
     fs.rmSync(file);
     fs.rmSync(file.replace(/\.jsonl$/, ".context.json"), { force: true });
+    fs.rmSync(file.replace(/\.jsonl$/, ".prompt.json"), { force: true });
     fs.rmSync(file.replace(/\.jsonl$/, ".permissions.json"), { force: true });
     fs.rmSync(file + ".active.json", { force: true });
     evictAgents(c.get("user").username);
@@ -2834,6 +2834,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     writeRuns(p, newId, keep);
     const context = readAppContext(p, id);
     if (context.appId === null || readApp(p.apps, context.appId)) writeAppContext(p, newId, context);
+    if (fs.existsSync(promptFile(p, id))) fs.copyFileSync(promptFile(p, id), promptFile(p, newId));
     return c.json({ sessionId: newId, runs: keep.length });
   });
 
