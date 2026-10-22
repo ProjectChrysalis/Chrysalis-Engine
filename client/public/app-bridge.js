@@ -115,6 +115,14 @@
       else p.resolve(d);
       return;
     }
+    if (d.type === "share-result") {
+      var job = shares[d.id];
+      if (!job) return;
+      delete shares[d.id];
+      if (d.error) job.reject(new Error(d.error));
+      else job.resolve({ sentTo: d.sentTo || null });
+      return;
+    }
     if (d.type === "download-error") {
       console.error("Download failed: " + d.error);
       return;
@@ -483,8 +491,47 @@
     });
   } catch { /* no observer */ }
 
+  // ---------- sending an item to another app ----------
+  // The user picks the receiving app in the shell; resolves with
+  // { sentTo: { id, name } }, or { sentTo: null } when they cancel.
+  var shares = {};
+  var shareSeq = 1;
+  function shareData(data) {
+    if (typeof Blob !== "undefined" && data instanceof Blob) {
+      if (data.size > TOO_BIG) return Promise.reject(new Error("Item exceeds 32 MiB"));
+      return new Promise(function (resolve, reject) {
+        var reader = new FileReader();
+        reader.onload = function () { resolve(reader.result); };
+        reader.onerror = function () { reject(reader.error || new Error("Could not read the item")); };
+        reader.readAsDataURL(data);
+      });
+    }
+    try {
+      var json = JSON.stringify(data);
+      if (json === undefined) throw new Error("Nothing to send");
+      if (json.length > TOO_BIG) throw new Error("Item exceeds 32 MiB");
+      return Promise.resolve(JSON.parse(json));
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  }
+  function share(item) {
+    if (!parentWin) return Promise.reject(new Error("this app is not running inside Chrysalis"));
+    if (!item || typeof item.kind !== "string") return Promise.reject(new TypeError("share needs a kind"));
+    return shareData(item.data).then(function (data) {
+      return new Promise(function (resolve, reject) {
+        whenReady(function () {
+          var id = shareSeq++;
+          shares[id] = { resolve: resolve, reject: reject };
+          post({ type: "share", id: id, kind: item.kind, name: String(item.name || ""), data: data });
+        });
+      });
+    });
+  }
+
   window.ChrysalisApp = {
     setAgentContext: function (selection) { whenReady(function () { post({ type: "agent-context", selection: selection }); }); },
+    share: share,
   };
 
   async function inspectPage() {

@@ -23,7 +23,7 @@ import { PluginStoreService } from "../plugins/store.js";
 import { discoverPlugins, discoverAppPlugins, runPluginHook, runPluginHookOutcome, runPluginRoute, runPluginTool, readPluginExport, syncSchedules, stopSchedules, invalidatePluginCache, collectSiblingTools, collectSiblingLlmHooks, mergeToolBridges, pluginMentions, type LoadedPlugin, type PluginRuntimeDeps, type PluginToolBridge } from "../plugins/runtime.js";
 import { ServiceManager, serviceApproved, servicePorts, writeServiceApproval, type ServiceTarget } from "../apps/service.js";
 import { McpRegistry, WEB_SEARCH_PRESET, readStdioApprovals, stdioFingerprint, writeStdioApproval, type CredentialMap, type McpServerConfig } from "../mcp/registry.js";
-import { listApps, readApp, createAppSkeleton, renameAppDir, appTree, validateAppManifest, hashAppTree, type AppInfo } from "../apps/manager.js";
+import { listApps, readApp, createAppSkeleton, renameAppDir, appTree, validateAppManifest, hashAppTree, receivesKind, SHARE_KIND, type AppInfo } from "../apps/manager.js";
 import { UPDATE_STRATEGIES, applyWrites, mergeBrief, restoreWrites, forgetInstall, mergeTrees, moveInstall, readBaseline, readCodeTree, readInstallSource, readPendingUpgrade, recoverBaseline, satisfiesRange, seedDataTemplates, writeBaseline, writeInstallSource, writePendingUpgrade, type InstallSource } from "../apps/update.js";
 import { OFFICIAL_SOURCES, createCatalog, isOfficialSource, normalizeGitUrl } from "../apps/store.js";
 import { checkoutHead, gitClone, gitRemoteHead, isValidGitRef, isValidGitUrl, remoteManifest, stripVcs } from "../apps/git.js";
@@ -5308,6 +5308,49 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
       return c.body(got.payload, got.status as 200, headers);
     }
     return c.json(got.payload, got.status as 200);
+  });
+
+  // ---------- sending items between apps ----------
+  // Only the shell calls these: an app frame cannot (appBridgeAllows has no
+  // /v1/share), so an item moves only after the user picked the target in
+  // the shell's own dialog. The target sees the item through its declared
+  // route alone, never the sender's data or routes.
+  app.get("/v1/share/targets", (c) => {
+    const p = c.get("paths");
+    const kind = c.req.query("kind") ?? "";
+    const from = c.req.query("from") ?? "";
+    if (!SHARE_KIND.test(kind)) return c.json({ error: "invalid kind" }, 400);
+    const apps = listApps(p.apps).filter((a) => a.id !== from && receivesKind(a.manifest, kind));
+    return c.json({ apps: apps.map((a) => ({ id: a.id, name: a.manifest.name })) });
+  });
+  app.post("/v1/share", async (c) => {
+    const u = c.get("user");
+    const p = c.get("paths");
+    const capped = await readCappedBody(c, 48 * 1024 * 1024);
+    if (!capped.ok) { c.header("connection", "close"); return c.json({ error: capped.error }, 413); }
+    let body: { from?: unknown; to?: unknown; kind?: unknown; name?: unknown; data?: unknown };
+    try {
+      body = JSON.parse(new TextDecoder().decode(capped.bytes));
+    } catch {
+      return c.json({ error: "invalid JSON" }, 400);
+    }
+    const { from, to, kind, name, data } = body ?? {};
+    if (typeof kind !== "string" || !SHARE_KIND.test(kind)) return c.json({ error: "invalid kind" }, 400);
+    if (typeof name !== "string" || name.length > 200) return c.json({ error: "invalid name" }, 400);
+    if (data === undefined) return c.json({ error: "nothing to send" }, 400);
+    const source = typeof from === "string" ? readApp(p.apps, from) : null;
+    const target = typeof to === "string" ? readApp(p.apps, to) : null;
+    if (!source || !target) return c.json({ error: "app not found" }, 404);
+    if (source.id === target.id || !target.manifest.receives || !receivesKind(target.manifest, kind)) {
+      return c.json({ error: `${target.manifest.name} does not take ${kind} items` }, 400);
+    }
+    const item = { kind, name, from: { id: source.id, name: source.manifest.name }, data };
+    const got = await dispatchAppRoute(u, target.id, "POST", target.manifest.receives.route, {}, item);
+    if (got === null) return c.json({ error: noRouteReason(p, target.id) }, 404);
+    const failed = got.status >= 400;
+    const message = failed && got.payload && typeof got.payload === "object" ? (got.payload as { error?: unknown }).error : undefined;
+    if (failed) return c.json({ error: typeof message === "string" ? message : `${target.manifest.name} could not take it (${got.status})` }, 502);
+    return c.json({ ok: true, to: { id: target.id, name: target.manifest.name }, result: got.payload });
   });
 
   app.get("/v1/assets", (c) => {

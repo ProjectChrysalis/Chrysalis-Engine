@@ -119,6 +119,32 @@ export interface AppManifest {
   engine?: string;
   /** The program a "service" app runs. Always present on that kind. */
   service?: ServiceSpec;
+  /** What other apps may send this one: the user picks it as the target of
+   *  an item of one of these kinds ("*" takes any), and the engine POSTs the
+   *  item to this app's own `route`. */
+  receives?: AppReceives;
+}
+
+export interface AppReceives {
+  route: string;
+  kinds: string[];
+}
+
+export const SHARE_KIND = /^[a-z0-9][a-z0-9._+-]{0,63}$/i;
+
+function validateReceives(raw: unknown): AppReceives | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as { route?: unknown; kinds?: unknown };
+  if (typeof r.route !== "string" || !/^\/[A-Za-z0-9._~\/-]{0,199}$/.test(r.route) || r.route.split("/").includes("..")) return null;
+  if (!Array.isArray(r.kinds) || r.kinds.length < 1 || r.kinds.length > 32) return null;
+  if (!r.kinds.every((k) => typeof k === "string" && (k === "*" || SHARE_KIND.test(k)))) return null;
+  return { route: r.route, kinds: [...new Set(r.kinds as string[])] };
+}
+
+/** Whether an app takes items of `kind` from other apps. */
+export function receivesKind(manifest: AppManifest, kind: string): boolean {
+  const kinds = manifest.receives?.kinds ?? [];
+  return kinds.includes("*") || kinds.some((k) => k.toLowerCase() === kind.toLowerCase());
 }
 
 export interface AppInfo {
@@ -148,6 +174,8 @@ export function validateAppManifest(raw: unknown): AppManifest | null {
           ...(typeof (m.source as { contentHash?: unknown }).contentHash === "string" ? { contentHash: (m.source as { contentHash?: string }).contentHash } : {}),
         }
       : undefined;
+  // a service app's routes are its own program's, not the engine's to call
+  const receives = kind === "service" ? null : validateReceives(m.receives);
   return {
     name: m.name,
     version: m.version,
@@ -159,6 +187,7 @@ export function validateAppManifest(raw: unknown): AppManifest | null {
     ...(typeof m.repository === "string" && /^https:\/\/[^\s]+$/.test(m.repository) ? { repository: m.repository } : {}),
     ...(typeof m.engine === "string" && m.engine.trim() && m.engine.length <= 64 ? { engine: m.engine.trim() } : {}),
     ...(service ? { service } : {}),
+    ...(receives ? { receives } : {}),
   };
 }
 

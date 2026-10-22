@@ -25,3 +25,7 @@
 }
 .chrysalis-download button:hover { background: var(--c-hover); }
 .chrysalis-download button:focus-visible { outline: 2px solid var(--c-line-focus); outline-offset: 2px; }
+.chrysalis-share-targets { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.75rem; }
+.chrysalis-share-targets:empty { display: none; }
+.chrysalis-share-targets button { margin: 0; text-align: left; }
+.chrysalis-download button:disabled { opacity: 0.5; cursor: default; }

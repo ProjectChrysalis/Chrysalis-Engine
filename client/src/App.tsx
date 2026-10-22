@@ -304,6 +304,17 @@ function Shell(props: { theme: "light" | "dark"; onTheme: () => void }) {
     if (user) prefs.set(recentAppsKey(user.username), JSON.stringify({ ...readRecentApps(user.username), [id]: Date.now() }))
     placeTab({ id, kind: "app", name: appName(id) })
   }
+  // an item sent from one app to another opens the app that took it
+  const openAppRef = useRef(openApp)
+  openAppRef.current = openApp
+  useEffect(() => {
+    const onSent = (e: Event) => {
+      const appId = (e as CustomEvent<{ appId?: unknown }>).detail?.appId
+      if (typeof appId === "string") openAppRef.current(appId)
+    }
+    window.addEventListener("chrysalis:open-app", onSent)
+    return () => window.removeEventListener("chrysalis:open-app", onSent)
+  }, [])
   /** Clicking a tab in the strip only switches to it — it never rearranges or
    * consumes anything, whatever tab you were on. */
   function focusTab(t: Tab) {

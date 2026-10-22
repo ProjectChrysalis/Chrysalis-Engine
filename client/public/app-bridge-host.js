@@ -188,6 +188,105 @@
     panel.show();
   }
 
+  var pendingShare = null;
+  function shareReply(source, id, result) {
+    send(source, Object.assign({ __chrysalis: 1, type: "share-result", id: id }, result));
+  }
+  /** An app hands over an item; the user picks which app gets it. The engine
+   *  delivers it (POST /v1/share), so the sending app never reaches the
+   *  receiving app's routes, and nothing moves without a real click here. */
+  function handleShare(record, source, d) {
+    var SHARE_KIND = /^[a-z0-9][a-z0-9._+-]{0,63}$/i;
+    if (typeof d.kind !== "string" || !SHARE_KIND.test(d.kind) || typeof d.name !== "string" || d.name.length > 200 || d.data === undefined) {
+      shareReply(source, d.id, { error: "invalid item" });
+      return;
+    }
+    if (pendingShare) {
+      shareReply(source, d.id, { error: "send or cancel the pending item first" });
+      return;
+    }
+    var label = d.name || d.kind;
+    var panel = document.createElement("dialog");
+    panel.className = "chrysalis-download";
+    panel.setAttribute("aria-label", "Send " + label);
+    var title = document.createElement("strong");
+    title.textContent = "Send " + label;
+    var note = document.createElement("p");
+    note.textContent = "Loading apps…";
+    var targets = document.createElement("div");
+    targets.className = "chrysalis-share-targets";
+    var cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    var done = false;
+    function close(result) {
+      if (done) return;
+      done = true;
+      panel.close();
+      panel.remove();
+      if (pendingShare && pendingShare.panel === panel) pendingShare = null;
+      shareReply(source, d.id, result);
+    }
+    cancel.addEventListener("click", function () { close({ sentTo: null }); });
+    panel.addEventListener("cancel", function () { close({ sentTo: null }); });
+    panel.append(title, note, targets, cancel);
+    if (!downloadStyles) {
+      var sheet = document.createElement("link");
+      sheet.rel = "stylesheet";
+      sheet.href = "/client/app-download.css";
+      document.head.appendChild(sheet);
+      downloadStyles = true;
+    }
+    document.body.appendChild(panel);
+    pendingShare = { record: record, panel: panel, close: close };
+    panel.show();
+
+    var query = "?kind=" + encodeURIComponent(d.kind) + "&from=" + encodeURIComponent(record.appId);
+    fetch("/v1/share/targets" + query, { credentials: "same-origin" }).then(function (res) {
+      return res.json().then(function (body) {
+        if (!res.ok) throw new Error(body.error || "Could not list apps");
+        return body.apps || [];
+      });
+    }).then(function (apps) {
+      if (done) return;
+      if (!apps.length) {
+        note.textContent = "No installed app takes this.";
+        return;
+      }
+      note.textContent = "Send to";
+      apps.forEach(function (app) {
+        var pick = document.createElement("button");
+        pick.type = "button";
+        pick.textContent = app.name;
+        pick.addEventListener("click", function (event) {
+          // an app cannot synthesize a click in the shell to pick the target
+          if (!event.isTrusted || done) return;
+          targets.querySelectorAll("button").forEach(function (b) { b.disabled = true; });
+          note.textContent = "Sending…";
+          fetch("/v1/share", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ from: record.appId, to: app.id, kind: d.kind, name: d.name, data: d.data }),
+          }).then(function (res) {
+            return res.json().then(function (body) {
+              if (!res.ok) throw new Error(body.error || "Could not send");
+              close({ sentTo: body.to });
+              window.dispatchEvent(new CustomEvent("chrysalis:open-app", { detail: { appId: body.to.id } }));
+            });
+          }).catch(function (e) {
+            if (done) return;
+            note.textContent = String((e && e.message) || e);
+            targets.querySelectorAll("button").forEach(function (b) { b.disabled = false; });
+          });
+        });
+        targets.appendChild(pick);
+      });
+    }).catch(function (e) {
+      if (!done) note.textContent = String((e && e.message) || e);
+    });
+  }
+
   function handleFetch(record, source, d) {
     var method = typeof d.method === "string" ? d.method.toUpperCase() : "GET";
     var url;
@@ -365,6 +464,7 @@
       return;
     }
     if (d.type === "download") handleDownload(record, e.source, d);
+    else if (d.type === "share") handleShare(record, e.source, d);
     else if (d.type === "fetch") handleFetch(record, e.source, d);
     else if (d.type === "fetch-abort") {
       var controller = record.fetches.get(d.id);
@@ -402,6 +502,7 @@
       closeSockets(record);
       closeFetches(record);
       if (pendingDownload && pendingDownload.record === record) pendingDownload.close();
+      if (pendingShare && pendingShare.record === record) pendingShare.close({ sentTo: null });
     };
   };
 
