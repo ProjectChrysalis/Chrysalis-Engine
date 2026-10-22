@@ -86,14 +86,14 @@ type ProviderPick = EngineProvider | CustomPick | OAuthPick | LocalPick
 export type TabValue = "general" | "api" | "speech" | "agent" | "mcp" | "backups" | "spending" | "server" | "users"
 
 export function SettingsBody(props: { onClose: () => void; me: Me; initialTab?: TabValue | null; onLogout: () => void }) {
-  const [tab, setTab] = useState<TabValue>(props.initialTab ?? "api")
+  const [tab, setTab] = useState<TabValue>(props.initialTab ?? "general")
   const tabs: Array<{ value: TabValue; label: string; icon: ReactNode }> = [
+    { value: "general", label: tr("General"), icon: <IconSmall name="outline-sliders" /> },
     { value: "api", label: tr("API connections"), icon: <Icon name="cloud-upload" /> },
     { value: "agent", label: tr("Agent"), icon: <Icon name="brain" /> },
     { value: "speech", label: tr("Speech"), icon: <Icon name="speaker" /> },
     { value: "spending", label: tr("Spending"), icon: <Icon name="chart" /> },
     { value: "backups", label: tr("Backups"), icon: <Icon name="backup" /> },
-    { value: "general", label: tr("General"), icon: <IconSmall name="outline-sliders" /> },
     { value: "mcp", label: tr("MCP servers"), icon: <Icon name="terminal-active" /> },
     ...(props.me.role === "admin"
       ? [
