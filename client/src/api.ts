@@ -462,6 +462,7 @@ export interface UsageSummary {
 export const usageApi = {
   summary: (days: number) =>
     api<UsageSummary>("GET", `/v1/account/usage?days=${days}&tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone)}`),
+  clear: () => api("DELETE", "/v1/account/usage"),
 }
 
 export const backupApi = {

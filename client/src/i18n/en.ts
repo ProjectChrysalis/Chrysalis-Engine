@@ -778,6 +778,8 @@ const en = {
   "Google Drive": "",
   "Daily backups to keep": "",
   "When there are more, the oldest is deleted. Backups you make with Back up now stay until you delete them.": "",
+  "Delete the whole spending history? This cannot be undone.": "",
+  "Clear history": "",
 } as const
 
 export default en

@@ -776,6 +776,8 @@ const dict = {
   "Google Drive": "Google Drive",
   "Daily backups to keep": "Backups diários a manter",
   "When there are more, the oldest is deleted. Backups you make with Back up now stay until you delete them.": "Se houver mais, o mais antigo é apagado. Os feitos com Fazer backup agora ficam até você apagá-los.",
+  "Delete the whole spending history? This cannot be undone.": "Apagar todo o histórico de gastos? Isso não pode ser desfeito.",
+  "Clear history": "Limpar histórico",
 }
 
 export default dict

@@ -776,6 +776,8 @@ const dict = {
   "Google Drive": "Google ドライブ",
   "Daily backups to keep": "保持する毎日のバックアップ数",
   "When there are more, the oldest is deleted. Backups you make with Back up now stay until you delete them.": "これを超えると最も古いものが削除されます。「今すぐバックアップ」で作ったものは削除するまで残ります。",
+  "Delete the whole spending history? This cannot be undone.": "支出履歴をすべて削除しますか？元に戻せません。",
+  "Clear history": "履歴を消去",
 }
 
 export default dict

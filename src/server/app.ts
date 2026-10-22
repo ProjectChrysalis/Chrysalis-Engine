@@ -52,7 +52,7 @@ import { radiusProvider } from "@earendil-works/pi-ai/providers/radius";
 import type { AuthPrompt, Credential, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { curatedProviders, loadCustomProviders, reservedProviderIds } from "../providers/custom.js";
 import { UserAgent, instructionDocsStamp, promptFile, listSessions, renameSession, archiveSession, sessionDir, isReasoningLevel, type AgentStreamEvent, type ReasoningLevel, type SessionCompactRecord } from "../agent/agent.js";
-import { usageSummary } from "../usage.js";
+import { clearUsage, usageSummary } from "../usage.js";
 import { compactionCut, fileActivity, lastSessionModel, summarizeMessages, type FileActivity } from "../agent/compact.js";
 import { listConnections, createConnection, updateConnection, deleteConnection, validateConnectionInput, validatePromptFormatInput, readConnections, connectionKeyUsable, type ConnectionInfo } from "../connections.js";
 import { supportsOpenRouterRouting, validateOpenRouterRouting, type OpenRouterRouting } from "../providers/openrouter-routing.js";
@@ -5538,6 +5538,10 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
       if (name) names[source] = name;
     }
     return c.json({ ...summary, names });
+  });
+  app.delete("/v1/account/usage", (c) => {
+    clearUsage(userPaths(dataDir, c.get("user").username).usage);
+    return c.json({ ok: true });
   });
 
   app.get("/v1/account/backups", (c) => {

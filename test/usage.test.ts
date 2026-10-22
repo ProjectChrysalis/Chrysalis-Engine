@@ -82,4 +82,7 @@ it("each account reads only its own spending, with app names", async () => {
   expect(mine.total.calls).toBe(1);
   expect(mine.names).toEqual({ "app:studio": "Story Studio" });
   expect((await get(bob)).total.calls).toBe(0);
+
+  await app.request("/v1/account/usage", { method: "DELETE", headers: { authorization: `Bearer ${alice}` } });
+  expect((await get(alice)).total.calls).toBe(0);
 });

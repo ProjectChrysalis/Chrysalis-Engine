@@ -44,6 +44,11 @@ export function recordUsage(dir: string, row: UsageRow): void {
   }
 }
 
+/** Forget every recorded call. */
+export function clearUsage(dir: string): void {
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 /** Who spent it: the agent, one app, or the HTTP API. */
 export function usageSource(src: string): string {
   if (src === "agent") return "agent";

@@ -107,6 +107,8 @@ export function SpendingTab() {
   const [days, setDays] = useState<(typeof PERIODS)[number]>(30)
   const [d, setData] = useState<UsageSummary | null>(null)
   const [err, setErr] = useState("")
+  const [loads, setLoads] = useState(0)
+  const [confirming, setConfirming] = useState(false)
   useEffect(() => {
     let live = true
     setErr("")
@@ -117,7 +119,17 @@ export function SpendingTab() {
     return () => {
       live = false
     }
-  }, [days])
+  }, [days, loads])
+  const clear = async () => {
+    setConfirming(false)
+    setErr("")
+    try {
+      await usageApi.clear()
+      setLoads((n) => n + 1)
+    } catch (e) {
+      setErr((e as Error).message ?? String(e))
+    }
+  }
   const byCost = !!d && d.total.cost > 0
   const rate = d ? cacheRate(d.total) : null
   return (
@@ -152,6 +164,19 @@ export function SpendingTab() {
             <Section title={tr("By model")}>
               <Breakdown rows={d.models.map((m) => ({ ...m, name: m.model }))} byCost={byCost} />
             </Section>
+            <div className="flex flex-col gap-2">
+              {confirming ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="min-w-0 flex-1 basis-48 text-12 text-ink-muted">{tr("Delete the whole spending history? This cannot be undone.")}</span>
+                  <Button variant="danger" size="small" onClick={() => void clear()}>{tr("Clear history")}</Button>
+                  <Button variant="neutral" size="small" onClick={() => setConfirming(false)}>{tr("Cancel")}</Button>
+                </div>
+              ) : (
+                <div>
+                  <Button variant="neutral" size="small" onClick={() => setConfirming(true)}>{tr("Clear history")}</Button>
+                </div>
+              )}
+            </div>
           </>
         ) : null}
       </div>

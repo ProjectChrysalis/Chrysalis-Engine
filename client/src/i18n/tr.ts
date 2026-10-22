@@ -776,6 +776,8 @@ const dict = {
   "Google Drive": "Google Drive",
   "Daily backups to keep": "Saklanacak günlük yedek",
   "When there are more, the oldest is deleted. Backups you make with Back up now stay until you delete them.": "Daha fazlası olursa en eskisi silinir. Şimdi yedekle ile yaptıkların sen silene kadar kalır.",
+  "Delete the whole spending history? This cannot be undone.": "Tüm harcama geçmişi silinsin mi? Bu geri alınamaz.",
+  "Clear history": "Geçmişi temizle",
 }
 
 export default dict

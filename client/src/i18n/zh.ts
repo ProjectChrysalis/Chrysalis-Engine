@@ -776,6 +776,8 @@ const dict = {
   "Google Drive": "Google 云端硬盘",
   "Daily backups to keep": "保留的每日备份数",
   "When there are more, the oldest is deleted. Backups you make with Back up now stay until you delete them.": "超出时会删除最旧的一份。用“立即备份”创建的备份会一直保留，直到你删除。",
+  "Delete the whole spending history? This cannot be undone.": "删除全部支出记录？此操作无法撤销。",
+  "Clear history": "清除记录",
 }
 
 export default dict
