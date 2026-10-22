@@ -20,7 +20,7 @@ function movedUrl(info: ServerInfo): string {
   return url.toString()
 }
 
-function CopyButton(props: { text: string }) {
+export function CopyButton(props: { text: string }) {
   const [done, setDone] = useState(false)
   return (
     <IconButton
@@ -48,7 +48,7 @@ function PathRow(props: { label: string; value: string }) {
   )
 }
 
-function Toggle(props: { label: string; hint?: string; checked: boolean; locked?: string; disabled: boolean; onChange: (v: boolean) => void }) {
+export function Toggle(props: { label: string; hint?: string; checked: boolean; locked?: string; disabled: boolean; onChange: (v: boolean) => void }) {
   return (
     <div className="flex flex-col gap-1">
       <label className="flex items-center gap-2 text-13 text-ink">
@@ -71,7 +71,7 @@ function LockedNote(props: { source: string }) {
   return <p className="pl-6 text-12 text-ink-faint">{tr("Set by {source} for this run", { source: props.source })}</p>
 }
 
-function Section(props: { title: string; children: ReactNode }) {
+export function Section(props: { title: string; children: ReactNode }) {
   return (
     <section className="flex flex-col gap-2.5">
       <h3 className="text-13 font-medium text-ink">{props.title}</h3>

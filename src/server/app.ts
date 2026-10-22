@@ -28,7 +28,13 @@ import { UPDATE_STRATEGIES, applyWrites, mergeBrief, restoreWrites, forgetInstal
 import { OFFICIAL_SOURCES, createCatalog, isOfficialSource, normalizeGitUrl } from "../apps/store.js";
 import { checkoutHead, gitClone, gitRemoteHead, isValidGitRef, isValidGitUrl, remoteManifest, stripVcs } from "../apps/git.js";
 import { BACKUP_MAX_BYTES, BACKUP_META_DIR, BackupError, buildBackup, extractBackup, locateBackup, type BackupMeta } from "../apps/backup.js";
-import { bootstrapUserDir } from "../paths.js";
+import { bootstrapUserDir, ensureGitignoreEntries } from "../paths.js";
+import {
+  ACCOUNT_MAX_BYTES, AccountBackupError, accountBackupsDir, accountFiles, backupDir, backupSources, createBackup, currentJob, deleteBackup, extractAccountTar,
+  incomingDir, listBackups, liveSources, readAutoError, readBackupSettings, restoreAccount, stageBackup, startJob, tarStream, writeBackupSettings,
+  type BackupJob,
+} from "../account-backup.js";
+import { engineUrls } from "./listen.js";
 import type { UserService, UserRecord } from "../users.js";
 import type { SessionService } from "../sessions.js";
 import type { InstanceConfig } from "../config.js";
@@ -1156,7 +1162,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   });
 
   // ---------- auth middleware ----------
-  const PUBLIC_PATHS = new Set(["/v1/health", "/v1/ws", "/v1/auth/users", "/v1/auth/setup", "/v1/auth/login", "/v1/auth/forgot", "/v1/auth/reset"]);
+  const PUBLIC_PATHS = new Set(["/v1/health", "/v1/ws", "/v1/auth/users", "/v1/auth/setup", "/v1/auth/login", "/v1/auth/forgot", "/v1/auth/reset", "/v1/transfer/info", "/v1/transfer/pull"]);
   /** Sandboxed app frames (opaque origin) send no cookies. Their static
    *  files live under /app/<user>/<id>/ and are public; every byte of data
    *  they show comes back through the shell bridge. */
@@ -1307,6 +1313,15 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       return c.json({ error: `workspace move failed: ${(e as Error).message}` }, 500);
     }
     sessions.renameUser(oldName, record.username);
+    // backups on this device follow the account; a failure leaves them
+    // where they are, still readable by hand
+    try {
+      const from = accountBackupsDir(dataDir, oldName);
+      const to = accountBackupsDir(dataDir, record.username);
+      if (fs.existsSync(from) && from !== to) await renameRetrying(from, to);
+    } catch (e) {
+      log.warn(`[backups] could not move ${oldName}'s backups to ${record.username}: ${(e as Error).message}`);
+    }
     // seed the new directory shape if anything expected is missing
     bootstrapUserDir(dataDir, record.username);
     log.info(`[users] renamed ${oldName} → ${record.username}`);
@@ -5403,6 +5418,338 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
     // keep the user's files on disk (their workspace may be restored by
     // recreating the user); only the account is gone
     return c.json({ ok: true });
+  });
+
+  // ---------- account backups, and moving an account between devices ----------
+  // Backups on this device are folders beside the data (account-backup.ts);
+  // a download or a transfer is the same account as one tar stream. A
+  // transfer code lets another engine pull this account once: it is shown
+  // to the person who made it, lasts 15 minutes, and every code stops
+  // working after enough wrong guesses.
+  const backupError = (c: Context<AppEnv>, e: unknown) =>
+    e instanceof AccountBackupError ? c.json({ error: e.message }, e.status) : c.json({ error: (e as Error).message ?? String(e) }, 500);
+
+  /** Replace the account with an unpacked backup and bring every cache that
+   *  read the old one back in line. */
+  const restoreInto = async (u: UserRecord, staged: string, trusted: boolean, job: BackupJob): Promise<void> => {
+    const p = userPaths(dataDir, u.username);
+    const apps = await restoreAccount(dataDir, u.username, staged, {
+      trusted,
+      admin: u.role === "admin",
+      beforeSwap: async () => {
+        evictAgents(u.username);
+        stopUserSchedules(u.username);
+        stopLookWatcher(u.username);
+        await services.removeUser(u.username);
+        await mcpRegistries.get(u.username)?.dispose();
+        mcpRegistries.delete(u.username);
+        modelServices.delete(u.username);
+        pluginStores.delete(u.username);
+      },
+    }, job);
+    // an account without an approvals file adopts its stdio servers once;
+    // servers that arrived in a backup are approved again by hand
+    if (!fs.existsSync(stdioApprovalsFile(p))) writeStdioApproval(stdioApprovalsFile(p), "", null);
+    bootstrapUserDir(dataDir, u.username);
+    ensureGitignoreEntries(p.root);
+    if (!fs.existsSync(p.gitDir)) await git.initRepo(p.root);
+    invalidatePluginCache();
+    await git.commitAll(p.root, u.username, "restored from a backup");
+    syncUserSchedules(u);
+    if (config.apps.packageDownloads) {
+      for (const id of apps) {
+        const dir = path.join(p.apps, id);
+        if (hasPackages(dir) && !fs.existsSync(path.join(dir, "node_modules"))) void installApp(dir);
+      }
+    }
+    log.info(`[backups] restored ${u.username} from a backup`);
+  };
+
+  const backupFileName = (username: string, when: string) => `chrysalis-${username}-${when.slice(0, 10)}.tar`;
+  const tarResponse = (c: Context<AppEnv>, name: string, body: ReadableStream<Uint8Array>) => {
+    c.header("content-type", "application/x-tar");
+    c.header("content-disposition", `attachment; filename="${name}"`);
+    c.header("x-content-type-options", "nosniff");
+    c.header("cache-control", "no-store");
+    return c.body(body);
+  };
+
+  app.get("/v1/account/backups", (c) => {
+    const username = c.get("user").username;
+    const base = accountBackupsDir(dataDir, username);
+    let free: number | null = null;
+    try {
+      const s = fs.statfsSync(fs.existsSync(base) ? base : dataDir);
+      free = Number(s.bavail) * Number(s.bsize);
+    } catch { /* not reported on this system */ }
+    return c.json({
+      backups: listBackups(dataDir, username),
+      settings: readBackupSettings(dataDir, username),
+      autoError: readAutoError(dataDir, username),
+      job: currentJob(username),
+      free,
+    });
+  });
+  app.put("/v1/account/backups/settings", async (c) => {
+    const body = await c.req.json<{ auto?: unknown; keep?: unknown }>().catch(() => ({}) as { auto?: unknown; keep?: unknown });
+    try {
+      return c.json(writeBackupSettings(dataDir, c.get("user").username, { auto: body.auto as boolean, keep: body.keep as number }));
+    } catch (e) {
+      return backupError(c, e);
+    }
+  });
+  app.post("/v1/account/backups", (c) => {
+    const username = c.get("user").username;
+    try {
+      return c.json({ job: startJob(username, "backup", async (job) => void (await createBackup(dataDir, username, "manual", job))) }, 202);
+    } catch (e) {
+      return backupError(c, e);
+    }
+  });
+  app.delete("/v1/account/backups/:id", (c) => {
+    try {
+      deleteBackup(dataDir, c.get("user").username, c.req.param("id"));
+      return c.json({ ok: true });
+    } catch (e) {
+      return backupError(c, e);
+    }
+  });
+  app.get("/v1/account/backups/:id/download", (c) => {
+    const username = c.get("user").username;
+    try {
+      const sources = backupSources(dataDir, username, c.req.param("id"), c.req.query("keys") === "1");
+      const info = listBackups(dataDir, username).find((b) => b.id === c.req.param("id"));
+      return tarResponse(c, backupFileName(username, info?.createdAt ?? new Date().toISOString()), tarStream(sources));
+    } catch (e) {
+      return backupError(c, e);
+    }
+  });
+  app.post("/v1/account/backups/:id/restore", (c) => {
+    const u = c.get("user");
+    const id = c.req.param("id");
+    try {
+      backupDir(dataDir, u.username, id);
+      return c.json({ job: startJob(u.username, "restore", async (job) => restoreInto(u, await stageBackup(dataDir, u.username, id, job), true, job)) }, 202);
+    } catch (e) {
+      return backupError(c, e);
+    }
+  });
+  app.get("/v1/account/export", (c) => {
+    const username = c.get("user").username;
+    return tarResponse(c, backupFileName(username, new Date().toISOString()), tarStream(liveSources(dataDir, username, c.req.query("keys") === "1")));
+  });
+
+  // A backup file comes up in chunks (the socket's body limit is far below
+  // an account's size), then is unpacked and restored as one job.
+  const ACCOUNT_UPLOAD = /^[0-9a-f]{32}$/;
+  const uploadFile = (username: string, id: string) => path.join(accountBackupsDir(dataDir, username), `.incoming-${id}.tar`);
+  app.post("/v1/account/import", async (c) => {
+    const username = c.get("user").username;
+    const body = await c.req.json<{ size?: unknown }>().catch(() => ({}) as { size?: unknown });
+    const size = Number(body.size);
+    if (!Number.isSafeInteger(size) || size <= 0 || size > ACCOUNT_MAX_BYTES) return c.json({ error: "the file must be between 1 byte and 64 GB" }, 400);
+    const id = nodeCrypto.randomBytes(16).toString("hex");
+    const file = uploadFile(username, id);
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    try {
+      const s = fs.statfsSync(path.dirname(file));
+      // the upload, then the unpacked copy of it
+      if (Number(s.bavail) * Number(s.bsize) < size * 2 + 256 * 1024 * 1024) return c.json({ error: "not enough disk space for this backup" }, 507);
+    } catch { /* not reported on this system */ }
+    fs.writeFileSync(file, "", { mode: 0o600 });
+    return c.json({ id, chunk: IMPORT_CHUNK_BYTES });
+  });
+  app.put("/v1/account/import/:id", async (c) => {
+    const username = c.get("user").username;
+    const id = c.req.param("id");
+    if (!ACCOUNT_UPLOAD.test(id)) return c.json({ error: "unknown upload" }, 404);
+    const file = uploadFile(username, id);
+    let have: number;
+    try {
+      have = fs.statSync(file).size;
+    } catch {
+      return c.json({ error: "the upload expired: choose the file again" }, 404);
+    }
+    if (Number(c.req.query("offset")) !== have) return c.json({ error: "chunk out of order", uploaded: have }, 409);
+    const body = await readCappedBody(c, IMPORT_CHUNK_BYTES);
+    if (!body.ok) return c.json({ error: body.error }, 413);
+    if (have + body.bytes.length > ACCOUNT_MAX_BYTES) return c.json({ error: "the file is larger than 64 GB" }, 413);
+    fs.appendFileSync(file, body.bytes);
+    return c.json({ uploaded: have + body.bytes.length });
+  });
+  app.post("/v1/account/import/:id/finish", (c) => {
+    const u = c.get("user");
+    const id = c.req.param("id");
+    if (!ACCOUNT_UPLOAD.test(id) || !fs.existsSync(uploadFile(u.username, id))) return c.json({ error: "the upload expired: choose the file again" }, 404);
+    const file = uploadFile(u.username, id);
+    try {
+      return c.json({
+        job: startJob(u.username, "restore", async (job) => {
+          const staged = incomingDir(dataDir, u.username);
+          try {
+            job.total = fs.statSync(file).size;
+            await extractAccountTar(Bun.file(file).stream(), staged, { maxBytes: ACCOUNT_MAX_BYTES, job });
+          } catch (e) {
+            fs.rmSync(staged, { recursive: true, force: true });
+            throw e;
+          } finally {
+            fs.rmSync(file, { force: true });
+          }
+          await restoreInto(u, staged, false, job);
+        }),
+      }, 202);
+    } catch (e) {
+      return backupError(c, e);
+    }
+  });
+
+  interface TransferOffer { code: string; keys: boolean; expires: number; state: "waiting" | "sending" | "sent" | "failed" }
+  const transferOffers = new Map<string, TransferOffer>();
+  const transferMisses: number[] = [];
+  const TRANSFER_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const normalizeCode = (code: string) => code.toUpperCase().replace(/[^0-9A-Z]/g, "");
+  /** The offer a code opens, or a response saying why none does. */
+  const offerFor = (c: Context<AppEnv>): { username: string; offer: TransferOffer } | Response => {
+    const now = Date.now();
+    while (transferMisses.length && now - (transferMisses[0] ?? 0) > 10 * 60 * 1000) transferMisses.shift();
+    if (transferMisses.length >= 20) {
+      transferOffers.clear();
+      return c.json({ error: "too many wrong codes: make a new code on the sending device" }, 429);
+    }
+    const given = Buffer.from(normalizeCode(c.req.header("x-chrysalis-transfer") ?? ""));
+    for (const [username, offer] of transferOffers) {
+      const want = Buffer.from(offer.code);
+      if (given.length === want.length && nodeCrypto.timingSafeEqual(given, want)) {
+        if (offer.state !== "waiting" || offer.expires < now) return c.json({ error: "this code was used or has expired: make a new one" }, 410);
+        if (!users.get(username)) break;
+        return { username, offer };
+      }
+    }
+    transferMisses.push(now);
+    return c.json({ error: "wrong code" }, 403);
+  };
+  const transferInfo = (username: string, keys: boolean) => {
+    const files = accountFiles(dataDir, username, keys);
+    return { from: username, engine: ENGINE_VERSION, instance: deps.instance ?? null, keys, files: files.length, bytes: files.reduce((n, f) => n + f.size, 0) };
+  };
+
+  app.post("/v1/account/transfer", async (c) => {
+    const username = c.get("user").username;
+    const body = await c.req.json<{ keys?: unknown }>().catch(() => ({}) as { keys?: unknown });
+    const bytes = nodeCrypto.randomBytes(8);
+    const code = Array.from(bytes, (b) => TRANSFER_ALPHABET[b % 32]).join("");
+    const offer: TransferOffer = { code, keys: body.keys === true, expires: Date.now() + 15 * 60 * 1000, state: "waiting" };
+    transferOffers.set(username, offer);
+    const urls = engineUrls(config);
+    return c.json({ code: `${code.slice(0, 4)}-${code.slice(4)}`, expires: offer.expires, keys: offer.keys, state: offer.state, lan: urls.lan, local: urls.local });
+  });
+  app.get("/v1/account/transfer", (c) => {
+    const offer = transferOffers.get(c.get("user").username);
+    if (!offer || (offer.state === "waiting" && offer.expires < Date.now())) return c.json({ offer: null });
+    return c.json({ offer: { expires: offer.expires, keys: offer.keys, state: offer.state } });
+  });
+  app.delete("/v1/account/transfer", (c) => {
+    transferOffers.delete(c.get("user").username);
+    return c.json({ ok: true });
+  });
+  app.get("/v1/transfer/info", (c) => {
+    const found = offerFor(c);
+    if (found instanceof Response) return found;
+    return c.json(transferInfo(found.username, found.offer.keys));
+  });
+  app.get("/v1/transfer/pull", (c) => {
+    const found = offerFor(c);
+    if (found instanceof Response) return found;
+    const { username, offer } = found;
+    offer.state = "sending";
+    const counted = tarStream(liveSources(dataDir, username, offer.keys)).pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        flush() {
+          offer.state = "sent";
+        },
+      }),
+    );
+    log.info(`[backups] sending ${username}'s account to another device`);
+    return tarResponse(c, backupFileName(username, new Date().toISOString()), counted);
+  });
+
+  /** The other engine's origin from what the person typed: an address, an
+   *  address and port, or a whole link with the code after #transfer=. */
+  const transferOrigin = (address: string): string | null => {
+    const text = address.trim();
+    try {
+      const url = new URL(/^https?:\/\//i.test(text) ? text : `http://${text}`);
+      return url.protocol === "http:" || url.protocol === "https:" ? url.origin : null;
+    } catch {
+      return null;
+    }
+  };
+  const transferFetch = (origin: string, route: "info" | "pull", code: string, signal?: AbortSignal) =>
+    fetch(`${origin}/v1/transfer/${route}`, {
+      headers: { "x-chrysalis-transfer": normalizeCode(code) },
+      redirect: "error",
+      // engines on a home network run on self-signed certificates; the code
+      // is what proves the other side
+      tls: { rejectUnauthorized: false },
+      ...(signal ? { signal } : {}),
+    });
+  const receiveBody = async (c: Context<AppEnv>) => {
+    requireAdmin(c);
+    const body = await c.req.json<{ address?: unknown; code?: unknown }>().catch(() => ({}) as { address?: unknown; code?: unknown });
+    const origin = typeof body.address === "string" ? transferOrigin(body.address) : null;
+    const code = typeof body.code === "string" ? normalizeCode(body.code) : "";
+    if (!origin) throw new AccountBackupError("enter the other device's address, like 192.168.1.20:8788", 400);
+    if (code.length !== 8) throw new AccountBackupError("the code has 8 letters and numbers", 400);
+    return { origin, code };
+  };
+  const peekTransfer = async (origin: string, code: string) => {
+    let res: Response;
+    try {
+      res = await transferFetch(origin, "info", code, AbortSignal.timeout(15_000));
+    } catch {
+      throw new AccountBackupError(`could not reach ${origin}. Check the address, that both devices are on the same network, and that the other device allows network access (Settings > Server).`, 422);
+    }
+    const data = (await res.json().catch(() => null)) as { error?: string; from?: string; engine?: string; instance?: string | null; keys?: boolean; files?: number; bytes?: number } | null;
+    if (!res.ok || !data || typeof data.from !== "string") throw new AccountBackupError(data?.error ?? `the other device answered ${res.status}`, 422);
+    if (data.instance && data.instance === deps.instance) throw new AccountBackupError("that code was made on this device: enter it on the other one", 400);
+    return { from: data.from, engine: String(data.engine ?? ""), keys: data.keys === true, files: Number(data.files ?? 0), bytes: Number(data.bytes ?? 0) };
+  };
+  app.post("/v1/account/transfer/peek", async (c) => {
+    try {
+      const { origin, code } = await receiveBody(c);
+      return c.json(await peekTransfer(origin, code));
+    } catch (e) {
+      if ((e as Error).message === "admin only") return c.json({ error: "only an admin can receive an account from another device" }, 403);
+      return backupError(c, e);
+    }
+  });
+  app.post("/v1/account/transfer/receive", async (c) => {
+    const u = c.get("user");
+    try {
+      const { origin, code } = await receiveBody(c);
+      const info = await peekTransfer(origin, code);
+      return c.json({
+        job: startJob(u.username, "receive", async (job) => {
+          job.total = info.bytes;
+          const res = await transferFetch(origin, "pull", code);
+          if (!res.ok || !res.body) {
+            const err = (await res.json().catch(() => null)) as { error?: string } | null;
+            throw new AccountBackupError(err?.error ?? `the other device answered ${res.status}`, 422);
+          }
+          const staged = incomingDir(dataDir, u.username);
+          try {
+            await extractAccountTar(res.body, staged, { maxBytes: ACCOUNT_MAX_BYTES, job });
+          } catch (e) {
+            fs.rmSync(staged, { recursive: true, force: true });
+            throw e;
+          }
+          await restoreInto(u, staged, false, job);
+        }),
+      }, 202);
+    } catch (e) {
+      if ((e as Error).message === "admin only") return c.json({ error: "only an admin can receive an account from another device" }, 403);
+      return backupError(c, e);
+    }
   });
 
   // ---------- server settings (config.yaml) ----------

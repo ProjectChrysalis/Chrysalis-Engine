@@ -19,6 +19,7 @@ import { ConfigError, dataDirOf, envNameOf, flagNameOf, loadConfig, parseFlags, 
 import { ENGINE_VERSION, INSTALL_KIND, IN_CONTAINER, resolveHomeDir } from "./install.js";
 import { UserService } from "./users.js";
 import { SessionService } from "./sessions.js";
+import { runAutoBackups } from "./account-backup.js";
 import { bootstrapUserDir, ensureGitignoreEntries, ensureNotesDir, ensureWorkspaceAgentsMd, migrateConnectionsIntoDataRoot, migrateCredentialsIntoDataRoot, migrateMcpIntoDataRoot, migrateSpeechIntoDataRoot, migrateWebSearchPreset, userPaths } from "./paths.js";
 import { initRepo, untrackBoundary, commitAll as gitCommitAll, commitPaths as gitCommitPaths } from "./git.js";
 import { renameAppDir } from "./apps/manager.js";
@@ -740,6 +741,12 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
       } catch { /* best effort */ }
     }
   })();
+
+  // daily automatic backups (account-backup.ts): checked a few minutes
+  // after start, then every hour; each account is backed up once a day
+  const autoBackups = () => void runAutoBackups(dataDir, users.list().map((u) => u.username)).catch((e) => log.warn(`[backups] ${(e as Error).message}`));
+  setTimeout(autoBackups, 5 * 60 * 1000).unref();
+  setInterval(autoBackups, 60 * 60 * 1000).unref();
 
   const shutdown = () => {
     if (stopping) return;

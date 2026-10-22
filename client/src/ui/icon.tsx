@@ -3,14 +3,15 @@
 import type { ComponentPropsWithoutRef } from "react"
 import {
   ArrowClockwise, ArrowLeft, ArrowSquareOut, ArrowUUpLeft, Brain, CaretDown, CaretLeft, CaretRight,
-  Chat, ChatCircle, CheckCircle, CloudArrowUp, Code, Columns, Copy, DownloadSimple, FolderPlus, GearSix, HardDrives, Info,
+  Chat, ChatCircle, CheckCircle, ClockCounterClockwise, CloudArrowUp, Code, Columns, Copy, DownloadSimple, FolderPlus, GearSix, HardDrives, Info,
   Lock, PencilSimpleLine, Plus, PlusSquare, Prohibit, SignOut, SlidersHorizontal,
-  SpeakerHigh, SquaresFour, Stop, Storefront, TerminalWindow, X,
+  SpeakerHigh, SquaresFour, Stop, Storefront, TerminalWindow, Trash, X,
 } from "@phosphor-icons/react"
 
 const glyphs = {
   "arrow-left": ArrowLeft,
   "arrow-undo-down": ArrowUUpLeft,
+  backup: ClockCounterClockwise,
   brain: Brain,
   "bubble-5": ChatCircle,
   "circle-ban-sign": Prohibit,
@@ -23,6 +24,7 @@ const glyphs = {
   lock: Lock,
   logout: SignOut,
   "pencil-line": PencilSimpleLine,
+  trash: Trash,
   providers: SquaresFour,
   rebuild: ArrowClockwise,
   server: HardDrives,

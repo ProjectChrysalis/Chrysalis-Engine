@@ -384,3 +384,77 @@ export const adminUsersApi = {
     api<{ user: AuthUser }>("PATCH", `/v1/admin/users/${encodeURIComponent(username)}`, body),
   remove: (username: string) => api("DELETE", `/v1/admin/users/${encodeURIComponent(username)}`),
 }
+
+export interface AccountBackup {
+  id: string
+  label: "manual" | "auto" | "before-restore"
+  createdAt: string
+  engine: string
+  keys: boolean
+  files: number
+  bytes: number
+  added: number
+}
+
+export interface BackupJob {
+  kind: "backup" | "restore" | "receive"
+  phase: "copying" | "receiving" | "restoring" | "done" | "failed"
+  done: number
+  total: number
+  error?: string
+}
+
+export interface BackupState {
+  backups: AccountBackup[]
+  settings: { auto: boolean; keep: number }
+  autoError: string | null
+  job: BackupJob | null
+  free: number | null
+}
+
+export interface TransferOffer {
+  code: string
+  expires: number
+  keys: boolean
+  state: "waiting" | "sending" | "sent" | "failed"
+  lan: string[]
+  local: string
+}
+
+export interface TransferPeek {
+  from: string
+  engine: string
+  keys: boolean
+  files: number
+  bytes: number
+}
+
+export const backupApi = {
+  state: () => api<BackupState>("GET", "/v1/account/backups"),
+  settings: (auto: boolean, keep: number) => api<{ auto: boolean; keep: number }>("PUT", "/v1/account/backups/settings", { auto, keep }),
+  create: () => api<{ job: BackupJob }>("POST", "/v1/account/backups"),
+  remove: (id: string) => api("DELETE", `/v1/account/backups/${encodeURIComponent(id)}`),
+  restore: (id: string) => api<{ job: BackupJob }>("POST", `/v1/account/backups/${encodeURIComponent(id)}/restore`),
+  downloadUrl: (id: string, keys: boolean) => `/v1/account/backups/${encodeURIComponent(id)}/download${keys ? "?keys=1" : ""}`,
+  exportUrl: (keys: boolean) => `/v1/account/export${keys ? "?keys=1" : ""}`,
+  /** Send a backup file up in chunks, then start restoring it. */
+  async upload(file: File, onProgress: (sent: number) => void): Promise<{ job: BackupJob }> {
+    const start = await api<{ id: string; chunk: number }>("POST", "/v1/account/import", { size: file.size })
+    for (let at = 0; at < file.size; at += start.chunk) {
+      let res: Response
+      try {
+        res = await fetch(`/v1/account/import/${start.id}?offset=${at}`, { method: "PUT", body: file.slice(at, at + start.chunk) })
+      } catch {
+        throw new Error(tr("Connection lost. Is the Chrysalis server running?"))
+      }
+      await reply(res)
+      onProgress(Math.min(file.size, at + start.chunk))
+    }
+    return api<{ job: BackupJob }>("POST", `/v1/account/import/${start.id}/finish`)
+  },
+  offer: () => api<{ offer: Pick<TransferOffer, "expires" | "keys" | "state"> | null }>("GET", "/v1/account/transfer").then((r) => r.offer),
+  makeOffer: (keys: boolean) => api<TransferOffer>("POST", "/v1/account/transfer", { keys }),
+  cancelOffer: () => api("DELETE", "/v1/account/transfer"),
+  peek: (address: string, code: string) => api<TransferPeek>("POST", "/v1/account/transfer/peek", { address, code }),
+  receive: (address: string, code: string) => api<{ job: BackupJob }>("POST", "/v1/account/transfer/receive", { address, code }),
+}
