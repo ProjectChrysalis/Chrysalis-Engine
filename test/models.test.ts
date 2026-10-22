@@ -128,6 +128,34 @@ describe("UserModelService message construction (regression: assistant history)"
     } finally { server.stop(true); }
   });
 
+  it("sends later instructions as user turns once a server refuses them as system", async () => {
+    const requests: { messages: { role: string; content: string }[] }[] = [];
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(req) {
+      const body = await req.json() as typeof requests[number];
+      requests.push(body);
+      if (body.messages.slice(1).some((m) => m.role === "system")) {
+        return Response.json({ error: { message: "System message must be at the beginning.", type: "invalid_request_error" } }, { status: 400 });
+      }
+      return new Response('data: {"id":"test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } });
+    } });
+    try {
+      const p = bootstrapUserDir(dataDir, "strict");
+      const baseUrl = `http://127.0.0.1:${server.port}/v1`;
+      fs.writeFileSync(p.connections, JSON.stringify({ connections: { wire: { name: "Wire", api: "openai-completions", baseUrl,
+        models: [{ id: "test", contextWindow: 8192, maxTokens: 1024 }] } } }));
+      fs.writeFileSync(p.auth, JSON.stringify({ wire: { type: "api_key", key: "test", boundBaseUrl: baseUrl } }));
+      const svc = new UserModelService("strict", p, defaultInstanceConfig());
+      const messages = [
+        { role: "system" as const, content: "Leading" }, { role: "user" as const, content: "Hello" },
+        { role: "system" as const, content: "Post history" },
+      ];
+      expect((await svc.generate({ model: "wire/test", messages })).text).toBe("OK");
+      expect(requests[1]?.messages.map((m) => m.role)).toEqual(["system", "user", "user"]);
+      await svc.generate({ model: "wire/test", messages });
+      expect(requests).toHaveLength(3);
+    } finally { server.stop(true); }
+  });
+
   for (const api of ["anthropic-messages", "google-generative-ai", "openai-responses"] as const) {
     it(`retains every instruction on the ${api} wire`, async () => {
       const requests: Record<string, unknown>[] = [];

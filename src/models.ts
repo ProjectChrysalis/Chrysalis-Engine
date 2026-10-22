@@ -882,7 +882,34 @@ export class UserModelService {
     }
   }
 
+  /** Models whose server refused a system message after the conversation
+   *  started, by ref. Many local chat templates accept one only first. */
+  private leadingSystemOnly = new Set<string>();
+
+  /** Compatible OpenAI transports carry later system instructions in place.
+   *  A refusal that names the system role, before any output, retries once
+   *  with them as user turns, and later requests to that model start there. */
   private async generateModel(model: Model<Api>, req: GenerateRequest, onDelta?: (delta: string) => void, onThinking?: (delta: string) => void): Promise<GenerateResult> {
+    const ref = `${model.provider}/${model.id}`;
+    const lead = req.messages.findIndex((m) => m.role !== "system");
+    const inPlace = (model.api === "openai-completions" || model.api === "openai-responses" || model.api === "azure-openai-responses")
+      && !this.leadingSystemOnly.has(ref);
+    if (!inPlace || lead < 0 || !req.messages.slice(lead).some((m) => m.role === "system" && m.content.trim())) {
+      return this.generateTurns(model, req, inPlace, onDelta, onThinking);
+    }
+    let streamed = false;
+    const delta = onDelta && ((text: string) => { streamed = true; onDelta(text); });
+    const thinking = onThinking && ((text: string) => { streamed = true; onThinking(text); });
+    try {
+      return await this.generateTurns(model, req, true, delta, thinking);
+    } catch (e) {
+      if (streamed || req.signal?.aborted || !/system|roles must alternate/i.test((e as Error).message)) throw e;
+      this.leadingSystemOnly.add(ref);
+      return this.generateTurns(model, req, false, onDelta, onThinking);
+    }
+  }
+
+  private async generateTurns(model: Model<Api>, req: GenerateRequest, inPlaceSystem: boolean, onDelta?: (delta: string) => void, onThinking?: (delta: string) => void): Promise<GenerateResult> {
     // Stable per-conversation session id (caller-supplied chat/session id, or
     // a fresh one for stateless callers). It keys provider prompt caching
     // (OpenAI prompt_cache_key, Anthropic cache session) and, for the OpenCode
@@ -898,9 +925,7 @@ export class UserModelService {
       return this.generateTextCompletion(model, req, onDelta, onThinking);
     }
     // Native APIs with a top-level system field need later instructions as
-    // user turns to retain their position. Compatible OpenAI transports can
-    // carry system instructions in place, including after the chat history.
-    const inPlaceSystem = model.api === "openai-completions" || model.api === "openai-responses" || model.api === "azure-openai-responses";
+    // user turns to retain their position
     if (inPlaceSystem) model = { ...model, compat: { ...model.compat, supportsMidConvoSystemMessages: true } };
     const systemParts: string[] = [];
     if (req.systemPrompt) systemParts.push(req.systemPrompt);
