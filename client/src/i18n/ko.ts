@@ -764,6 +764,9 @@ const dict = {
   "Up": "위로",
   "Use data folder": "데이터 폴더 사용",
   "Use this folder": "이 폴더 사용",
+  "Helpers": "도우미",
+  "Let the agent send helpers": "에이전트가 도우미를 보내도록 허용",
+  "Helpers read and search on their own and report back, so big jobs keep the chat short. Each one costs extra model calls.": "도우미가 혼자 읽고 검색한 뒤 결과만 알려 주어 큰 작업에서도 채팅이 짧게 유지됩니다. 도우미마다 모델 호출이 추가됩니다.",
 }
 
 export default dict

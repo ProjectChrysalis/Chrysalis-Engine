@@ -764,6 +764,9 @@ const dict = {
   "Up": "Omhoog",
   "Use data folder": "Gegevensmap gebruiken",
   "Use this folder": "Deze map gebruiken",
+  "Helpers": "Helpers",
+  "Let the agent send helpers": "Laat de agent helpers sturen",
+  "Helpers read and search on their own and report back, so big jobs keep the chat short. Each one costs extra model calls.": "Helpers lezen en zoeken zelf en melden terug, zo blijft de chat kort bij grote klussen. Elke helper kost extra modelaanroepen.",
 }
 
 export default dict

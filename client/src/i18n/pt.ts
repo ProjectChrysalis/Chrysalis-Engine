@@ -764,6 +764,9 @@ const dict = {
   "Up": "Subir",
   "Use data folder": "Usar pasta de dados",
   "Use this folder": "Usar esta pasta",
+  "Helpers": "Ajudantes",
+  "Let the agent send helpers": "Deixar o agente enviar ajudantes",
+  "Helpers read and search on their own and report back, so big jobs keep the chat short. Each one costs extra model calls.": "Os ajudantes leem e buscam sozinhos e relatam, assim o chat fica curto em tarefas grandes. Cada um custa chamadas extras ao modelo.",
 }
 
 export default dict

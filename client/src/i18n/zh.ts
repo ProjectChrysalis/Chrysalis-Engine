@@ -764,6 +764,9 @@ const dict = {
   "Up": "上一级",
   "Use data folder": "使用数据文件夹",
   "Use this folder": "使用此文件夹",
+  "Helpers": "助手",
+  "Let the agent send helpers": "允许智能体派出助手",
+  "Helpers read and search on their own and report back, so big jobs keep the chat short. Each one costs extra model calls.": "助手会自行阅读和搜索并汇报结果，大任务也能让对话保持简短。每个助手都会产生额外的模型调用。",
 }
 
 export default dict

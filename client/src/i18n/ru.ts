@@ -764,6 +764,9 @@ const dict = {
   "Up": "Вверх",
   "Use data folder": "Папка данных",
   "Use this folder": "Использовать эту папку",
+  "Helpers": "Помощники",
+  "Let the agent send helpers": "Разрешить агенту отправлять помощников",
+  "Helpers read and search on their own and report back, so big jobs keep the chat short. Each one costs extra model calls.": "Помощники сами читают и ищут, а затем отчитываются, так что чат остаётся коротким в больших задачах. Каждый стоит дополнительных вызовов модели.",
 }
 
 export default dict

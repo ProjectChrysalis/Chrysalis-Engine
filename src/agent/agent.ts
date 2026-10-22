@@ -8,6 +8,7 @@ import { readAgentModels, readAgentGeneration } from "./generation.js";
 import { engineSkillsLoaded, readEngineSkillResource } from "./builtin-skills.js";
 import { readAppContext, writeAppContext, availableSkills, skillCatalog, skillContext, loadedSkills, skillLoadText, skillsHeld, type AppContext } from "./skills.js";
 import { inspectionTool, type AppInspection } from "./inspection.js";
+import { helperTool, helpersOn } from "./helpers.js";
 import { AgentPolicy } from "./policy.js";
 import { buildSkillTools } from "./skill-tools.js";
 import { RunJournal, recoverRun, type LiveEvent } from "./journal.js";
@@ -455,6 +456,17 @@ export class UserAgent {
         return { content: [{ type: "text", text: "The user accepted the plan. Stop here: plan mode is ending and the work starts from this plan." }], details: { accepted: true }, terminate: true };
       },
     });
+    if (helpersOn(paths)) tools.push(helperTool({
+      tools: () => tools,
+      model: () => agent.state.model,
+      context: () => instructionDocs(paths, appContext.appId),
+      // one cache key for all of a conversation's helpers: they share a prefix
+      streamFn: (m, c, o) => {
+        const maxTokens = clampMaxTokens(m, c, generation.maxTokens ?? o?.maxTokens);
+        return svc.agentStreamFn(m, c, maxTokens !== undefined ? { ...o, maxTokens } : o, `${sessionId}-helper`, { ...generation, reasoning: level });
+      },
+      spill: (text) => spillOutput(paths.root, text),
+    }));
     const contextUpdate = (history: readonly AgentMessage[], appOnly: boolean): SystemMessage | undefined => {
       const seen = seenSections(frozen, history);
       const live = liveSections();

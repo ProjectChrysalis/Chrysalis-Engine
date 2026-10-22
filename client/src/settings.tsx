@@ -465,7 +465,7 @@ function AgentTab() {
         <Tabs.Content value="instructions" keepMounted><AgentInstructions /></Tabs.Content>
         <Tabs.Content value="context" keepMounted><AgentModelSettings section="context" inputClass={inputClass} /></Tabs.Content>
         <Tabs.Content value="tools" keepMounted>
-          <div className="flex flex-col gap-6 pb-4"><InternetSection /><div className="border-t border-line pt-5"><AgentSkills /></div></div>
+          <div className="flex flex-col gap-6 pb-4"><InternetSection /><div className="border-t border-line pt-5"><HelpersSection /></div><div className="border-t border-line pt-5"><AgentSkills /></div></div>
         </Tabs.Content>
       </Tabs></AgentSettingsProvider>
     </Pane>
@@ -551,6 +551,45 @@ function InternetSection() {
       </label>
       <p className="text-12 leading-4 text-ink-muted">
         {tr("Give the agent internet access in its sandbox, for curl, wget and pip. Your own computer and local network stay blocked.")}
+      </p>
+      {err ? <div className="text-12 text-danger">{err}</div> : null}
+    </div>
+  )
+}
+
+function HelpersSection() {
+  const setting = useResource(() => api<{ helpers: boolean }>("GET", "/v1/settings"))
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState("")
+
+  const toggle = async (helpers: boolean) => {
+    setBusy(true)
+    setErr("")
+    try {
+      await api("PUT", "/v1/settings", { helpers })
+      setting.mutate({ helpers })
+    } catch (e: any) {
+      setErr(e.message ?? String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="text-13 font-medium text-ink">{tr("Helpers")}</h3>
+      <label className="flex items-center gap-2 text-13 text-ink">
+        <input
+          type="checkbox"
+          className="size-4 accent-[var(--c-contrast)]"
+          checked={setting.data?.helpers ?? false}
+          disabled={setting.loading || busy}
+          onChange={(e) => void toggle(e.currentTarget.checked)}
+        />
+        {tr("Let the agent send helpers")}
+      </label>
+      <p className="text-12 leading-4 text-ink-muted">
+        {tr("Helpers read and search on their own and report back, so big jobs keep the chat short. Each one costs extra model calls.")}
       </p>
       {err ? <div className="text-12 text-danger">{err}</div> : null}
     </div>

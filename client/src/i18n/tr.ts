@@ -764,6 +764,9 @@ const dict = {
   "Up": "Yukarı",
   "Use data folder": "Veri klasörünü kullan",
   "Use this folder": "Bu klasörü kullan",
+  "Helpers": "Yardımcılar",
+  "Let the agent send helpers": "Ajanın yardımcı göndermesine izin ver",
+  "Helpers read and search on their own and report back, so big jobs keep the chat short. Each one costs extra model calls.": "Yardımcılar kendi başına okuyup arar ve sonucu bildirir, böylece büyük işlerde sohbet kısa kalır. Her biri ek model çağrısı demektir.",
 }
 
 export default dict

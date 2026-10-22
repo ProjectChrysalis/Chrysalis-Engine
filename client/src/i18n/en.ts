@@ -766,6 +766,9 @@ const en = {
   "Up": "",
   "Use data folder": "",
   "Use this folder": "",
+  "Helpers": "",
+  "Let the agent send helpers": "",
+  "Helpers read and search on their own and report back, so big jobs keep the chat short. Each one costs extra model calls.": "",
 } as const
 
 export default en

@@ -1798,6 +1798,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       reasoning: isReasoningLevel(settings.reasoning) ? settings.reasoning : null,
       agentGeneration: readAgentGeneration(p),
       agentModels: readAgentModels(p),
+      helpers: settings.helpers === true,
       autoCompact:
         settings.autoCompact === true || settings.autoCompact === false || settings.autoCompact === null
           ? settings.autoCompact
@@ -1810,10 +1811,11 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   app.put("/v1/settings", async (c) => {
     const u = c.get("user");
     const p = c.get("paths");
-    const body = await c.req.json<{ launchDefault?: string | null; storeSeen?: string; model?: string | null; reasoning?: string | null; autoCompact?: boolean | number | null; agentGeneration?: unknown; agentModel?: { ref?: unknown; settings?: unknown } }>().catch(() => null) ?? {};
-    if (!("launchDefault" in body) && !("storeSeen" in body) && !("model" in body) && !("reasoning" in body) && !("autoCompact" in body) && !("agentGeneration" in body) && !("agentModel" in body)) {
-      return c.json({ error: "launchDefault, storeSeen, model, reasoning, autoCompact, agentGeneration or agentModel required" }, 400);
+    const body = await c.req.json<{ launchDefault?: string | null; storeSeen?: string; model?: string | null; reasoning?: string | null; autoCompact?: boolean | number | null; agentGeneration?: unknown; agentModel?: { ref?: unknown; settings?: unknown }; helpers?: unknown }>().catch(() => null) ?? {};
+    if (!("launchDefault" in body) && !("storeSeen" in body) && !("model" in body) && !("reasoning" in body) && !("autoCompact" in body) && !("agentGeneration" in body) && !("agentModel" in body) && !("helpers" in body)) {
+      return c.json({ error: "launchDefault, storeSeen, model, reasoning, autoCompact, agentGeneration, agentModel or helpers required" }, 400);
     }
+    if (body.helpers !== undefined && typeof body.helpers !== "boolean") return c.json({ error: "helpers must be true or false" }, 400);
     if ("agentModel" in body) {
       const value = body.agentModel;
       if (!value || typeof value.ref !== "string" || !value.ref.includes("/") || value.ref.length > 400 ||
@@ -1864,6 +1866,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       settings.agentModels = profiles;
     }
     if (body.autoCompact !== undefined) settings.autoCompact = body.autoCompact;
+    if (body.helpers !== undefined) settings.helpers = body.helpers;
     fs.writeFileSync(p.settings, JSON.stringify(settings, null, 2) + "\n");
     const changes: string[] = [];
     if (body.launchDefault !== undefined) changes.push("launch default");
@@ -1873,6 +1876,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     if (body.agentGeneration !== undefined) changes.push("agent generation");
     if (body.agentModel) changes.push("agent model settings");
     if (body.autoCompact !== undefined) changes.push("auto-compact");
+    if (body.helpers !== undefined) changes.push("helpers");
     await git.commitAll(p.root, u.username, `settings: ${changes.join(", ")}`).catch(() => undefined);
     evictAgents(u.username); // agents snapshot model + reasoning at creation
     if (body.reasoning !== undefined || body.agentModel) bus.emit(u.username, "agent_settings_changed", {
