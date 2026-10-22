@@ -431,6 +431,21 @@ describe("agent loop + sessions (faux provider)", () => {
     expect(agent.cancelQueued("queue_one")).toBe(false);
   }, 20_000);
 
+  it("never asks a built-in model without reasoning to think", async () => {
+    const users = new UserService(dataDir);
+    users.create("alice", "user", { password: "test-pass-1" });
+    const svc = makeSvc("alice");
+    const p = userPaths(dataDir, "alice");
+    fs.writeFileSync(p.settings, JSON.stringify({ reasoning: "high" }));
+    const handle = fauxProvider({ models: [{ id: "faux-plain", reasoning: false }] });
+    const seen: unknown[] = [];
+    handle.setResponses([(_context, options) => { seen.push(options?.reasoning); return fauxAssistantMessage("plain"); }]);
+    svc.models.setProvider(handle.provider);
+    const agent = await UserAgent.create("alice", svc, p, users, defaultInstanceConfig());
+    expect((await agent.run("hello")).finalText).toBe("plain");
+    expect(seen).toEqual([undefined]);
+  }, 20_000);
+
   it("toolUse → tool executes → final text; session file written; resume loads dialogue", async () => {
     const users = new UserService(dataDir);
     users.create("admin", "admin", { password: "admin-pass-1" });

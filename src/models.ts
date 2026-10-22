@@ -381,6 +381,11 @@ export class UserModelService {
   }
 
   private connectionNames: Map<string, string> = new Map();
+  /** A connection's model may leave its reasoning flag unset, so only a
+   *  built-in model's flag says for sure that it cannot reason. */
+  fromConnection(provider: string): boolean {
+    return this.connectionNames.has(provider);
+  }
   /** openai-text connections by provider id: prompt-flattened /v1/completions transports */
   private textCompletions = new Map<string, { name: string; baseUrl: string; promptFormat: string; promptFormatCustom?: PromptFormat }>();
   /** Formats read from a server's loaded model, by endpoint and model. A

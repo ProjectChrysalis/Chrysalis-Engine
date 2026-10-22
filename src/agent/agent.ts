@@ -431,10 +431,9 @@ export class UserAgent {
     // request level → user default → medium for reasoning-capable models,
     // clamped by pi-ai's clampThinkingLevel (walks the ladder to a supported one)
     const requestedLevel = opts.reasoning ?? profiles[ref]?.generation?.reasoning ?? readUserReasoning(paths, model.reasoning === true);
-    const level = model.reasoning ? clampThinkingLevel(
-      model as Parameters<typeof clampThinkingLevel>[0],
-      requestedLevel,
-    ) : requestedLevel;
+    const level = model.reasoning || !svc.fromConnection(model.provider)
+      ? clampThinkingLevel(model as Parameters<typeof clampThinkingLevel>[0], requestedLevel)
+      : requestedLevel;
     // context budget: trim what is sent when it outgrows the window, and never
     // ask for more output than the window has left (see context-budget.ts)
     const budget: { force: boolean; halt?: string; planAccepted?: boolean } = { force: false };
