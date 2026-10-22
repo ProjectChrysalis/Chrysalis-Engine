@@ -394,23 +394,6 @@ export interface AccountBackup {
   files: number
   bytes: number
   added: number
-  /** kept in the chosen backup folder */
-  inFolder?: boolean
-}
-
-export interface BackupSettings {
-  auto: boolean
-  keep: number
-  /** where new backups go; null is the Chrysalis data folder */
-  folder: string | null
-}
-
-export interface FolderListing {
-  path: string
-  parent: string | null
-  folders: string[]
-  /** cloud and common folders on this machine (only with no path asked) */
-  suggested: { label: string; path: string }[]
 }
 
 export interface BackupJob {
@@ -423,7 +406,7 @@ export interface BackupJob {
 
 export interface BackupState {
   backups: AccountBackup[]
-  settings: BackupSettings
+  settings: { auto: boolean; keep: number }
   autoError: string | null
   job: BackupJob | null
   free: number | null
@@ -465,8 +448,7 @@ export const usageApi = {
 
 export const backupApi = {
   state: () => api<BackupState>("GET", "/v1/account/backups"),
-  settings: (next: Partial<BackupSettings>) => api<BackupSettings>("PUT", "/v1/account/backups/settings", next),
-  folders: (at?: string) => api<FolderListing>("GET", `/v1/account/backups/folders${at ? `?path=${encodeURIComponent(at)}` : ""}`),
+  settings: (auto: boolean, keep: number) => api<{ auto: boolean; keep: number }>("PUT", "/v1/account/backups/settings", { auto, keep }),
   create: () => api<{ job: BackupJob }>("POST", "/v1/account/backups"),
   remove: (id: string) => api("DELETE", `/v1/account/backups/${encodeURIComponent(id)}`),
   restore: (id: string) => api<{ job: BackupJob }>("POST", `/v1/account/backups/${encodeURIComponent(id)}/restore`),

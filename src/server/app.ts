@@ -31,7 +31,7 @@ import { BACKUP_MAX_BYTES, BACKUP_META_DIR, BackupError, buildBackup, extractBac
 import { bootstrapUserDir, ensureGitignoreEntries } from "../paths.js";
 import {
   ACCOUNT_MAX_BYTES, AccountBackupError, accountBackupsDir, accountFiles, backupDir, backupSources, createBackup, currentJob, deleteBackup, extractAccountTar,
-  folderBase, incomingDir, listBackups, listFolders, liveSources, suggestedFolders, readAutoError, readBackupSettings, restoreAccount, stageBackup, startJob, tarStream, writeBackupSettings,
+  incomingDir, listBackups, liveSources, readAutoError, readBackupSettings, restoreAccount, stageBackup, startJob, tarStream, writeBackupSettings,
   type BackupJob,
 } from "../account-backup.js";
 import { engineUrls } from "./listen.js";
@@ -1319,8 +1319,6 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       const from = accountBackupsDir(dataDir, oldName);
       const to = accountBackupsDir(dataDir, record.username);
       if (fs.existsSync(from) && from !== to) await renameRetrying(from, to);
-      const { folder } = readBackupSettings(dataDir, record.username);
-      if (folder && fs.existsSync(folderBase(folder, oldName))) await renameRetrying(folderBase(folder, oldName), folderBase(folder, record.username));
     } catch (e) {
       log.warn(`[backups] could not move ${oldName}'s backups to ${record.username}: ${(e as Error).message}`);
     }
@@ -5540,8 +5538,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
 
   app.get("/v1/account/backups", (c) => {
     const username = c.get("user").username;
-    const settings = readBackupSettings(dataDir, username);
-    const base = settings.folder ?? accountBackupsDir(dataDir, username);
+    const base = accountBackupsDir(dataDir, username);
     let free: number | null = null;
     try {
       const s = fs.statfsSync(fs.existsSync(base) ? base : dataDir);
@@ -5549,33 +5546,16 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
     } catch { /* not reported on this system */ }
     return c.json({
       backups: listBackups(dataDir, username),
-      settings,
+      settings: readBackupSettings(dataDir, username),
       autoError: readAutoError(dataDir, username),
       job: currentJob(username),
       free,
     });
   });
   app.put("/v1/account/backups/settings", async (c) => {
-    const body = await c.req.json<{ auto?: unknown; keep?: unknown; folder?: unknown }>().catch(() => ({}) as { auto?: unknown; keep?: unknown; folder?: unknown });
-    const u = c.get("user");
-    // a folder is a place on this machine's disks, which is the admin's to hand out
-    if (body.folder != null && u.role !== "admin") return c.json({ error: "only an admin can choose a backup folder" }, 403);
+    const body = await c.req.json<{ auto?: unknown; keep?: unknown }>().catch(() => ({}) as { auto?: unknown; keep?: unknown });
     try {
-      const now = readBackupSettings(dataDir, u.username);
-      return c.json(writeBackupSettings(dataDir, u.username, {
-        auto: body.auto === undefined ? now.auto : (body.auto as boolean),
-        keep: body.keep === undefined ? now.keep : (body.keep as number),
-        folder: body.folder === undefined ? now.folder : (body.folder as string | null),
-      }));
-    } catch (e) {
-      return backupError(c, e);
-    }
-  });
-  app.get("/v1/account/backups/folders", (c) => {
-    if (c.get("user").role !== "admin") return c.json({ error: "only an admin can choose a backup folder" }, 403);
-    const at = c.req.query("path");
-    try {
-      return c.json({ ...listFolders(at || os.homedir()), suggested: at ? [] : suggestedFolders() });
+      return c.json(writeBackupSettings(dataDir, c.get("user").username, { auto: body.auto as boolean, keep: body.keep as number }));
     } catch (e) {
       return backupError(c, e);
     }

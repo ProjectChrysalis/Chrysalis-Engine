@@ -16,7 +16,6 @@
  * nothing is overwritten, and sizes are counted as the bytes arrive.
  */
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { ENGINE_VERSION } from "./install.js";
@@ -43,17 +42,12 @@ export interface BackupInfo extends BackupMeta {
   label: BackupLabel;
   /** Bytes this backup copied; the rest are links to the one before. */
   added: number;
-  /** Kept in the chosen backup folder rather than the data folder. */
-  inFolder?: boolean;
 }
 
 export interface BackupSettings {
   auto: boolean;
   /** Automatic backups kept; older ones are removed. */
   keep: number;
-  /** A folder outside the data folder that new backups go to (a synced
-   *  cloud folder, another disk); null keeps them in the data folder. */
-  folder: string | null;
 }
 
 export interface BackupJob {
@@ -74,7 +68,7 @@ export class AccountBackupError extends Error {
 /** Largest account a backup file or a transfer may bring in. */
 export const ACCOUNT_MAX_BYTES = 64 * 1024 ** 3;
 
-const DEFAULT_SETTINGS: BackupSettings = { auto: true, keep: 5, folder: null };
+const DEFAULT_SETTINGS: BackupSettings = { auto: true, keep: 5 };
 const AUTO_EVERY_MS = 24 * 60 * 60 * 1000;
 const KEEP_BEFORE_RESTORE = 3;
 const BACKUP_ID = /^\d{8}-\d{9}-[0-9a-f]{4}$/;
@@ -102,7 +96,6 @@ export function readBackupSettings(dataDir: string, username: string): BackupSet
     return {
       auto: typeof raw.auto === "boolean" ? raw.auto : DEFAULT_SETTINGS.auto,
       keep: Number.isInteger(raw.keep) && (raw.keep as number) >= 1 && (raw.keep as number) <= 60 ? (raw.keep as number) : DEFAULT_SETTINGS.keep,
-      folder: typeof raw.folder === "string" && path.isAbsolute(raw.folder) ? raw.folder : null,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -113,116 +106,10 @@ export function writeBackupSettings(dataDir: string, username: string, next: Bac
   if (typeof next.auto !== "boolean" || !Number.isInteger(next.keep) || next.keep < 1 || next.keep > 60) {
     throw new AccountBackupError("keep must be a whole number from 1 to 60", 400);
   }
-  // the saved folder may be away for now (a disk unplugged); that must not
-  // block changing the other settings
-  const folder = next.folder === null || next.folder === readBackupSettings(dataDir, username).folder ? next.folder : checkBackupFolder(dataDir, next.folder);
   const dir = accountBackupsDir(dataDir, username);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const saved: BackupSettings = { auto: next.auto, keep: next.keep, folder };
-  fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify(saved, null, 2) + "\n", "utf8");
-  return saved;
-}
-
-// ---------- backup folder ----------
-
-/** This account's backups inside a chosen folder. */
-export const folderBase = (folder: string, username: string): string => path.join(folder, "Chrysalis", username);
-
-/** Every place this account's backups are kept; new ones go to the first. */
-function backupBases(dataDir: string, username: string): string[] {
-  const { folder } = readBackupSettings(dataDir, username);
-  const home = accountBackupsDir(dataDir, username);
-  return folder ? [folderBase(folder, username), home] : [home];
-}
-
-const inside = (child: string, parent: string): boolean => {
-  const rel = path.relative(parent, child);
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-};
-
-/** The folder as it will be saved. It has to exist, take a file, and sit
- *  outside the data folder (a workspace would back itself up). */
-export function checkBackupFolder(dataDir: string, folder: string): string {
-  if (typeof folder !== "string" || !path.isAbsolute(folder)) throw new AccountBackupError("choose a full folder path", 400);
-  let real: string;
-  try {
-    real = fs.realpathSync(folder);
-    if (!fs.statSync(real).isDirectory()) throw new Error();
-  } catch {
-    throw new AccountBackupError(`no folder at ${folder}`, 400);
-  }
-  if (inside(real, fs.realpathSync(dataDir))) {
-    throw new AccountBackupError("choose a folder outside the Chrysalis data folder", 400);
-  }
-  const probe = path.join(real, `.chrysalis-${crypto.randomBytes(4).toString("hex")}`);
-  try {
-    fs.writeFileSync(probe, "");
-    fs.rmSync(probe, { force: true });
-  } catch {
-    throw new AccountBackupError(`Chrysalis cannot write to ${real}`, 400);
-  }
-  return real;
-}
-
-export interface FolderListing {
-  path: string;
-  parent: string | null;
-  folders: string[];
-}
-
-/** The folders inside `dir` (hidden ones left out), for choosing one. */
-export function listFolders(dir: string): FolderListing {
-  if (!path.isAbsolute(dir)) throw new AccountBackupError("choose a full folder path", 400);
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    throw new AccountBackupError(`cannot open ${dir}`, 404);
-  }
-  const parent = path.dirname(dir);
-  return {
-    path: dir,
-    parent: parent === dir ? null : parent,
-    folders: entries
-      .filter((e) => !e.name.startsWith(".") && (e.isDirectory() || (e.isSymbolicLink() && isDir(path.join(dir, e.name)))))
-      .map((e) => e.name)
-      .sort((a, b) => a.localeCompare(b)),
-  };
-}
-
-const isDir = (p: string): boolean => {
-  try {
-    return fs.statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
-};
-
-/** Cloud and common folders found on this machine, offered as one-click
- *  choices. A cloud provider's desktop app syncs whatever lands in them. */
-export function suggestedFolders(home = os.homedir()): { label: string; path: string }[] {
-  const out: { label: string; path: string }[] = [];
-  const add = (label: string, p: string) => {
-    if (isDir(p) && !out.some((o) => o.path === p)) out.push({ label, path: p });
-  };
-  const under = (dir: string, match: RegExp): string[] => {
-    try {
-      return fs.readdirSync(dir).filter((n) => match.test(n)).map((n) => path.join(dir, n));
-    } catch {
-      return [];
-    }
-  };
-  const cloud = path.join(home, "Library", "CloudStorage");
-  for (const p of under(cloud, /^GoogleDrive-/)) add("Google Drive", isDir(path.join(p, "My Drive")) ? path.join(p, "My Drive") : p);
-  for (const p of [path.join(home, "Google Drive", "My Drive"), path.join(home, "My Drive"), path.join(home, "Google Drive"), path.join(home, "GoogleDrive")]) add("Google Drive", p);
-  if (process.platform === "win32") {
-    for (const letter of "DEFGHIJKLMNOPQRSTUVWXYZ") add("Google Drive", `${letter}:\\My Drive`);
-  }
-  for (const p of [...under(cloud, /^Dropbox/), path.join(home, "Dropbox")]) add("Dropbox", p);
-  for (const p of [...under(cloud, /^OneDrive/), ...under(home, /^OneDrive/)]) add("OneDrive", p);
-  for (const p of [path.join(home, "Library", "Mobile Documents", "com~apple~CloudDocs"), path.join(home, "iCloudDrive")]) add("iCloud Drive", p);
-  add("Documents", path.join(home, "Documents"));
-  return out;
+  fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ auto: next.auto, keep: next.keep }, null, 2) + "\n", "utf8");
+  return { auto: next.auto, keep: next.keep };
 }
 
 /** The last automatic attempt that failed, until one succeeds. */
@@ -348,30 +235,25 @@ function readInfo(dir: string): BackupInfo | null {
 
 /** This account's backups on this device, newest first. */
 export function listBackups(dataDir: string, username: string): BackupInfo[] {
-  const home = accountBackupsDir(dataDir, username);
-  const out: BackupInfo[] = [];
-  for (const base of backupBases(dataDir, username)) {
-    let names: string[] = [];
-    try {
-      names = fs.readdirSync(base);
-    } catch {
-      continue;
-    }
-    for (const n of names) {
-      const info = BACKUP_ID.test(n) ? readInfo(path.join(base, n)) : null;
-      if (info && !out.some((b) => b.id === info.id)) out.push(base === home ? info : { ...info, inFolder: true });
-    }
+  const base = accountBackupsDir(dataDir, username);
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(base);
+  } catch {
+    return [];
   }
-  return out.sort((a, b) => b.id.localeCompare(a.id));
+  return names
+    .filter((n) => BACKUP_ID.test(n))
+    .map((n) => readInfo(path.join(base, n)))
+    .filter((b): b is BackupInfo => !!b)
+    .sort((a, b) => b.id.localeCompare(a.id));
 }
 
 export function backupDir(dataDir: string, username: string, id: string): string {
   if (!BACKUP_ID.test(id)) throw new AccountBackupError("no such backup", 404);
-  for (const base of backupBases(dataDir, username)) {
-    const dir = path.join(base, id);
-    if (readInfo(dir)) return dir;
-  }
-  throw new AccountBackupError("no such backup", 404);
+  const dir = path.join(accountBackupsDir(dataDir, username), id);
+  if (!readInfo(dir)) throw new AccountBackupError("no such backup", 404);
+  return dir;
 }
 
 export function deleteBackup(dataDir: string, username: string, id: string): void {
@@ -434,19 +316,12 @@ export async function createBackup(
   label: BackupLabel,
   job?: BackupJob,
 ): Promise<BackupInfo | null> {
-  const { folder } = readBackupSettings(dataDir, username);
-  // an unplugged disk or a stopped sync app: say so rather than quietly
-  // keeping the backup somewhere the user is not looking
-  if (folder && !isDir(folder)) throw new AccountBackupError(`the backup folder is not reachable: ${folder}`, 422);
-  const base = backupBases(dataDir, username)[0]!;
+  const base = accountBackupsDir(dataDir, username);
   fs.mkdirSync(base, { recursive: true, mode: 0o700 });
-  // a chosen folder is usually synced to someone's cloud: API keys and
-  // sign-ins stay on this device, and a restore keeps the ones it finds
-  const keys = !folder;
-  const files = accountFiles(dataDir, username, keys);
+  const files = accountFiles(dataDir, username, true);
   const total = files.reduce((n, f) => n + f.size, 0);
   const previous = listBackups(dataDir, username)[0];
-  const prevDir = previous ? backupDir(dataDir, username, previous.id) : null;
+  const prevDir = previous ? path.join(base, previous.id) : null;
   const prevIndex = prevDir ? readIndex(prevDir) : new Map<string, { size: number; mtimeMs: number }>();
   const unchanged = (f: FileEntry) => {
     const was = prevIndex.get(f.rel);
@@ -504,7 +379,7 @@ export async function createBackup(
       createdAt: new Date().toISOString(),
       engine: ENGINE_VERSION,
       from: username,
-      keys,
+      keys: true,
       files: files.length,
       bytes: total,
       label,
@@ -513,7 +388,7 @@ export async function createBackup(
     fs.writeFileSync(path.join(partial, "backup.json"), JSON.stringify(info, null, 2) + "\n", "utf8");
     fs.renameSync(partial, path.join(base, id));
     pruneBackups(dataDir, username);
-    return { ...info, id, ...(folder ? { inFolder: true } : {}) };
+    return { ...info, id };
   } catch (e) {
     fs.rmSync(partial, { recursive: true, force: true });
     if ((e as NodeJS.ErrnoException).code === "ENOSPC") throw new AccountBackupError("the disk filled up while backing up", 507);
@@ -530,22 +405,14 @@ function pruneBackups(dataDir: string, username: string): void {
     ...all.filter((b) => b.label === "auto").slice(keep),
     ...all.filter((b) => b.label === "before-restore").slice(KEEP_BEFORE_RESTORE),
   ];
-  for (const b of drop) fs.rmSync(backupDir(dataDir, username, b.id), { recursive: true, force: true });
+  for (const b of drop) fs.rmSync(path.join(accountBackupsDir(dataDir, username), b.id), { recursive: true, force: true });
   // a backup cut short by a stop leaves its partial folder behind
-  for (const base of backupBases(dataDir, username)) {
-    let names: string[] = [];
-    try {
-      names = fs.readdirSync(base);
-    } catch {
-      continue;
-    }
-    for (const name of names) {
-      if (name.startsWith(".partial-") || name.startsWith(".incoming-") || name.startsWith(".replaced-")) {
-        const full = path.join(base, name);
-        try {
-          if (Date.now() - fs.statSync(full).mtimeMs > 6 * 60 * 60 * 1000) fs.rmSync(full, { recursive: true, force: true });
-        } catch { /* already gone */ }
-      }
+  for (const name of fs.readdirSync(accountBackupsDir(dataDir, username))) {
+    if (name.startsWith(".partial-") || name.startsWith(".incoming-") || name.startsWith(".replaced-")) {
+      const full = path.join(accountBackupsDir(dataDir, username), name);
+      try {
+        if (Date.now() - fs.statSync(full).mtimeMs > 6 * 60 * 60 * 1000) fs.rmSync(full, { recursive: true, force: true });
+      } catch { /* already gone */ }
     }
   }
 }
