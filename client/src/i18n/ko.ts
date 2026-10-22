@@ -738,6 +738,23 @@ const dict = {
   "{size} free on this disk": "이 디스크에 {size} 남음",
   "{size} new": "새로 {size}",
   "{user}'s account: {files} files, {size}.": "{user}의 계정: 파일 {files}개, {size}.",
+  "API": "API",
+  "Other": "기타",
+  "By app": "앱별",
+  "By model": "모델별",
+  "Calls": "호출",
+  "From cache": "캐시에서",
+  "{n} calls": "{n}회",
+  "{n} calls used models with no known price and are not in the total.": "{n}회의 호출은 가격을 알 수 없는 모델을 사용해 합계에 포함되지 않습니다.",
+  "{n} days": "{n}일",
+  "No model calls in this period.": "이 기간에 모델 호출이 없습니다.",
+  "{n} tokens": "{n} 토큰",
+  "Per day": "일별",
+  "Spending": "지출",
+  "Spent": "지출액",
+  "Tokens": "토큰",
+  "Tokens per day": "일별 토큰",
+  "What model calls cost, from the agent, your apps and the API.": "에이전트, 앱, API의 모델 호출 비용.",
 }
 
 export default dict

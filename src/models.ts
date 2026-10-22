@@ -18,6 +18,7 @@ import { log } from "./logger.js";
 import { generationError, providerError, withGooglePromptFeedback } from "./providers/errors.js";
 import { supportsOpenRouterRouting, withOpenRouterRouting } from "./providers/openrouter-routing.js";
 import { llmLogRequest, llmLogResult, llmLogError, llmLogTool } from "./llm-logger.js";
+import { recordUsage } from "./usage.js";
 import { reasoningDetailsFetch } from "./providers/reasoning-details.js";
 import type { UserPaths } from "./paths.js";
 import type { InstanceConfig } from "./config.js";
@@ -465,6 +466,20 @@ export class UserModelService {
   }
 
 
+  /** One finished provider turn into the spending ledger. */
+  private meter(model: { provider: string; id: string; cost?: unknown }, source: string | undefined, usage: { input: number; output: number; cacheRead: number; cacheWrite: number }): void {
+    recordUsage(this.paths.usage, {
+      t: Date.now(), src: source ?? "other", model: `${model.provider}/${model.id}`,
+      in: usage.input, out: usage.output, cr: usage.cacheRead, cw: usage.cacheWrite,
+      cost: this.priceUsage(model, usage),
+    });
+  }
+
+  private metered<S extends { result(): Promise<AssistantMessage> }>(model: Model<Api>, source: string | undefined, stream: S): S {
+    stream.result().then((final) => this.meter(model, source, final.usage), () => {});
+    return stream;
+  }
+
   private ensureRefreshed(): Promise<void> {
     if (!this.refreshOnce) {
       this.refreshOnce = (this.models as unknown as { refresh: () => Promise<unknown> })
@@ -834,7 +849,8 @@ export class UserModelService {
             if (d) { text += d; feed(d); }
             if (j.usage) {
               usage = {
-                input: j.usage.prompt_tokens ?? 0,
+                // cached tokens are counted inside prompt_tokens
+                input: Math.max(0, (j.usage.prompt_tokens ?? 0) - (j.usage.prompt_tokens_details?.cached_tokens ?? 0)),
                 output: j.usage.completion_tokens ?? 0,
                 reasoning: 0,
                 cacheRead: j.usage.prompt_tokens_details?.cached_tokens ?? 0,
@@ -857,6 +873,7 @@ export class UserModelService {
     // catalog — only the user's own table can put a number on them
     const textCost = this.priceUsage(model, usage);
     if (textCost !== null) { usage.costTotal = textCost; usage.priced = true; }
+    this.meter(model, req.source, usage);
     const full = `${model.provider}/${model.id}`;
     return {
       text: split.text,
@@ -1111,7 +1128,7 @@ export class UserModelService {
       };
       roundThinkStart = 0;
       roundThinkEnd = 0;
-      const stream = this.models.streamSimple(model, context, {
+      const stream = this.metered(model, req.source, this.models.streamSimple(model, context, {
         ...cacheOptions,
         ...streamFetch(model),
         ...(reasoningLevel && reasoningLevel !== "off" ? { reasoning: reasoningLevel } : {}),
@@ -1128,7 +1145,7 @@ export class UserModelService {
         // key provider prompt caching (set when a cache session exists)
         sessionId,
         ...(sessionHeaders ? { headers: sessionHeaders } : {}),
-      });
+      }));
       const final = await consumeStream(stream);
       if (final.stopReason === "error") {
         throw generationError(final);
@@ -1190,13 +1207,13 @@ export class UserModelService {
     }
     // exhausted rounds: do one final call WITHOUT tools to force a text answer
     const context: Context = { systemPrompt, messages };
-    const stream = this.models.streamSimple(model, context, {
+    const stream = this.metered(model, req.source, this.models.streamSimple(model, context, {
       ...cacheOptions,
       ...streamFetch(model),
       ...(req.signal ? ({ signal: req.signal } as never) : {}),
       sessionId,
       ...(sessionHeaders ? { headers: sessionHeaders } : {}),
-    });
+    }));
     roundThinkStart = 0;
     roundThinkEnd = 0;
     const final = await consumeStream(stream);
@@ -1274,11 +1291,11 @@ export class UserModelService {
   agentStreamFn(model: Model<Api>, context: Context, options: Parameters<MutableModels["streamSimple"]>[2], sessionId: string, settings: GenerationSettings) {
     const subscription = model.api === "openai-codex-responses" || (model.provider === "openai" && readAuth(this.paths).openai?.type === "oauth");
     const supported = subscription ? { ...settings, maxTokens: undefined, temperature: undefined, topP: undefined } : settings;
-    return this.streamFn(model, context, agentGenerationOptions(supported, options), sessionId);
+    return this.streamFn(model, context, agentGenerationOptions(supported, options), sessionId, "agent");
   }
 
   /** streamFn for pi-agent-core Agents (same funnel, same invariant). */
-  streamFn(model: Model<Api>, context: Context, options?: Parameters<MutableModels["streamSimple"]>[2], sessionId?: string) {
+  streamFn(model: Model<Api>, context: Context, options?: Parameters<MutableModels["streamSimple"]>[2], sessionId?: string, source?: string) {
     // Same session contract as generate(): the stable id keys provider prompt
     // caching and, on the OpenCode gateway, the routing/caching headers. The
     // built-in agent passes its session id so a chat's turns stay on one
@@ -1295,9 +1312,9 @@ export class UserModelService {
     // endpoints (deepseek etc.) read `reasoningEffort` — pass both so every
     // api layer actually receives the level.
     const opts = merged as (typeof merged & { reasoning?: string; reasoningEffort?: string }) | undefined
-    const stream = this.models.streamSimple(model, context, opts?.reasoning && !opts.reasoningEffort
+    const stream = this.metered(model, source, this.models.streamSimple(model, context, opts?.reasoning && !opts.reasoningEffort
       ? { ...opts, reasoningEffort: opts.reasoning } as Parameters<MutableModels["streamSimple"]>[2]
-      : merged);
+      : merged));
     const signal = options?.signal;
     if (signal && !signal.aborted && isLocalEndpoint(model.baseUrl)) {
       const stopServer = () => abortLocalGeneration(model.baseUrl);
@@ -1343,7 +1360,7 @@ export class UserModelService {
       messages: context.messages.map((m) => ({ role: m.role, content: traceText(m) })),
     });
     const t0 = Date.now();
-    const stream = this.streamFn(model, context, { ...options, ...(req.signal ? { signal: req.signal } : {}) } as never, req.sessionId);
+    const stream = this.streamFn(model, context, { ...options, ...(req.signal ? { signal: req.signal } : {}) } as never, req.sessionId, req.source);
     void stream.result().then((final) => {
       if (final.stopReason === "error") {
         llmLogError(req.source, ref, Date.now() - t0, new Error(final.errorMessage ?? "the provider returned an error"));

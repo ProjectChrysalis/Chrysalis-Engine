@@ -738,6 +738,23 @@ const dict = {
   "{size} free on this disk": "このディスクの空き {size}",
   "{size} new": "新規 {size}",
   "{user}'s account: {files} files, {size}.": "{user} のアカウント: {files} ファイル、{size}。",
+  "API": "API",
+  "Other": "その他",
+  "By app": "アプリ別",
+  "By model": "モデル別",
+  "Calls": "呼び出し",
+  "From cache": "キャッシュから",
+  "{n} calls": "{n} 回",
+  "{n} calls used models with no known price and are not in the total.": "{n} 回の呼び出しは価格不明のモデルを使ったため合計に含まれません。",
+  "{n} days": "{n} 日",
+  "No model calls in this period.": "この期間にモデルの呼び出しはありません。",
+  "{n} tokens": "{n} トークン",
+  "Per day": "日別",
+  "Spending": "支出",
+  "Spent": "支出額",
+  "Tokens": "トークン",
+  "Tokens per day": "日別トークン",
+  "What model calls cost, from the agent, your apps and the API.": "エージェント、アプリ、API によるモデル呼び出しの費用。",
 }
 
 export default dict

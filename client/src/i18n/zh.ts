@@ -738,6 +738,23 @@ const dict = {
   "{size} free on this disk": "此磁盘可用 {size}",
   "{size} new": "新增 {size}",
   "{user}'s account: {files} files, {size}.": "{user} 的账户：{files} 个文件，{size}。",
+  "API": "API",
+  "Other": "其他",
+  "By app": "按应用",
+  "By model": "按模型",
+  "Calls": "调用",
+  "From cache": "来自缓存",
+  "{n} calls": "{n} 次调用",
+  "{n} calls used models with no known price and are not in the total.": "{n} 次调用使用了价格未知的模型，未计入总额。",
+  "{n} days": "{n} 天",
+  "No model calls in this period.": "此期间没有模型调用。",
+  "{n} tokens": "{n} 个 token",
+  "Per day": "每天",
+  "Spending": "花费",
+  "Spent": "已花费",
+  "Tokens": "Token",
+  "Tokens per day": "每天的 token",
+  "What model calls cost, from the agent, your apps and the API.": "模型调用的费用：智能体、你的应用和 API。",
 }
 
 export default dict

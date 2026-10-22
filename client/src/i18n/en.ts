@@ -740,6 +740,23 @@ const en = {
   "{size} free on this disk": "",
   "{size} new": "",
   "{user}'s account: {files} files, {size}.": "",
+  "API": "",
+  "Other": "",
+  "By app": "",
+  "By model": "",
+  "Calls": "",
+  "From cache": "",
+  "{n} calls": "",
+  "{n} calls used models with no known price and are not in the total.": "",
+  "{n} days": "",
+  "No model calls in this period.": "",
+  "{n} tokens": "",
+  "Per day": "",
+  "Spending": "",
+  "Spent": "",
+  "Tokens": "",
+  "Tokens per day": "",
+  "What model calls cost, from the agent, your apps and the API.": "",
 } as const
 
 export default en

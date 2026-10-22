@@ -738,6 +738,23 @@ const dict = {
   "{size} free on this disk": "Bu diskte {size} boş",
   "{size} new": "{size} yeni",
   "{user}'s account: {files} files, {size}.": "{user} hesabı: {files} dosya, {size}.",
+  "API": "API",
+  "Other": "Diğer",
+  "By app": "Uygulamaya göre",
+  "By model": "Modele göre",
+  "Calls": "Çağrılar",
+  "From cache": "Önbellekten",
+  "{n} calls": "{n} çağrı",
+  "{n} calls used models with no known price and are not in the total.": "{n} çağrı fiyatı bilinmeyen modelleri kullandı ve toplama dahil değil.",
+  "{n} days": "{n} gün",
+  "No model calls in this period.": "Bu dönemde model çağrısı yok.",
+  "{n} tokens": "{n} token",
+  "Per day": "Günlük",
+  "Spending": "Harcama",
+  "Spent": "Harcanan",
+  "Tokens": "Token",
+  "Tokens per day": "Günlük token",
+  "What model calls cost, from the agent, your apps and the API.": "Model çağrılarının maliyeti: ajan, uygulamaların ve API.",
 }
 
 export default dict

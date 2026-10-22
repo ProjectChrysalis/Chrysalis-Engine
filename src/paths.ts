@@ -19,6 +19,8 @@ export interface UserPaths {
   appUpstream: string;
   /** The agent sandbox's settings (internet access). */
   sandbox: string;
+  /** Spending ledger, one JSONL file per month. */
+  usage: string;
   apps: string;
   plugins: string;
   assetsStore: string;
@@ -149,6 +151,8 @@ export function userPaths(dataDir: string, username: string): UserPaths {
     appUpstream: path.join(dataDir, "credentials", username, "app-upstream"),
     // The agent could otherwise switch its own internet access back on.
     sandbox: path.join(dataDir, "credentials", username, "sandbox.json"),
+    // Model names and amounts are the user's business, not the workspace's.
+    usage: path.join(dataDir, "credentials", username, "usage"),
     apps: path.join(root, "apps"),
     plugins: path.join(root, "plugins"),
     assetsStore: path.join(root, "assets-store"),

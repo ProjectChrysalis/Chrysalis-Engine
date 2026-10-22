@@ -738,6 +738,23 @@ const dict = {
   "{size} free on this disk": "{size} wolne na tym dysku",
   "{size} new": "{size} nowe",
   "{user}'s account: {files} files, {size}.": "Konto {user}: {files} plików, {size}.",
+  "API": "API",
+  "Other": "Inne",
+  "By app": "Według aplikacji",
+  "By model": "Według modelu",
+  "Calls": "Wywołania",
+  "From cache": "Z pamięci podręcznej",
+  "{n} calls": "{n} wywołań",
+  "{n} calls used models with no known price and are not in the total.": "{n} wywołań użyło modeli bez znanej ceny i nie ma ich w sumie.",
+  "{n} days": "{n} dni",
+  "No model calls in this period.": "Brak wywołań modeli w tym okresie.",
+  "{n} tokens": "{n} tokenów",
+  "Per day": "Dziennie",
+  "Spending": "Wydatki",
+  "Spent": "Wydano",
+  "Tokens": "Tokeny",
+  "Tokens per day": "Tokeny dziennie",
+  "What model calls cost, from the agent, your apps and the API.": "Ile kosztują wywołania modeli: agent, aplikacje i API.",
 }
 
 export default dict

@@ -429,6 +429,23 @@ export interface TransferPeek {
   bytes: number
 }
 
+export interface UsageTotals { calls: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; unpriced: number }
+export interface UsageSummary {
+  from: string
+  to: string
+  total: UsageTotals
+  days: Array<{ date: string } & UsageTotals>
+  models: Array<{ model: string } & UsageTotals>
+  sources: Array<{ source: string } & UsageTotals>
+  /** app names by source, for installed apps */
+  names: Record<string, string>
+}
+
+export const usageApi = {
+  summary: (days: number) =>
+    api<UsageSummary>("GET", `/v1/account/usage?days=${days}&tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone)}`),
+}
+
 export const backupApi = {
   state: () => api<BackupState>("GET", "/v1/account/backups"),
   settings: (auto: boolean, keep: number) => api<{ auto: boolean; keep: number }>("PUT", "/v1/account/backups/settings", { auto, keep }),

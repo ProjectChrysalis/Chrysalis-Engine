@@ -37,6 +37,7 @@ import type { Me } from "./types"
 import { AgentSkills } from "./agent-skills"
 import { ServerTab } from "./server-settings"
 import { BackupsTab } from "./backup-settings"
+import { SpendingTab } from "./spending-settings"
 import { OpenRouterRoutingEditor } from "./openrouter-routing"
 import { routingDraft, routingBody, isOpenRouterConnection } from "./openrouter-routing-state"
 import { LOCALES, setLocale, tr, useLocale, type Locale } from "./i18n/index"
@@ -80,7 +81,7 @@ const LOCAL_SERVERS: LocalPick[] = [
 type OAuthPick = { id: string; providerId: string; label: string; kind: "builtin"; baseUrl: null; apiKeyAuth: false; hasKey: false; authKind: "oauth" | "credentials"; needsGateway?: boolean }
 type ProviderPick = EngineProvider | CustomPick | OAuthPick | LocalPick
 
-export type TabValue = "general" | "api" | "speech" | "agent" | "mcp" | "backups" | "server" | "users"
+export type TabValue = "general" | "api" | "speech" | "agent" | "mcp" | "backups" | "spending" | "server" | "users"
 
 export function SettingsBody(props: { onClose: () => void; me: Me; initialTab?: TabValue | null; onLogout: () => void }) {
   const [tab, setTab] = useState<TabValue>(props.initialTab ?? "api")
@@ -91,6 +92,7 @@ export function SettingsBody(props: { onClose: () => void; me: Me; initialTab?: 
     { value: "agent", label: tr("Agent"), icon: <Icon name="brain" /> },
     { value: "mcp", label: tr("MCP servers"), icon: <Icon name="terminal-active" /> },
     { value: "backups", label: tr("Backups"), icon: <Icon name="backup" /> },
+    { value: "spending", label: tr("Spending"), icon: <Icon name="chart" /> },
     ...(props.me.role === "admin"
       ? [
           { value: "server" as const, label: tr("Server"), icon: <Icon name="server" /> },
@@ -118,6 +120,7 @@ export function SettingsBody(props: { onClose: () => void; me: Me; initialTab?: 
       {v === "agent" && <AgentTab />}
       {v === "mcp" && <McpTab />}
       {v === "backups" && <BackupsTab me={props.me} />}
+      {v === "spending" && <SpendingTab />}
       {v === "server" && <ServerTab />}
       {v === "users" && <UsersTab me={props.me} />}
     </>
@@ -164,6 +167,9 @@ export function SettingsBody(props: { onClose: () => void; me: Me; initialTab?: 
           </Tabs.Content>
           <Tabs.Content value="backups" className="no-scrollbar">
             <BackupsTab me={props.me} />
+          </Tabs.Content>
+          <Tabs.Content value="spending" className="no-scrollbar">
+            <SpendingTab />
           </Tabs.Content>
           <Tabs.Content value="server" className="no-scrollbar">
             <ServerTab />

@@ -51,6 +51,7 @@ import { radiusProvider } from "@earendil-works/pi-ai/providers/radius";
 import type { AuthPrompt, Credential, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { curatedProviders, loadCustomProviders, reservedProviderIds } from "../providers/custom.js";
 import { UserAgent, instructionDocsStamp, promptFile, listSessions, renameSession, archiveSession, sessionDir, isReasoningLevel, type AgentStreamEvent, type ReasoningLevel, type SessionCompactRecord } from "../agent/agent.js";
+import { usageSummary } from "../usage.js";
 import { compactionCut, fileActivity, lastSessionModel, summarizeMessages, type FileActivity } from "../agent/compact.js";
 import { listConnections, createConnection, updateConnection, deleteConnection, validateConnectionInput, validatePromptFormatInput, readConnections, connectionKeyUsable, type ConnectionInfo } from "../connections.js";
 import { supportsOpenRouterRouting, validateOpenRouterRouting, type OpenRouterRouting } from "../providers/openrouter-routing.js";
@@ -5474,6 +5475,19 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111217}iframe{border:
     c.header("cache-control", "no-store");
     return c.body(body);
   };
+
+  app.get("/v1/account/usage", (c) => {
+    const days = Math.min(366, Math.max(1, Number(c.req.query("days")) || 30));
+    const p = userPaths(dataDir, c.get("user").username);
+    const summary = usageSummary(p.usage, days, c.req.query("tz") || "UTC");
+    const names: Record<string, string> = {};
+    for (const { source } of summary.sources) {
+      const id = source.startsWith("app:") ? source.slice(4) : null;
+      const name = id ? readApp(p.apps, id)?.manifest.name : undefined;
+      if (name) names[source] = name;
+    }
+    return c.json({ ...summary, names });
+  });
 
   app.get("/v1/account/backups", (c) => {
     const username = c.get("user").username;
