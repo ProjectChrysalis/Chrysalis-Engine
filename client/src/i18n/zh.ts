@@ -755,6 +755,15 @@ const dict = {
   "Tokens": "Token",
   "Tokens per day": "每天的 token",
   "What model calls cost, from the agent, your apps and the API.": "模型调用的费用：智能体、你的应用和 API。",
+  "Pick a Google Drive, Dropbox or OneDrive folder to keep backups in the cloud.": "选择 Google Drive、Dropbox 或 OneDrive 文件夹，把备份存到云端。",
+  "Choose folder": "选择文件夹",
+  "Chrysalis data folder": "Chrysalis 数据文件夹",
+  "in your folder": "在你的文件夹中",
+  "No folders inside.": "里面没有文件夹。",
+  "Save to": "保存到",
+  "Up": "上一级",
+  "Use data folder": "使用数据文件夹",
+  "Use this folder": "使用此文件夹",
 }
 
 export default dict

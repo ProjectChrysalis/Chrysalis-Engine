@@ -755,6 +755,15 @@ const dict = {
   "Tokens": "Tokens",
   "Tokens per day": "Tokens por dia",
   "What model calls cost, from the agent, your apps and the API.": "Quanto custam as chamadas de modelo: o agente, seus apps e a API.",
+  "Pick a Google Drive, Dropbox or OneDrive folder to keep backups in the cloud.": "Escolha uma pasta do Google Drive, Dropbox ou OneDrive para manter os backups na nuvem.",
+  "Choose folder": "Escolher pasta",
+  "Chrysalis data folder": "Pasta de dados do Chrysalis",
+  "in your folder": "na sua pasta",
+  "No folders inside.": "Nenhuma pasta dentro.",
+  "Save to": "Salvar em",
+  "Up": "Subir",
+  "Use data folder": "Usar pasta de dados",
+  "Use this folder": "Usar esta pasta",
 }
 
 export default dict

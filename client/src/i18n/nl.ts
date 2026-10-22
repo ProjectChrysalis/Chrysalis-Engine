@@ -755,6 +755,15 @@ const dict = {
   "Tokens": "Tokens",
   "Tokens per day": "Tokens per dag",
   "What model calls cost, from the agent, your apps and the API.": "Wat modelaanroepen kosten: de agent, je apps en de API.",
+  "Pick a Google Drive, Dropbox or OneDrive folder to keep backups in the cloud.": "Kies een Google Drive-, Dropbox- of OneDrive-map om back-ups in de cloud te bewaren.",
+  "Choose folder": "Map kiezen",
+  "Chrysalis data folder": "Chrysalis-gegevensmap",
+  "in your folder": "in je map",
+  "No folders inside.": "Geen mappen hierin.",
+  "Save to": "Opslaan in",
+  "Up": "Omhoog",
+  "Use data folder": "Gegevensmap gebruiken",
+  "Use this folder": "Deze map gebruiken",
 }
 
 export default dict

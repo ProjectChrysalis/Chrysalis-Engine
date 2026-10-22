@@ -757,6 +757,15 @@ const en = {
   "Tokens": "",
   "Tokens per day": "",
   "What model calls cost, from the agent, your apps and the API.": "",
+  "Pick a Google Drive, Dropbox or OneDrive folder to keep backups in the cloud.": "",
+  "Choose folder": "",
+  "Chrysalis data folder": "",
+  "in your folder": "",
+  "No folders inside.": "",
+  "Save to": "",
+  "Up": "",
+  "Use data folder": "",
+  "Use this folder": "",
 } as const
 
 export default en

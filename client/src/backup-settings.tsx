@@ -3,7 +3,7 @@
 // pulled by another device with a one-time code.
 import { useEffect, useRef, useState } from "react"
 import { renderSVG } from "uqr"
-import { backupApi, type AccountBackup, type BackupJob, type TransferOffer, type TransferPeek } from "./api"
+import { backupApi, type AccountBackup, type BackupJob, type FolderListing, type TransferOffer, type TransferPeek } from "./api"
 import { tr } from "./i18n/index"
 import { Pane, inputClass } from "./settings"
 import { CopyButton, Section, Toggle } from "./server-settings"
@@ -297,6 +297,7 @@ function BackupRow(props: { backup: AccountBackup; busy: boolean; onRestore: () 
           <span className="truncate text-13 text-ink">{when}</span>
           <span className="text-12 text-ink-muted">
             {labelText(b.label)} · {formatBytes(b.bytes)}
+            {b.inFolder ? ` · ${tr("in your folder")}` : ""}
             {b.added < b.bytes ? ` · ${tr("{size} new", { size: formatBytes(b.added) })}` : ""}
           </span>
         </div>
@@ -322,12 +323,76 @@ function BackupRow(props: { backup: AccountBackup; busy: boolean; onRestore: () 
   )
 }
 
+/** Browse this machine's folders; cloud folders found here come first. */
+function FolderPicker(props: { onPick: (folder: string) => Promise<void>; onCancel: () => void }) {
+  const [listing, setListing] = useState<FolderListing | null>(null)
+  const [suggested, setSuggested] = useState<FolderListing["suggested"]>([])
+  const [err, setErr] = useState("")
+  const open = async (at?: string) => {
+    setErr("")
+    try {
+      const next = await backupApi.folders(at)
+      setListing(next)
+      if (!at) setSuggested(next.suggested)
+    } catch (e) {
+      setErr((e as Error).message ?? String(e))
+    }
+  }
+  useEffect(() => void open(), [])
+  const pick = async (folder: string) => {
+    setErr("")
+    try {
+      await props.onPick(folder)
+    } catch (e) {
+      setErr((e as Error).message ?? String(e))
+    }
+  }
+  const sep = listing?.path.includes("\\") ? "\\" : "/"
+  return (
+    <div className="flex flex-col gap-2.5 rounded-lg border border-line px-3 py-2.5">
+      {suggested.length ? (
+        <div className="flex flex-wrap gap-1.5">
+          {suggested.map((s) => (
+            <Button key={s.path} variant="neutral" size="small" title={s.path} onClick={() => void pick(s.path)}>{s.label}</Button>
+          ))}
+        </div>
+      ) : null}
+      {listing ? (
+        <>
+          <div className="flex items-center gap-1.5">
+            <IconButton icon={<IconSmall name="chevron-left" />} variant="ghost-muted" size="small" title={tr("Up")} disabled={!listing.parent} onClick={() => listing.parent && void open(listing.parent)} />
+            <span className="min-w-0 flex-1 truncate font-mono text-12 text-ink" title={listing.path}>{listing.path}</span>
+          </div>
+          <div className="flex max-h-56 flex-col overflow-y-auto rounded-md border border-line">
+            {listing.folders.length ? listing.folders.map((name) => (
+              <button
+                key={name}
+                className="flex min-h-10 items-center gap-2 px-3 py-2 text-left text-13 text-ink hover:bg-hover active:bg-pressed"
+                onClick={() => void open(listing.path.endsWith(sep) ? listing.path + name : listing.path + sep + name)}
+              >
+                <span className="min-w-0 flex-1 truncate">{name}</span>
+                <IconSmall name="chevron-right" size="small" />
+              </button>
+            )) : <span className="px-3 py-2 text-12 text-ink-muted">{tr("No folders inside.")}</span>}
+          </div>
+        </>
+      ) : null}
+      {err ? <p className="text-12 text-danger">{err}</p> : null}
+      <div className="flex flex-wrap gap-2">
+        <Button variant="primary" size="small" disabled={!listing} onClick={() => listing && void pick(listing.path)}>{tr("Use this folder")}</Button>
+        <Button variant="neutral" size="small" onClick={props.onCancel}>{tr("Cancel")}</Button>
+      </div>
+    </div>
+  )
+}
+
 export function BackupsTab(props: { me: Me }) {
   const state = useResource(() => backupApi.state())
   const [mode, setMode] = useState<"send" | "receive">("send")
   const [keysInFile, setKeysInFile] = useState(false)
   const [uploading, setUploading] = useState<{ sent: number; total: number } | null>(null)
   const [pendingFile, setPendingFile] = useState<File | null>(null)
+  const [picking, setPicking] = useState(false)
   const [err, setErr] = useState("")
   const fileInput = useRef<HTMLInputElement>(null)
 
@@ -392,7 +457,7 @@ export function BackupsTab(props: { me: Me }) {
                 label={tr("Back up every day")}
                 checked={d.settings.auto}
                 disabled={busy}
-                onChange={(auto) => void act(() => backupApi.settings(auto, d.settings.keep))}
+                onChange={(auto) => void act(() => backupApi.settings({ auto }))}
               />
               <div className="flex items-center gap-2 pl-6">
                 <span className="text-13 text-ink-muted">{tr("Keep")}</span>
@@ -400,13 +465,38 @@ export function BackupsTab(props: { me: Me }) {
                   className="rounded-lg border border-line bg-panel px-2 py-1 text-13 text-ink"
                   value={d.settings.keep}
                   disabled={busy}
-                  onChange={(e) => void act(() => backupApi.settings(d.settings.auto, Number(e.currentTarget.value)))}
+                  onChange={(e) => void act(() => backupApi.settings({ keep: Number(e.currentTarget.value) }))}
                 >
                   {[...new Set([3, 5, 7, 14, 30, d.settings.keep])].sort((a, b) => a - b).map((n) => (
                     <option key={n} value={n}>{n}</option>
                   ))}
                 </select>
               </div>
+              {props.me.role === "admin" ? (
+                <div className="flex flex-col gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-13 text-ink-muted">{tr("Save to")}</span>
+                    <span className="min-w-0 flex-1 basis-40 truncate text-13 text-ink" title={d.settings.folder ?? undefined}>
+                      {d.settings.folder ?? tr("Chrysalis data folder")}
+                    </span>
+                    {!picking ? <Button variant="neutral" size="small" disabled={busy} onClick={() => setPicking(true)}>{tr("Choose folder")}</Button> : null}
+                    {d.settings.folder && !picking ? (
+                      <Button variant="ghost" size="small" disabled={busy} onClick={() => void act(() => backupApi.settings({ folder: null }))}>{tr("Use data folder")}</Button>
+                    ) : null}
+                  </div>
+                  {picking ? (
+                    <FolderPicker
+                      onCancel={() => setPicking(false)}
+                      onPick={async (folder) => {
+                        await backupApi.settings({ folder })
+                        setPicking(false)
+                        await state.refetch()
+                      }}
+                    />
+                  ) : null}
+                  {!d.settings.folder && !picking ? <p className="text-12 text-ink-muted">{tr("Pick a Google Drive, Dropbox or OneDrive folder to keep backups in the cloud.")}</p> : null}
+                </div>
+              ) : null}
               {d.autoError ? <p className="pl-6 text-12 text-danger">{tr("Last automatic backup failed: {error}", { error: d.autoError })}</p> : null}
               <div className="flex flex-wrap items-center gap-2">
                 <Button variant="primary" size="small" disabled={busy} onClick={() => void act(() => backupApi.create())}>{tr("Back up now")}</Button>

@@ -755,6 +755,15 @@ const dict = {
   "Tokens": "トークン",
   "Tokens per day": "日別トークン",
   "What model calls cost, from the agent, your apps and the API.": "エージェント、アプリ、API によるモデル呼び出しの費用。",
+  "Pick a Google Drive, Dropbox or OneDrive folder to keep backups in the cloud.": "Google Drive、Dropbox、OneDrive のフォルダを選ぶとバックアップをクラウドに残せます。",
+  "Choose folder": "フォルダを選ぶ",
+  "Chrysalis data folder": "Chrysalis のデータフォルダ",
+  "in your folder": "選んだフォルダ内",
+  "No folders inside.": "中にフォルダはありません。",
+  "Save to": "保存先",
+  "Up": "上へ",
+  "Use data folder": "データフォルダを使う",
+  "Use this folder": "このフォルダを使う",
 }
 
 export default dict

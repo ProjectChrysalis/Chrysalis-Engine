@@ -755,6 +755,15 @@ const dict = {
   "Tokens": "Token",
   "Tokens per day": "Günlük token",
   "What model calls cost, from the agent, your apps and the API.": "Model çağrılarının maliyeti: ajan, uygulamaların ve API.",
+  "Pick a Google Drive, Dropbox or OneDrive folder to keep backups in the cloud.": "Yedekleri bulutta tutmak için bir Google Drive, Dropbox veya OneDrive klasörü seç.",
+  "Choose folder": "Klasör seç",
+  "Chrysalis data folder": "Chrysalis veri klasörü",
+  "in your folder": "klasöründe",
+  "No folders inside.": "İçinde klasör yok.",
+  "Save to": "Kaydet:",
+  "Up": "Yukarı",
+  "Use data folder": "Veri klasörünü kullan",
+  "Use this folder": "Bu klasörü kullan",
 }
 
 export default dict

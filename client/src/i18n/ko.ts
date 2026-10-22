@@ -755,6 +755,15 @@ const dict = {
   "Tokens": "토큰",
   "Tokens per day": "일별 토큰",
   "What model calls cost, from the agent, your apps and the API.": "에이전트, 앱, API의 모델 호출 비용.",
+  "Pick a Google Drive, Dropbox or OneDrive folder to keep backups in the cloud.": "Google Drive, Dropbox, OneDrive 폴더를 고르면 백업이 클라우드에 남습니다.",
+  "Choose folder": "폴더 선택",
+  "Chrysalis data folder": "Chrysalis 데이터 폴더",
+  "in your folder": "선택한 폴더에 있음",
+  "No folders inside.": "안에 폴더가 없습니다.",
+  "Save to": "저장 위치",
+  "Up": "위로",
+  "Use data folder": "데이터 폴더 사용",
+  "Use this folder": "이 폴더 사용",
 }
 
 export default dict

@@ -16,7 +16,7 @@ import { UserService } from "../src/users.js";
 import { defaultInstanceConfig } from "../src/config.js";
 import { bootstrapUserDir, userPaths } from "../src/paths.js";
 import * as git from "../src/git.js";
-import { accountBackupsDir, extractAccountTar, runAutoBackups, tarStream } from "../src/account-backup.js";
+import { accountBackupsDir, extractAccountTar, runAutoBackups, suggestedFolders, tarStream } from "../src/account-backup.js";
 import { invalidatePluginCache } from "../src/plugins/runtime.js";
 
 interface Engine {
@@ -175,6 +175,69 @@ describe("backups on this device", () => {
     expect((await a.call(`/v1/account/backups/${taken!.id}/download`, {}, "bob")).status).toBe(404);
     expect((await a.call(`/v1/account/backups/${taken!.id}/restore`, { method: "POST" }, "bob")).status).toBe(404);
     expect((await a.call("/v1/account/backups/..%2F..%2Fadmin/restore", { method: "POST" }, "bob")).status).toBe(404);
+  });
+});
+
+describe("a backup folder", () => {
+  let a: Engine;
+  let folder: string;
+  beforeEach(async () => {
+    a = await engine("a");
+    folder = fs.mkdtempSync(path.join(os.tmpdir(), "backup-folder-"));
+  });
+  afterEach(() => fs.rmSync(folder, { recursive: true, force: true }));
+
+  const put = (body: unknown, as: "admin" | "bob" = "admin") => a.call("/v1/account/backups/settings", { method: "PUT", body: JSON.stringify(body) }, as);
+
+  it("takes new backups, lists them with the ones made before, and restores from it", async () => {
+    const dir = writeApp(a.dataDir, "admin", "studio", { "data/chat.jsonl": "first\n" });
+    await a.call("/v1/account/backups", { method: "POST" });
+    await settle(a);
+    expect((await put({ folder })).status).toBe(200);
+    fs.writeFileSync(path.join(dir, "data", "chat.jsonl"), "second\n");
+    await a.call("/v1/account/backups", { method: "POST" });
+    await settle(a);
+
+    const [inFolder, onDevice] = await listBackups(a) as (Awaited<ReturnType<typeof listBackups>>[number] & { inFolder?: boolean })[];
+    expect(inFolder!.inFolder).toBe(true);
+    expect(onDevice!.inFolder).toBeUndefined();
+    const real = fs.realpathSync(folder);
+    expect(fs.readFileSync(path.join(real, "Chrysalis", "admin", inFolder!.id, "workspace", "apps", "studio", "data", "chat.jsonl"), "utf8")).toBe("second\n");
+
+    fs.writeFileSync(path.join(dir, "data", "chat.jsonl"), "third\n");
+    await a.call(`/v1/account/backups/${inFolder!.id}/restore`, { method: "POST" });
+    expect((await settle(a)).phase).toBe("done");
+    expect(fs.readFileSync(path.join(dir, "data", "chat.jsonl"), "utf8")).toBe("second\n");
+
+    // going back to the data folder keeps the folder's backups out of the list
+    expect((await put({ folder: null })).status).toBe(200);
+    expect((await listBackups(a)).every((b) => !(b as { inFolder?: boolean }).inFolder)).toBe(true);
+  });
+
+  it("is an admin's choice, outside the data folder, and says when it is away", async () => {
+    expect((await put({ folder }, "bob")).status).toBe(403);
+    expect((await a.call("/v1/account/backups/folders", {}, "bob")).status).toBe(403);
+    expect((await put({ folder: path.join(a.dataDir, "users") })).status).toBe(400);
+    expect((await put({ folder: path.join(folder, "missing") })).status).toBe(400);
+    expect((await put({ folder: "relative/path" })).status).toBe(400);
+
+    const listed = (await (await a.call(`/v1/account/backups/folders?path=${encodeURIComponent(path.dirname(folder))}`)).json()) as { folders: string[] };
+    expect(listed.folders).toContain(path.basename(folder));
+
+    const away = path.join(folder, "drive");
+    fs.mkdirSync(away);
+    expect((await put({ folder: away })).status).toBe(200);
+    fs.rmSync(away, { recursive: true });
+    expect((await put({ auto: false })).status).toBe(200);
+    await a.call("/v1/account/backups", { method: "POST" });
+    expect((await settle(a)).error).toContain("not reachable");
+  });
+
+  it("finds cloud folders a desktop app syncs", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "home-"));
+    for (const p of ["My Drive", "Dropbox", "OneDrive - Work", "Documents", "Pictures"]) fs.mkdirSync(path.join(home, p));
+    expect(suggestedFolders(home).map((s) => s.label)).toEqual(["Google Drive", "Dropbox", "OneDrive", "Documents"]);
+    fs.rmSync(home, { recursive: true, force: true });
   });
 });
 
