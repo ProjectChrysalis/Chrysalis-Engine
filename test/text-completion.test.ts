@@ -113,7 +113,8 @@ describe("openai-text connections (local serving stack protocol)", () => {
     expect(deltas.join("")).toBe("Ember waves.");
     expect(result.text).toBe("Ember waves.");
     expect(result.reasoning).toBe("plan briefly");
-    expect(result.usage).toMatchObject({ input: 17, output: 5, cacheRead: 3, costTotal: 0 });
+    // the 3 cached tokens are part of the 17 prompt tokens, not on top of them
+    expect(result.usage).toMatchObject({ input: 14, output: 5, cacheRead: 3, costTotal: 0 });
     expect(result.model).toBe("c_local/tiny-story");
   }, 20_000);
 
