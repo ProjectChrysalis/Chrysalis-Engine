@@ -45,8 +45,6 @@ export interface InstanceConfig {
   defaultModel: string | null;
   /** Fetch newer model lists and prices once a day (data only, no code). */
   modelUpdates: boolean;
-  /** The Google sign-in Drive backups use; null is the one Chrysalis ships. */
-  google: { clientId: string | null; clientSecret: string | null };
 }
 
 /** Where the Store's list of apps comes from unless config.yaml says otherwise. */
@@ -66,7 +64,6 @@ export function defaultInstanceConfig(): InstanceConfig {
     agent: { shell: sandbox.provider !== "off", shellTimeoutSeconds: sandbox.timeoutMs / 1000 },
     defaultModel: null,
     modelUpdates: true,
-    google: { clientId: null, clientSecret: null },
   };
 }
 
@@ -82,7 +79,7 @@ export function sandboxConfigOf(cfg: InstanceConfig): SandboxConfig {
 
 // ---------- schema ----------
 
-type Kind = "string" | "text" | "path" | "port" | "bool" | "hosts" | "seconds" | "model" | "address" | "feed";
+type Kind = "string" | "path" | "port" | "bool" | "hosts" | "seconds" | "model" | "address" | "feed";
 
 interface Setting {
   key: string;
@@ -106,8 +103,6 @@ export const SETTINGS: readonly Setting[] = [
   { key: "agent.shellTimeoutSeconds", kind: "seconds" },
   { key: "defaultModel", kind: "model" },
   { key: "modelUpdates", kind: "bool" },
-  { key: "google.clientId", kind: "text" },
-  { key: "google.clientSecret", kind: "text" },
 ];
 
 const SETTING_KEYS = new Set(SETTINGS.map((s) => s.key));
@@ -172,10 +167,6 @@ function coerce(kind: Kind, raw: unknown, textual: boolean): { value: unknown } 
     case "path":
       if (typeof text === "string" && text.length > 0) return { value: text };
       return { error: "must be a non-empty text value" };
-    case "text":
-      if (text === null || text === "" || (textual && text === "null")) return { value: null };
-      if (typeof text === "string") return { value: text };
-      return { error: "must be a text value or null" };
     case "address":
       if (typeof text === "string" && (text === "auto" || /^[0-9a-f.:]+$/i.test(text))) return { value: text };
       return { error: 'must be "auto" or an IP address' };
@@ -311,16 +302,6 @@ defaultModel: ${c.defaultModel === null ? "null" : yamlString(c.defaultModel)}
 # New models and price changes, checked once a day, so they show up without
 # waiting for a Chrysalis update. Only model details are downloaded.
 modelUpdates: ${c.modelUpdates}
-
-# ---- Google Drive backups ----
-
-# A Google OAuth client of your own for Drive backups: a "Web application"
-# client that redirects to
-#   https://projectchrysalis.github.io/assets/google-drive.html
-# null uses the built-in one, when this build has one.
-google:
-  clientId: ${c.google.clientId === null ? "null" : yamlString(c.google.clientId)}
-  clientSecret: ${c.google.clientSecret === null ? "null" : yamlString(c.google.clientSecret)}
 `;
 }
 

@@ -21,7 +21,6 @@ import { UserService } from "./users.js";
 import { SessionService } from "./sessions.js";
 import { runAutoBackups } from "./account-backup.js";
 import { ModelCatalog } from "./model-catalog.js";
-import { GoogleDrive, googleClientOf } from "./google-drive.js";
 import { bootstrapUserDir, ensureGitignoreEntries, ensureNotesDir, ensureWorkspaceAgentsMd, migrateConnectionsIntoDataRoot, migrateCredentialsIntoDataRoot, migrateMcpIntoDataRoot, migrateSpeechIntoDataRoot, migrateWebSearchPreset, userPaths } from "./paths.js";
 import { initRepo, untrackBoundary, commitAll as gitCommitAll, commitPaths as gitCommitPaths } from "./git.js";
 import { renameAppDir } from "./apps/manager.js";
@@ -681,8 +680,7 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
     await stopServing();
     runReplacement({ dataDir });
   };
-  const drive = new GoogleDrive({ dataDir, client: () => googleClientOf(config) });
-  const app = buildApp({ users, sessions, config, dataDir, bus, sandbox, instance, setupToken, settings, restart, services, drive, catalog });
+  const app = buildApp({ users, sessions, config, dataDir, bus, sandbox, instance, setupToken, settings, restart, services, catalog });
   catalog.start();
   bus.attach(users, sessions);
 
@@ -752,10 +750,7 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
 
   // daily automatic backups (account-backup.ts): checked a few minutes
   // after start, then every hour; each account is backed up once a day
-  const toDrive = async (username: string, made: Parameters<GoogleDrive["upload"]>[1]) => {
-    if (drive.connected(username)) await drive.upload(username, made);
-  };
-  const autoBackups = () => void runAutoBackups(dataDir, users.list().map((u) => u.username), toDrive).catch((e) => log.warn(`[backups] ${(e as Error).message}`));
+  const autoBackups = () => void runAutoBackups(dataDir, users.list().map((u) => u.username)).catch((e) => log.warn(`[backups] ${(e as Error).message}`));
   setTimeout(autoBackups, 5 * 60 * 1000).unref();
   setInterval(autoBackups, 60 * 60 * 1000).unref();
 

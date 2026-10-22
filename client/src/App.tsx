@@ -133,10 +133,6 @@ function Shell(props: { theme: "light" | "dark"; onTheme: () => void }) {
     setSettingsTab(tab ?? null)
     setSettingsOpen(true)
   }
-  // back from connecting Google Drive: Settings > Backups says how it went
-  useEffect(() => {
-    if (user && /(?:^#|&)drive=/.test(window.location.hash)) openSettings("backups")
-  }, [user])
 
   useEffect(() => {
     void (async () => {

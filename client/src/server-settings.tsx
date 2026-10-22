@@ -3,7 +3,7 @@
 // page follows the engine to its new address.
 import { useEffect, useState, type ReactNode } from "react"
 import { renderSVG } from "uqr"
-import { serverApi, type EngineRelease, type ModelCatalogStatus, type ServerInfo } from "./api"
+import { serverApi, type EngineRelease, type ServerInfo } from "./api"
 import { tr } from "./i18n/index"
 import { Pane, inputClass } from "./settings"
 import { Button, IconButton } from "./ui/button"
@@ -504,27 +504,6 @@ export function ServerTab() {
             onChange={(v) => void save({ modelUpdates: v })}
           />
           <ModelUpdatesRow on={e.modelUpdates} />
-        </Section>
-
-        <Section title={tr("Google Drive")}>
-          <TextSetting
-            label={tr("Client ID")}
-            value={f.google.clientId ?? ""}
-            locked={locked["google.clientId"]}
-            disabled={busy}
-            onSave={(v) => void save({ "google.clientId": v.trim() || null })}
-          />
-          <TextSetting
-            label={tr("Client secret")}
-            value=""
-            locked={locked["google.clientSecret"]}
-            disabled={busy}
-            placeholder={d.googleSecretSet ? tr("Saved") : ""}
-            onSave={(v) => void save({ "google.clientSecret": v.trim() || null })}
-          />
-          <p className="text-12 leading-4 text-ink-muted">
-            {tr("Backups to Google Drive need a web OAuth client from Google Cloud. Its redirect URI is {url}", { url: "https://projectchrysalis.github.io/assets/google-drive.html" })}
-          </p>
         </Section>
 
         <Section title={tr("Files")}>

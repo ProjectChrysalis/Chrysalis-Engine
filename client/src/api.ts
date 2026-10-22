@@ -342,7 +342,6 @@ export interface ServerConfig {
   agent: { shell: boolean; shellTimeoutSeconds: number }
   defaultModel: string | null
   modelUpdates: boolean
-  google: { clientId: string | null; clientSecret: null }
   dataRoot: string
 }
 
@@ -369,8 +368,6 @@ export interface ServerInfo {
   effective: ServerConfig
   /** setting → the environment variable or flag overriding it this run */
   locked: Record<string, string>
-  /** the client secret itself is never sent back */
-  googleSecretSet: boolean
   urls: { local: string; lan: string[] }
 }
 
@@ -436,7 +433,7 @@ export interface AccountBackup {
 
 export interface BackupJob {
   kind: "backup" | "restore" | "receive"
-  phase: "copying" | "uploading" | "downloading" | "receiving" | "restoring" | "done" | "failed"
+  phase: "copying" | "receiving" | "restoring" | "done" | "failed"
   done: number
   total: number
   error?: string
@@ -448,24 +445,6 @@ export interface BackupState {
   autoError: string | null
   job: BackupJob | null
   free: number | null
-  drive: DriveStatus
-}
-
-export interface DriveStatus {
-  /** this server has a Google sign-in to offer */
-  available: boolean
-  connected: boolean
-  email: string | null
-  last: { at: string; name?: string; error?: string } | null
-}
-
-export interface DriveBackup {
-  id: string
-  name: string
-  bytes: number
-  createdAt: string
-  from: string | null
-  label: string | null
 }
 
 export interface TransferOffer {
@@ -526,10 +505,6 @@ export const backupApi = {
     }
     return api<{ job: BackupJob }>("POST", `/v1/account/import/${start.id}/finish`)
   },
-  driveConnect: () => api<{ url: string }>("POST", "/v1/account/drive/connect", { origin: location.origin }),
-  driveDisconnect: () => api("DELETE", "/v1/account/drive"),
-  driveBackups: () => api<{ backups: DriveBackup[] }>("GET", "/v1/account/drive/backups").then((r) => r.backups),
-  driveRestore: (id: string) => api<{ job: BackupJob }>("POST", `/v1/account/drive/backups/${encodeURIComponent(id)}/restore`),
   offer: () => api<{ offer: Pick<TransferOffer, "expires" | "keys" | "state"> | null }>("GET", "/v1/account/transfer").then((r) => r.offer),
   makeOffer: (keys: boolean) => api<TransferOffer>("POST", "/v1/account/transfer", { keys }),
   cancelOffer: () => api("DELETE", "/v1/account/transfer"),

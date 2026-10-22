@@ -52,7 +52,7 @@ export interface BackupSettings {
 
 export interface BackupJob {
   kind: "backup" | "restore" | "receive";
-  phase: "copying" | "uploading" | "downloading" | "receiving" | "restoring" | "done" | "failed";
+  phase: "copying" | "receiving" | "restoring" | "done" | "failed";
   done: number;
   total: number;
   error?: string;
@@ -419,13 +419,7 @@ function pruneBackups(dataDir: string, username: string): void {
 
 /** Take the daily automatic backup of every account that has them on and
  *  is due. Accounts run one after another. */
-export async function runAutoBackups(
-  dataDir: string,
-  usernames: readonly string[],
-  /** Runs after each new backup (the Google Drive upload); its failure is
-   *  its own to report and leaves the backup in place. */
-  after?: (username: string, made: BackupInfo) => Promise<void>,
-): Promise<void> {
+export async function runAutoBackups(dataDir: string, usernames: readonly string[]): Promise<void> {
   for (const username of usernames) {
     if (!readBackupSettings(dataDir, username).auto) continue;
     const last = listBackups(dataDir, username).find((b) => b.label !== "before-restore");
@@ -436,7 +430,6 @@ export async function runAutoBackups(
       const made = await createBackup(dataDir, username, "auto");
       writeAutoError(dataDir, username, null);
       if (made) log.info(`[backups] backed up ${username} (${formatBytes(made.added)} new)`);
-      if (made && after) await after(username, made).catch((e) => log.warn(`[backups] upload of ${username}'s backup failed: ${(e as Error).message}`));
     } catch (e) {
       writeAutoError(dataDir, username, (e as Error).message);
       log.warn(`[backups] automatic backup of ${username} failed: ${(e as Error).message}`);

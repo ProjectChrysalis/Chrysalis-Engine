@@ -201,16 +201,12 @@ describe("server settings at runtime", () => {
     expect(settings.update({ port: "80a" })).toEqual({ error: expect.stringMatching(/port must be/) });
   });
 
-  it("saves a Google client without ever sending its secret back", () => {
+  it("turns model updates off and saves it", () => {
     const loaded = loadConfig(home, { env: {} });
     const settings = new ServerSettings({ homeDir: home, dataDir: home, loaded, applySocket: () => false, applyRuntime: () => {} });
-    const r = settings.update({ "google.clientId": "id.apps", "google.clientSecret": "s3cret", modelUpdates: false });
-    expect("error" in r).toBe(false);
-    expect(loaded.config.google.clientSecret).toBe("s3cret");
-    expect(loadConfig(home, { env: {} }).file).toMatchObject({ google: { clientId: "id.apps", clientSecret: "s3cret" }, modelUpdates: false });
-    const info = settings.describe();
-    expect(info.googleSecretSet).toBe(true);
-    expect(JSON.stringify(info)).not.toContain("s3cret");
+    expect("error" in settings.update({ modelUpdates: false })).toBe(false);
+    expect(loaded.config.modelUpdates).toBe(false);
+    expect(loadConfig(home, { env: {} }).file.modelUpdates).toBe(false);
   });
 
   it("keeps an overridden value for this run but saves the file value", () => {

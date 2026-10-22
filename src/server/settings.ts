@@ -29,8 +29,6 @@ export interface ServerInfo {
   effective: InstanceConfig;
   /** setting → the environment variable or flag overriding it */
   locked: Record<string, string>;
-  /** google.clientSecret is never sent back; this says whether one is saved */
-  googleSecretSet: boolean;
   urls: { local: string; lan: string[] };
 }
 
@@ -47,14 +45,10 @@ export interface ServerSettingsOptions {
 
 /** Settings a person may change from Settings > Server. The data folder
  *  moves with the files in it, which only makes sense while stopped. */
-const EDITABLE = new Set(["port", "lan", "listenAddress", "allowedHosts", "ssl.enabled", "ssl.certPath", "ssl.keyPath", "openBrowser", "apps.packageDownloads", "agent.shell", "agent.shellTimeoutSeconds", "defaultModel", "modelUpdates", "google.clientId", "google.clientSecret"]);
+const EDITABLE = new Set(["port", "lan", "listenAddress", "allowedHosts", "ssl.enabled", "ssl.certPath", "ssl.keyPath", "openBrowser", "apps.packageDownloads", "agent.shell", "agent.shellTimeoutSeconds", "defaultModel", "modelUpdates"]);
 
 function getPath(obj: unknown, key: string): unknown {
   return key.split(".").reduce<unknown>((cur, seg) => (cur && typeof cur === "object" ? (cur as Record<string, unknown>)[seg] : undefined), obj);
-}
-
-function withoutSecret(config: InstanceConfig): InstanceConfig {
-  return { ...config, google: { ...config.google, clientSecret: null } };
 }
 
 export class ServerSettings {
@@ -71,10 +65,9 @@ export class ServerSettings {
       configPath: loaded.path,
       homeDir,
       dataDir,
-      file: withoutSecret(loaded.file),
-      effective: withoutSecret(loaded.config),
+      file: loaded.file,
+      effective: loaded.config,
       locked: loaded.locked,
-      googleSecretSet: !!loaded.config.google.clientSecret,
       urls: engineUrls(loaded.config),
     };
   }
