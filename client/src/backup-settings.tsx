@@ -341,9 +341,14 @@ export function BackupsTab(props: { me: Me }) {
     const t = setInterval(() => void state.refetch(), 1000)
     return () => clearInterval(t)
   }, [running])
+  // the server keeps a finished job for a minute: only reload for one this page watched finish
+  const watched = useRef(false)
   const reloaded = useRef(false)
   useEffect(() => {
-    if (job?.phase === "done" && job.kind !== "backup" && !reloaded.current) {
+    if (busy) watched.current = true
+  }, [busy])
+  useEffect(() => {
+    if (job?.phase === "done" && job.kind !== "backup" && watched.current && !reloaded.current) {
       reloaded.current = true
       setTimeout(() => window.location.reload(), 1200)
     }
