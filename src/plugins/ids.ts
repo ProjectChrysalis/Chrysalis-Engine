@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+
 export const validPluginFolder = (id: string): boolean => /^[a-z0-9_-]+$/i.test(id);
 
 /** Dots cannot appear in app or plugin folders, so each pair has one identity. */
@@ -34,4 +37,57 @@ export function disabledPluginIds(ids: readonly string[]): Set<string> {
     }
   }
   return result;
+}
+
+/** Plugins that could have owned an id from before dotted identities. */
+function legacyOwners(id: string, appsDir: string, pluginsDir: string): string[] {
+  const owners: string[] = [];
+  if (validPluginFolder(id) && userPluginId(id) !== id && fs.existsSync(path.join(pluginsDir, id, "manifest.json"))) owners.push(userPluginId(id));
+  for (let i = 1; i < id.length - 2; i++) {
+    if (id.slice(i, i + 2) !== "__") continue;
+    const app = id.slice(0, i);
+    const folder = id.slice(i + 2);
+    if (validPluginFolder(app) && validPluginFolder(folder) && fs.existsSync(path.join(appsDir, app, "plugins", folder, "manifest.json"))) {
+      owners.push(appPluginId(app, folder));
+    }
+  }
+  return owners;
+}
+
+/** Moves old grants and stores to the identity of the one installed plugin
+ *  that could have held them. An id more than one installed plugin could
+ *  claim stays where it is, so a crafted name never inherits a grant. */
+export function migrateLegacyPluginIds(p: { settings: string; apps: string; plugins: string; store: string }): string[] {
+  let settings: { pluginGrants?: Record<string, unknown> };
+  try {
+    settings = JSON.parse(fs.readFileSync(p.settings, "utf8")) as typeof settings;
+  } catch {
+    settings = {};
+  }
+  const grants = settings.pluginGrants ?? {};
+  const ids = new Set(Object.keys(grants).filter((id) => !id.includes(".")));
+  try {
+    for (const f of fs.readdirSync(p.store)) if (f.endsWith(".json") && !f.slice(0, -5).includes(".")) ids.add(f.slice(0, -5));
+  } catch { /* no store */ }
+  const moved: string[] = [];
+  let touched = false;
+  for (const id of ids) {
+    const owners = legacyOwners(id, p.apps, p.plugins);
+    if (owners.length !== 1) continue;
+    const owner = owners[0]!;
+    if (id in grants) {
+      grants[owner] ??= grants[id];
+      delete grants[id];
+      touched = true;
+    }
+    const from = path.join(p.store, `${id}.json`);
+    const to = path.join(p.store, `${owner}.json`);
+    if (fs.existsSync(from) && !fs.existsSync(to)) fs.renameSync(from, to);
+    moved.push(`${id} -> ${owner}`);
+  }
+  if (touched) {
+    settings.pluginGrants = grants;
+    fs.writeFileSync(p.settings, JSON.stringify(settings, null, 2) + "\n", "utf8");
+  }
+  return moved;
 }

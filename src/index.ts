@@ -26,6 +26,7 @@ import { initRepo, untrackBoundary, commitAll as gitCommitAll, commitPaths as gi
 import { renameAppDir } from "./apps/manager.js";
 import { gcRepoIfChunky } from "./apps/git.js";
 import { adoptFormerlyShipped } from "./apps/store.js";
+import { migrateLegacyPluginIds } from "./plugins/ids.js";
 import { buildApp, SESSION_COOKIE, sessionUserOf } from "./server/app.js";
 import { ServiceManager } from "./apps/service.js";
 import { EventBus } from "./server/ws.js";
@@ -500,6 +501,7 @@ async function prepareAccounts(users: UserService, dataDir: string): Promise<voi
     if (migrateWebSearchPreset(dataDir, u.username)) {
       log.info(`[mcp] ${u.username}: web search now uses Exa's hosted server (no local process)`);
     }
+    for (const m of migrateLegacyPluginIds(p)) log.info(`[plugins] ${u.username}: ${m}`);
     // keys saved before endpoint binding bind to the URL they serve today;
     // from here on a workspace edit of that URL cannot take the key along
     for (const b of bindLegacyKeys(p)) log.info(`[keys] ${u.username}: bound ${b}`);
