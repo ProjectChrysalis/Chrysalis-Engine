@@ -1,6 +1,6 @@
 {
   "name": "chrysalis-engine",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "private": true,
   "description": "Chrysalis Engine: the AI frontend you can reshape just by asking",
   "type": "module",
