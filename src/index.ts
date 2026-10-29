@@ -8,6 +8,7 @@
  * Settings come from <home>/config.yaml, then CHRYSALIS_* environment
  * variables, then flags (see src/config.ts).
  */
+import "./providers/bundled.js";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
