@@ -113,19 +113,19 @@ function SendPanel() {
         ) : null}
         <div className="flex min-w-0 flex-1 basis-56 flex-col gap-2">
           <p className="text-12 leading-4 text-ink-muted">{tr("On the other device, open Settings > Backups > Receive and enter:")}</p>
+          {offer.lan.map((u) => (
+            <div key={u} className="flex items-start gap-2">
+              <span className="w-16 shrink-0 py-1 text-13 text-ink-muted">{tr("Address")}</span>
+              <code className="min-w-0 break-all rounded bg-panel px-2 py-1 font-mono text-13 text-ink">{u}</code>
+              <CopyButton text={u} />
+            </div>
+          ))}
+          {!address ? <p className="text-12 text-warning">{tr("Other devices cannot reach this one. An admin can allow it in Settings > Server.")}</p> : null}
           <div className="flex items-center gap-2">
             <span className="w-16 shrink-0 text-13 text-ink-muted">{tr("Code")}</span>
             <code className="rounded bg-panel px-2 py-1 font-mono text-16 tracking-widest text-ink">{offer.code}</code>
             <CopyButton text={offer.code} />
           </div>
-          {offer.lan.map((u) => (
-            <div key={u} className="flex items-center gap-2">
-              <span className="w-16 shrink-0 text-13 text-ink-muted">{tr("Address")}</span>
-              <code className="min-w-0 truncate rounded bg-panel px-2 py-1 font-mono text-12 text-ink">{u}</code>
-              <CopyButton text={u} />
-            </div>
-          ))}
-          {!address ? <p className="text-12 text-warning">{tr("Other devices cannot reach this one. An admin can allow it in Settings > Server.")}</p> : null}
           <p className="text-12 text-ink-muted">{status}</p>
         </div>
       </div>
