@@ -21,6 +21,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import piPackage from "../node_modules/@earendil-works/pi-ai/package.json" with { type: "json" };
 import { log } from "./logger.js";
+import { withLiveOpenRouter } from "./providers/openrouter-live.js";
 
 type Provider = ReturnType<typeof builtinProviders>[number];
 type AnyModel = Model<Api> & { type?: string; headers?: Record<string, string> };
@@ -178,7 +179,7 @@ export function withCatalogUpdates(provider: Provider): Provider {
 
 /** The shipped providers, each with the newer data folded in. */
 export function catalogProviders(): Provider[] {
-  return builtinProviders().map(withCatalogUpdates);
+  return builtinProviders().map((provider) => withLiveOpenRouter(withCatalogUpdates(provider)));
 }
 
 export class ModelCatalog {

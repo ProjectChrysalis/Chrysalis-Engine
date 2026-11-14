@@ -497,7 +497,7 @@ export function ServerTab() {
         <Section title={tr("Models")}>
           <Toggle
             label={tr("Get new models without waiting for an update")}
-            hint={tr("Checked once a day. Only model names, prices and limits are downloaded.")}
+            hint={tr("Checked daily, OpenRouter hourly. Only model names, prices and limits are downloaded.")}
             checked={e.modelUpdates}
             locked={locked.modelUpdates}
             disabled={busy}

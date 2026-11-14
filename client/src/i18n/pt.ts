@@ -644,6 +644,8 @@ const dict = {
   "Max output price ($/million tokens)": "Preço máx. de saída ($/milhão de tokens)",
   "Reset routing": "Redefinir roteamento",
   "Custom models": "Modelos personalizados",
+  "Flex tier": "Nível Flex",
+  "Half price on Gemini 2.5 and newer. Slower, and may fail when Google is busy.": "Metade do preço no Gemini 2.5 e mais novos. Mais lento, e pode falhar quando o Google está ocupado.",
   "Models are discovered from the endpoint. Pick Manual to set model IDs and limits.": "Os modelos são descobertos no endpoint. Escolha Manual para definir IDs de modelo e limites.",
   "Keeps the provider catalog. New IDs need context and max output tokens.": "Mantém o catálogo do provedor. IDs novos precisam de contexto e de tokens máximos de saída.",
   "Context window sets the auto-compact threshold.": "A janela de contexto define o limite da compactação automática.",
@@ -773,7 +775,7 @@ const dict = {
   "Not checked yet.": "Ainda não verificado.",
   "Check now": "Verificar agora",
   "Get new models without waiting for an update": "Receber modelos novos sem esperar uma atualização",
-  "Checked once a day. Only model names, prices and limits are downloaded.": "Verificado uma vez por dia. Só nomes, preços e limites dos modelos são baixados.",
+  "Checked daily, OpenRouter hourly. Only model names, prices and limits are downloaded.": "Verificado diariamente, OpenRouter a cada hora. Só nomes, preços e limites dos modelos são baixados.",
 }
 
 export default dict

@@ -644,6 +644,8 @@ const dict = {
   "Max output price ($/million tokens)": "最高输出价格（$/百万 token）",
   "Reset routing": "重置路由",
   "Custom models": "自定义模型",
+  "Flex tier": "Flex 层级",
+  "Half price on Gemini 2.5 and newer. Slower, and may fail when Google is busy.": "Gemini 2.5 及更新版本半价。速度较慢，Google 繁忙时可能失败。",
   "Models are discovered from the endpoint. Pick Manual to set model IDs and limits.": "模型从端点自动发现。要设置模型 ID 和上限，请选“手动”。",
   "Keeps the provider catalog. New IDs need context and max output tokens.": "保留提供商目录。新 ID 需要填写上下文和最大输出 token。",
   "Context window sets the auto-compact threshold.": "上下文窗口决定自动压缩的阈值。",
@@ -773,7 +775,7 @@ const dict = {
   "Not checked yet.": "尚未检查。",
   "Check now": "立即检查",
   "Get new models without waiting for an update": "无需等待更新即可获取新模型",
-  "Checked once a day. Only model names, prices and limits are downloaded.": "每天检查一次。只下载模型名称、价格和限制。",
+  "Checked daily, OpenRouter hourly. Only model names, prices and limits are downloaded.": "每天检查，OpenRouter 每小时检查。只下载模型名称、价格和限制。",
 }
 
 export default dict

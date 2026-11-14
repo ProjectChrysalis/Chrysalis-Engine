@@ -644,6 +644,8 @@ const dict = {
   "Max output price ($/million tokens)": "Maks. çıktı fiyatı ($/milyon token)",
   "Reset routing": "Yönlendirmeyi sıfırla",
   "Custom models": "Özel modeller",
+  "Flex tier": "Flex katmanı",
+  "Half price on Gemini 2.5 and newer. Slower, and may fail when Google is busy.": "Gemini 2.5 ve sonrasında yarı fiyat. Daha yavaş, Google yoğunken başarısız olabilir.",
   "Models are discovered from the endpoint. Pick Manual to set model IDs and limits.": "Modeller uç noktadan keşfedilir. Model kimliklerini ve sınırları ayarlamak için Elle'yi seç.",
   "Keeps the provider catalog. New IDs need context and max output tokens.": "Sağlayıcı kataloğunu korur. Yeni kimlikler için bağlam ve en fazla çıktı token sayısı gerekir.",
   "Context window sets the auto-compact threshold.": "Bağlam penceresi otomatik sıkıştırma eşiğini belirler.",
@@ -773,7 +775,7 @@ const dict = {
   "Not checked yet.": "Henüz kontrol edilmedi.",
   "Check now": "Şimdi kontrol et",
   "Get new models without waiting for an update": "Güncelleme beklemeden yeni modeller",
-  "Checked once a day. Only model names, prices and limits are downloaded.": "Günde bir kez kontrol edilir. Yalnızca model adları, fiyatları ve sınırları indirilir.",
+  "Checked daily, OpenRouter hourly. Only model names, prices and limits are downloaded.": "Günlük kontrol edilir, OpenRouter saatlik. Yalnızca model adları, fiyatları ve sınırları indirilir.",
 }
 
 export default dict

@@ -644,6 +644,8 @@ const dict = {
   "Max output price ($/million tokens)": "최대 출력 가격($/백만 토큰)",
   "Reset routing": "라우팅 초기화",
   "Custom models": "사용자 지정 모델",
+  "Flex tier": "Flex 등급",
+  "Half price on Gemini 2.5 and newer. Slower, and may fail when Google is busy.": "Gemini 2.5 이상 반값. 더 느리고, Google이 바쁘면 실패할 수 있습니다.",
   "Models are discovered from the endpoint. Pick Manual to set model IDs and limits.": "모델은 엔드포인트에서 자동 검색됩니다. 모델 ID와 한도를 설정하려면 수동을 선택하세요.",
   "Keeps the provider catalog. New IDs need context and max output tokens.": "제공자 카탈로그를 유지합니다. 새 ID에는 컨텍스트와 최대 출력 토큰이 필요합니다.",
   "Context window sets the auto-compact threshold.": "컨텍스트 창이 자동 압축 기준을 정합니다.",
@@ -773,7 +775,7 @@ const dict = {
   "Not checked yet.": "아직 확인하지 않았습니다.",
   "Check now": "지금 확인",
   "Get new models without waiting for an update": "업데이트를 기다리지 않고 새 모델 받기",
-  "Checked once a day. Only model names, prices and limits are downloaded.": "하루에 한 번 확인합니다. 모델 이름, 가격, 한도만 내려받습니다.",
+  "Checked daily, OpenRouter hourly. Only model names, prices and limits are downloaded.": "매일 확인합니다. OpenRouter는 매시간 확인합니다. 모델 이름, 가격, 한도만 내려받습니다.",
 }
 
 export default dict

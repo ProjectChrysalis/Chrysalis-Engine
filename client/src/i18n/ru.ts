@@ -644,6 +644,8 @@ const dict = {
   "Max output price ($/million tokens)": "Макс. цена вывода ($/млн токенов)",
   "Reset routing": "Сбросить маршрутизацию",
   "Custom models": "Свои модели",
+  "Flex tier": "Уровень Flex",
+  "Half price on Gemini 2.5 and newer. Slower, and may fail when Google is busy.": "Половина цены для Gemini 2.5 и новее. Медленнее и может не сработать, когда Google загружен.",
   "Models are discovered from the endpoint. Pick Manual to set model IDs and limits.": "Модели определяются с эндпоинта. Выберите «Вручную», чтобы задать ID моделей и лимиты.",
   "Keeps the provider catalog. New IDs need context and max output tokens.": "Сохраняет каталог провайдера. Новым ID нужны контекст и максимум токенов вывода.",
   "Context window sets the auto-compact threshold.": "Окно контекста задаёт порог автоматического сжатия.",
@@ -773,7 +775,7 @@ const dict = {
   "Not checked yet.": "Ещё не проверялось.",
   "Check now": "Проверить",
   "Get new models without waiting for an update": "Новые модели без ожидания обновления",
-  "Checked once a day. Only model names, prices and limits are downloaded.": "Проверяется раз в день. Загружаются только названия, цены и лимиты моделей.",
+  "Checked daily, OpenRouter hourly. Only model names, prices and limits are downloaded.": "Проверяется ежедневно, OpenRouter каждый час. Загружаются только названия, цены и лимиты моделей.",
 }
 
 export default dict

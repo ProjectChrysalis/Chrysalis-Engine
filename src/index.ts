@@ -22,6 +22,7 @@ import { UserService } from "./users.js";
 import { SessionService } from "./sessions.js";
 import { runAutoBackups } from "./account-backup.js";
 import { ModelCatalog } from "./model-catalog.js";
+import { startOpenRouterModels } from "./providers/openrouter-live.js";
 import { bootstrapUserDir, ensureGitignoreEntries, ensureNotesDir, ensureWorkspaceAgentsMd, migrateConnectionsIntoDataRoot, migrateCredentialsIntoDataRoot, migrateMcpIntoDataRoot, migrateSpeechIntoDataRoot, migrateWebSearchPreset, userPaths } from "./paths.js";
 import { initRepo, untrackBoundary, commitAll as gitCommitAll, commitPaths as gitCommitPaths } from "./git.js";
 import { renameAppDir } from "./apps/manager.js";
@@ -651,6 +652,7 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
     enabled: () => config.modelUpdates,
     onChanged: () => { for (const u of users.list()) bus.emit(u.username, "connections_changed", {}); },
   });
+  startOpenRouterModels({ enabled: () => config.modelUpdates, onChanged: () => { for (const u of users.list()) bus.emit(u.username, "connections_changed", {}); } });
   const settings = new ServerSettings({
     homeDir,
     dataDir,

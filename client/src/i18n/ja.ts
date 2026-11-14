@@ -644,6 +644,8 @@ const dict = {
   "Max output price ($/million tokens)": "最大出力価格（$/100万トークン）",
   "Reset routing": "ルーティングをリセット",
   "Custom models": "カスタムモデル",
+  "Flex tier": "Flex 階層",
+  "Half price on Gemini 2.5 and newer. Slower, and may fail when Google is busy.": "Gemini 2.5 以降が半額。遅くなり、Google が混雑していると失敗することがあります。",
   "Models are discovered from the endpoint. Pick Manual to set model IDs and limits.": "モデルはエンドポイントから検出されます。モデル ID と上限を設定するには手動を選んでください。",
   "Keeps the provider catalog. New IDs need context and max output tokens.": "プロバイダーのカタログを保持します。新しい ID にはコンテキストと最大出力トークンが必要です。",
   "Context window sets the auto-compact threshold.": "コンテキストウィンドウが自動圧縮のしきい値を決めます。",
@@ -773,7 +775,7 @@ const dict = {
   "Not checked yet.": "まだ確認していません。",
   "Check now": "今すぐ確認",
   "Get new models without waiting for an update": "アップデートを待たずに新しいモデルを取得",
-  "Checked once a day. Only model names, prices and limits are downloaded.": "1 日 1 回確認します。モデル名、価格、上限だけをダウンロードします。",
+  "Checked daily, OpenRouter hourly. Only model names, prices and limits are downloaded.": "毎日確認します（OpenRouter は 1 時間ごと）。モデル名、価格、上限だけをダウンロードします。",
 }
 
 export default dict

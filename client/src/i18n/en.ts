@@ -777,7 +777,7 @@ const en = {
   "Not checked yet.": "",
   "Check now": "",
   "Get new models without waiting for an update": "",
-  "Checked once a day. Only model names, prices and limits are downloaded.": "",
+  "Checked daily, OpenRouter hourly. Only model names, prices and limits are downloaded.": "",
 } as const
 
 export default en
