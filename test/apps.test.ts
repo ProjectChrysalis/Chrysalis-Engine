@@ -193,7 +193,7 @@ describe("curated providers", () => {
     const prov = buildProvider("c_go", {
       name: "go",
       api: "openai-completions",
-      baseUrl: "https://opencode.ai/zen/go/v1",
+      baseUrl: listed!.baseUrl,
       models: [{ id: "deepseek-v4-pro" }, { id: "not-in-any-catalog" }],
     });
     const models = prov.getModels();

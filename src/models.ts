@@ -1128,20 +1128,30 @@ export class UserModelService {
           if (msg) partial = msg;
         }
       }
-      try {
-        return await s.result();
-      } catch (e) {
-        if (!req.signal?.aborted) throw e;
-        // salvage anything with real content — text, tool calls, or the
-        // thinking itself: a cancelled reply keeps exactly what was on
-        // screen, think-only included. A truly empty partial commits nothing.
-        if (partial && partial.content.some((c) =>
+      // salvage anything with real content — text, tool calls, or the
+      // thinking itself: a cancelled reply keeps exactly what was on
+      // screen, think-only included. A truly empty partial commits nothing.
+      const salvage = (cut: AssistantMessage | null): AssistantMessage | null => {
+        if (cut && cut.content.some((c) =>
           (c.type === "text" && c.text.trim()) ||
           c.type === "toolCall" ||
-          (c.type === "thinking" && c.thinking.trim()))) return partial;
-        if (partial && textBeforeTools.trim()) return { ...partial, content: [{ type: "text", text: textBeforeTools } as AssistantMessage["content"][number]] };
+          (c.type === "thinking" && c.thinking.trim()))) return cut;
+        if (cut && textBeforeTools.trim()) return { ...cut, content: [{ type: "text", text: textBeforeTools } as AssistantMessage["content"][number]] };
+        return null;
+      };
+      let final: AssistantMessage;
+      try {
+        final = await s.result();
+      } catch (e) {
+        if (!req.signal?.aborted) throw e;
+        const kept = salvage(partial);
+        if (kept) return kept;
         throw e;
       }
+      // the client library may also end a cancelled stream as a result
+      // rather than an error; an empty one is still a cancellation
+      if (final.stopReason === "aborted" && !salvage(final)) throw new Error(final.errorMessage || "generation cancelled");
+      return final;
     };
 
     const replayMessages: GenerationReplay["messages"] = [];
