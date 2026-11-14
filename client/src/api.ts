@@ -1,7 +1,7 @@
 import { tr } from "./i18n/index"
 import type { AppUpdate, StoreList } from "./types"
 import type { OpenRouterRouting } from "../../src/providers/openrouter-routing"
-import type { AgentPromptsFile } from "../../src/agent/prompt-preset-types"
+import type { AgentPromptPreset, AgentPromptsFile, BuiltinSection } from "../../src/agent/prompt-preset-types"
 export type { OpenRouterRouting } from "../../src/providers/openrouter-routing"
 // Chrysalis engine HTTP client for the launcher shell (auth, settings,
 // connections, apps). The agent chat lives in its own app (client-agent/).
@@ -233,11 +233,14 @@ export const personaApi = {
   put: (persona: string) => api("PUT", "/v1/settings/persona", { persona }),
 }
 
-export type { AgentPrompt, AgentPromptPreset, AgentPromptsFile } from "../../src/agent/prompt-preset-types"
+export type { AgentPrompt, AgentPromptPreset, AgentPromptsFile, BuiltinSection } from "../../src/agent/prompt-preset-types"
+/** The presets, with the agent's own prompt parts in their default order and the text each holds right now. */
+export type AgentPromptsView = AgentPromptsFile & { builtin: Record<BuiltinSection, string>; parts: BuiltinSection[]; locked: BuiltinSection[] }
 
 export const agentPromptsApi = {
-  get: () => api<AgentPromptsFile>("GET", "/v1/settings/agent-prompts"),
+  get: () => api<AgentPromptsView>("GET", "/v1/settings/agent-prompts"),
   put: (file: AgentPromptsFile) => api<AgentPromptsFile>("PUT", "/v1/settings/agent-prompts", file),
+  preview: (preset: AgentPromptPreset) => api<{ system: string; message: string }>("POST", "/v1/settings/agent-prompts/preview", { preset }),
 }
 
 export const mcpApi = {

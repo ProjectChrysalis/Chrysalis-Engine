@@ -23,7 +23,8 @@ import type { UserPaths } from "../paths.js";
 import { listApps, readApp } from "../apps/manager.js";
 import type { InstanceConfig } from "../config.js";
 import type { ServerSettings } from "../server/settings.js";
-import { messagePrompts, presetSection, PROMPTS_FILE } from "./prompt-presets.js";
+import { messagePrompts, orderedSections, PROMPTS_FILE } from "./prompt-presets.js";
+import type { BuiltinSection } from "./prompt-preset-types.js";
 import type { UserService } from "../users.js";
 import type { McpRegistry, McpToolInfo } from "../mcp/registry.js";
 import { Type } from "typebox";
@@ -1449,6 +1450,11 @@ function updatesAsUserTurns(messages: AgentMessage[]): AgentMessage[] {
  * general prompt, so where they disagree they are what was read last.
  */
 function promptSections(username: string, isAdmin: boolean, paths: UserPaths, sandbox: AgentToolOptions["sandbox"] | undefined, context: AppContext, plan: boolean): Record<string, string> {
+  return orderedSections(paths, username, builtinSections(username, isAdmin, paths, sandbox, context, plan));
+}
+
+/** Each part of the agent's own system prompt, before the active preset orders and filters them. */
+export function builtinSections(username: string, isAdmin: boolean, paths: UserPaths, sandbox: AgentToolOptions["sandbox"] | undefined, context: AppContext, plan: boolean): Record<BuiltinSection, string> {
   return {
     base: basePrompt(username, isAdmin, paths, sandbox),
     apps: installedAppsSection(paths),
@@ -1456,7 +1462,6 @@ function promptSections(username: string, isAdmin: boolean, paths: UserPaths, sa
     docs: instructionDocs(paths, context.appId),
     notes: notesIndex(paths, username),
     persona: personaSection(paths, username),
-    preset: presetSection(paths, username),
     mode: plan ? PLAN_MODE_PROMPT : WORK_MODE_PROMPT,
   };
 }

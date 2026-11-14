@@ -9,26 +9,28 @@ import { api } from "./api"
 import type { AgentPromptsFile } from "../../src/agent/prompt-preset-types"
 import { useAgent } from "./store"
 
-const NO_PRESET = "__none"
-
-/** Switches the active prompt preset; the presets themselves are edited in Settings. */
+/** Shows and switches the active prompt preset; Edit opens the presets in Settings. */
 function PromptPresetPicker(): ReactNode {
   const [file, setFile] = useState<AgentPromptsFile | null>(null)
   const running = useAgent((s) => s.running)
-  useEffect(() => { void api<AgentPromptsFile>("GET", "/v1/settings/agent-prompts").then(setFile).catch(() => setFile(null)) }, [])
+  const version = useAgent((s) => s.promptsVersion)
+  useEffect(() => { void api<AgentPromptsFile>("GET", "/v1/settings/agent-prompts").then(setFile).catch(() => setFile(null)) }, [version])
   if (!file?.presets.length) return null
   const choose = async (value: string) => {
     const latest = await api<AgentPromptsFile>("GET", "/v1/settings/agent-prompts")
-    setFile(await api<AgentPromptsFile>("PUT", "/v1/settings/agent-prompts", { ...latest, active: value === NO_PRESET ? null : value }))
+    setFile(await api<AgentPromptsFile>("PUT", "/v1/settings/agent-prompts", { active: value, presets: latest.presets }))
   }
-  const items = [{ label: tr("No preset"), value: NO_PRESET }, ...file.presets.map((p) => ({ label: p.name, value: p.id }))]
+  const items = file.presets.map((p) => ({ label: p.name, value: p.id }))
   return (
     <div className="agent-setting">
       <span className="agent-setting-label">{tr("Prompt preset")}</span>
-      <Select items={items} value={file.active ?? NO_PRESET} onValueChange={(v) => void choose(String(v ?? NO_PRESET)).catch(() => undefined)} disabled={running}>
-        <SelectTrigger className="agent-composer-mode" aria-label={tr("Prompt preset")}><SelectValue /></SelectTrigger>
-        <SelectContent>{items.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
-      </Select>
+      <div className="flex items-center gap-1">
+        <Select items={items} value={file.active} onValueChange={(v) => { if (v) void choose(String(v)).catch(() => undefined) }} disabled={running}>
+          <SelectTrigger className="agent-composer-mode" aria-label={tr("Prompt preset")}><SelectValue /></SelectTrigger>
+          <SelectContent>{items.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
+        </Select>
+        <Button variant="ghost" size="sm" onClick={() => window.parent.postMessage({ __chrysalisAgent: "settings", tab: "agent-prompts" }, location.origin)}>{tr("Edit")}</Button>
+      </div>
     </div>
   )
 }

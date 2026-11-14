@@ -52,10 +52,11 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { radiusProvider } from "@earendil-works/pi-ai/providers/radius";
 import type { AuthPrompt, Credential, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { curatedProviders, loadCustomProviders, reservedProviderIds } from "../providers/custom.js";
-import { UserAgent, instructionDocsStamp, promptFile, listSessions, renameSession, archiveSession, sessionDir, isReasoningLevel, type AgentStreamEvent, type ReasoningLevel, type SessionCompactRecord } from "../agent/agent.js";
+import { UserAgent, builtinSections, instructionDocsStamp, promptFile, listSessions, renameSession, archiveSession, sessionDir, isReasoningLevel, type AgentStreamEvent, type ReasoningLevel, type SessionCompactRecord } from "../agent/agent.js";
 import { clearUsage, usageSummary } from "../usage.js";
 import { compactionCut, fileActivity, lastSessionModel, summarizeMessages, type FileActivity } from "../agent/compact.js";
-import { readPrompts, validatePromptsFile, writePrompts } from "../agent/prompt-presets.js";
+import { presetMessage, presetSections, readPrompts, validatePromptsFile, writePrompts } from "../agent/prompt-presets.js";
+import { BUILTIN_SECTIONS, LOCKED_SECTIONS } from "../agent/prompt-preset-types.js";
 import { listConnections, createConnection, updateConnection, deleteConnection, validateConnectionInput, validatePromptFormatInput, validateServiceTier, readConnections, connectionKeyUsable, type ConnectionInfo } from "../connections.js";
 import { supportsOpenRouterRouting, validateOpenRouterRouting, type OpenRouterRouting } from "../providers/openrouter-routing.js";
 import { createRoutingCatalog } from "../providers/openrouter-catalog.js";
@@ -3046,7 +3047,27 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   });
 
   // agent prompt presets (agent-prompts.json, git-tracked)
-  app.get("/v1/settings/agent-prompts", (c) => c.json(readPrompts(c.get("paths"))));
+  // the text each built-in part holds right now, as a new conversation outside any app gets it
+  const agentParts = (u: { username: string; role: string }, p: UserPaths) =>
+    builtinSections(u.username, u.role === "admin", p, sandbox.enabled ? sandbox : undefined, { appId: null, loaded: [] }, false);
+
+  app.get("/v1/settings/agent-prompts", (c) => {
+    const u = c.get("user");
+    const p = c.get("paths");
+    return c.json({ ...readPrompts(p), builtin: agentParts(u, p), parts: BUILTIN_SECTIONS, locked: LOCKED_SECTIONS });
+  });
+
+  // the full prompt a preset gives a new conversation, saved or not
+  app.post("/v1/settings/agent-prompts/preview", async (c) => {
+    const u = c.get("user");
+    const p = c.get("paths");
+    const body = await c.req.json<{ preset?: { id?: unknown } }>().catch(() => null);
+    const checked = validatePromptsFile({ active: body?.preset?.id, presets: [body?.preset] });
+    const preset = checked.ok ? checked.value.presets.find((q) => q.id === checked.value.active) : undefined;
+    if (!checked.ok || !preset) return c.json({ error: checked.ok ? "no preset" : checked.error }, 400);
+    const system = Object.values(presetSections(preset, u.username, agentParts(u, p))).filter(Boolean).join("\n\n");
+    return c.json({ system, message: presetMessage(preset, u.username) });
+  });
 
   app.put("/v1/settings/agent-prompts", async (c) => {
     const u = c.get("user");

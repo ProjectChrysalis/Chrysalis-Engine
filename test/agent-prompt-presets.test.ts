@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { UserAgent } from "../src/agent/agent.js";
-import { PROMPTS_FILE, validatePromptsFile, writePrompts, type AgentPromptsFile } from "../src/agent/prompt-presets.js";
+import { PROMPTS_FILE, readPrompts, validatePromptsFile, writePrompts, type AgentPromptsFile } from "../src/agent/prompt-presets.js";
+import { BUILTIN_SECTIONS } from "../src/agent/prompt-preset-types.js";
 import { defaultInstanceConfig } from "../src/config.js";
 import { UserModelService } from "../src/models.js";
 import { bootstrapUserDir } from "../src/paths.js";
@@ -14,7 +15,7 @@ let root: string;
 beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-prompts-")); });
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
 
-const presets = (active: string | null): AgentPromptsFile => ({
+const presets = (active: string): AgentPromptsFile => ({
   active,
   presets: [
     { id: "terse", name: "Terse", prompts: [
@@ -58,11 +59,49 @@ it("sends the active preset's prompts: system ones in the instructions, message 
   expect(second.indexOf("Be plain.")).toBeGreaterThan(second.indexOf("Again"));
 }, 20_000);
 
+it("orders the system prompt by the preset, between the agent's own parts", async () => {
+  const users = new UserService(root);
+  users.create("alice", "user", { password: "test-password-1" });
+  const p = bootstrapUserDir(root, "alice");
+  fs.writeFileSync(p.persona, "PERSONA TEXT");
+  const svc = new UserModelService("alice", p, defaultInstanceConfig());
+  const faux = fauxProvider({ models: [{ id: "order-model" }] });
+  svc.models.setProvider(faux.provider);
+  let system = "";
+  faux.setResponses([(context: unknown) => { system = JSON.stringify(context); return fauxAssistantMessage("ok"); }]);
+  writePrompts(p, { active: "first", presets: [{ id: "first", name: "First", prompts: [
+    { id: "lead", name: "Lead", enabled: true, placement: "system", content: "LEAD PROMPT" },
+    { id: "builtin-base", name: "", enabled: false, placement: "system", content: "", builtin: "base" },
+    { id: "builtin-persona", name: "", enabled: false, placement: "system", content: "", builtin: "persona" },
+  ] }] });
+  const agent = await UserAgent.create("alice", svc, p, users, defaultInstanceConfig(), { sessionId: "order" });
+  await agent.run("Hi");
+  expect(system.indexOf("# Lead\\nLEAD PROMPT")).toBeGreaterThan(-1);
+  expect(system.indexOf("LEAD PROMPT")).toBeLessThan(system.indexOf("You are the personal agent"));
+  // the core part cannot be switched off; the persona can
+  expect(system).toContain("You are the personal agent");
+  expect(system).not.toContain("PERSONA TEXT");
+}, 20_000);
+
+it("starts from a Default preset holding every part of the agent's own prompt", () => {
+  const p = bootstrapUserDir(root, "bob");
+  const file = readPrompts(p);
+  expect(file.active).toBe("default");
+  expect(file.presets[0]?.prompts.map((q) => q.builtin)).toEqual([...BUILTIN_SECTIONS]);
+  // a saved preset missing parts gets them back in their usual places
+  const filled = validatePromptsFile({ active: "a", presets: [{ id: "a", name: "A", prompts: [{ id: "x", name: "", enabled: true, placement: "system", content: "X" }] }] });
+  expect(filled.ok && filled.value.presets[0]?.prompts.map((q) => q.builtin ?? q.id)).toEqual([...BUILTIN_SECTIONS, "x"]);
+  // a file with nothing active keeps its presets and runs the shipped prompt
+  const none = validatePromptsFile({ active: null, presets: [{ id: "a", name: "A", prompts: [] }] });
+  expect(none.ok && [none.value.active, none.value.presets.map((q) => q.id)]).toEqual(["default", ["default", "a"]]);
+});
+
 it("refuses a malformed presets file", () => {
   expect(validatePromptsFile(presets("terse")).ok).toBe(true);
   expect(validatePromptsFile({ ...presets("terse"), active: "missing" }).ok).toBe(false);
-  expect(validatePromptsFile({ active: null, presets: [{ id: "a", name: "A", prompts: [{ id: "q", name: "", enabled: true, placement: "depth", content: "" }] }] }).ok).toBe(false);
-  expect(validatePromptsFile({ active: null, presets: [{ id: "a", name: "A", prompts: [] }, { id: "a", name: "B", prompts: [] }] }).ok).toBe(false);
+  expect(validatePromptsFile({ active: "a", presets: [{ id: "a", name: "A", prompts: [{ id: "q", name: "", enabled: true, placement: "depth", content: "" }] }] }).ok).toBe(false);
+  expect(validatePromptsFile({ active: "a", presets: [{ id: "a", name: "A", prompts: [] }, { id: "a", name: "B", prompts: [] }] }).ok).toBe(false);
+  expect(validatePromptsFile({ active: "a", presets: [{ id: "a", name: "A", prompts: [{ id: "b", name: "", enabled: true, placement: "system", content: "", builtin: "everything" }] }] }).ok).toBe(false);
   expect(PROMPTS_FILE).toBe("agent-prompts.json");
 });
 
@@ -81,11 +120,40 @@ it("imports a roleplay preset's prompts in order, with their on/off state and pl
       { identifier: "extra", enabled: false }, { identifier: "main", enabled: true },
       { identifier: "chatHistory", enabled: true }, { identifier: "jailbreak", enabled: true },
     ] }],
-  }, "file");
+  }, "file", BUILTIN_SECTIONS);
   expect(preset?.name).toBe("Story");
-  expect(preset?.prompts.map((p) => [p.name, p.enabled, p.placement])).toEqual([
+  // imported prompts sit after what the agent knows and before its mode
+  expect(preset?.prompts.map((p) => p.builtin ?? "x")).toEqual([...BUILTIN_SECTIONS.filter((s) => s !== "mode"), "x", "x", "x", "x", "mode"]);
+  expect(preset?.prompts.filter((p) => !p.builtin).map((p) => [p.name, p.enabled, p.placement])).toEqual([
     ["Extra", false, "system"], ["Main Prompt", true, "system"], ["Post-History", true, "message"], ["Unlisted", false, "system"],
   ]);
   expect(validatePromptsFile({ active: preset!.id, presets: [preset] }).ok).toBe(true);
-  expect(importPromptPreset({ prompts: [{ identifier: "chatHistory", marker: true }] }, "x")).toBeNull();
+  expect(importPromptPreset({ prompts: [{ identifier: "chatHistory", marker: true }] }, "x", BUILTIN_SECTIONS)).toBeNull();
+});
+
+it("shows each part's text and previews an unsaved preset through the settings API", async () => {
+  const { buildApp } = await import("../src/server/app.js");
+  const { EventBus } = await import("../src/server/ws.js");
+  const { SessionService } = await import("../src/sessions.js");
+  const users = new UserService(root);
+  users.create("admin", "admin", { password: "admin-pass-1" });
+  const token = users.create("alice", "user", { password: "test-pass-1" }).token;
+  const p = bootstrapUserDir(root, "alice");
+  fs.writeFileSync(p.persona, "PERSONA TEXT");
+  const app = buildApp({ users, sessions: new SessionService(root), config: defaultInstanceConfig(), dataDir: root, bus: new EventBus() });
+  const send = (method: string, route: string, body?: unknown) => app.request(route, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const view = await (await send("GET", "/v1/settings/agent-prompts")).json() as AgentPromptsFile & { builtin: Record<string, string>; parts: string[] };
+  expect(view.active).toBe("default");
+  expect(view.parts).toEqual([...BUILTIN_SECTIONS]);
+  expect(view.builtin.persona).toContain("PERSONA TEXT");
+  expect(view.builtin.base).toContain("You are the personal agent");
+  const draft = { ...view.presets[0]!, prompts: [
+    { id: "each", name: "", enabled: true, placement: "message", content: "Reply to {{user}} briefly." },
+    ...view.presets[0]!.prompts.map((q) => (q.builtin === "persona" ? { ...q, enabled: false } : q)),
+  ] };
+  const preview = await (await send("POST", "/v1/settings/agent-prompts/preview", { preset: draft })).json() as { system: string; message: string };
+  expect(preview.system).toContain("You are the personal agent");
+  expect(preview.system).not.toContain("PERSONA TEXT");
+  expect(preview.message).toContain("Reply to alice briefly.");
+  expect((await send("POST", "/v1/settings/agent-prompts/preview", { preset: { id: "x" } })).status).toBe(400);
 });

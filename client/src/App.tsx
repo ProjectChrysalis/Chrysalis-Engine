@@ -11,7 +11,7 @@ import { Icon } from "./ui/icon"
 import { IconButton } from "./ui/button"
 import { Button } from "./ui/button"
 import { api, prefs, authApi, appPluginsApi, connectionsApi, confirmAppFile, exportApp, previewAppFile, updatesApi, type AppImportPreview, type AuthUser } from "./api"
-import { SettingsBody, type TabValue } from "./settings"
+import { SettingsBody, type SettingsTarget } from "./settings"
 import { EngineUpdateButton } from "./server-settings"
 import type { LaunchInfo, Me, StoreApp } from "./types"
 import { StoreDialog, WelcomeApps, useStore } from "./store"
@@ -109,7 +109,7 @@ function Shell(props: { theme: "light" | "dark"; onTheme: () => void }) {
    * below must stay silent until then, or the empty pre-restore mount state
    * clobbers the session before it's read back */
   const [sessionLoaded, setSessionLoaded] = useState(false)
-  const [settingsTab, setSettingsTab] = useState<TabValue | null>(null)
+  const [settingsTab, setSettingsTab] = useState<SettingsTarget | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   // one plugins dialog for the whole shell: the app toolbar opens it on
   // desktop, the account menu on phones. The id outlives the close so the
@@ -129,7 +129,7 @@ function Shell(props: { theme: "light" | "dark"; onTheme: () => void }) {
       JSON.stringify({ tabs, active: active?.id ?? null, pinned: pinned?.id ?? null }),
     )
   }, [sessionLoaded, tabs, active, pinned])
-  const openSettings = (tab?: TabValue) => {
+  const openSettings = (tab?: SettingsTarget) => {
     setSettingsTab(tab ?? null)
     setSettingsOpen(true)
   }
@@ -279,7 +279,7 @@ function Shell(props: { theme: "light" | "dark"; onTheme: () => void }) {
         return;
       }
       if (e.data?.__chrysalisAgent === "settings") {
-        openSettings("api")
+        openSettings(e.data.tab === "agent-prompts" ? "agent-prompts" : "api")
         return
       }
       if ((e.data as { __chrysalisAgent?: unknown } | null)?.__chrysalisAgent !== "ready") return

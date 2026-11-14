@@ -64,6 +64,8 @@ export interface AgentState {
   models: EngineModel[]
   /** The model catalog has been read at least once (an empty list is then real). */
   modelsLoaded: boolean
+  /** Bumped when the prompt presets change anywhere, so pickers read them again. */
+  promptsVersion: number
   model: string | null
   reasoning: string
   modelOverrides: Record<string, AgentModelOverrides>
@@ -174,6 +176,7 @@ export const useAgent = create<AgentState>()((set, get) => {
     ask: null,
     models: [],
     modelsLoaded: false,
+    promptsVersion: 0,
     model: prefs.get("agent-ui-model"),
     reasoning: prefs.get("agent-ui-reasoning") ?? "",
     mode: storedMode(),
@@ -614,6 +617,10 @@ export function connectWs(): void {
         useAgent.setState({ reasoning })
       }
       if (msg.payload?.agentModels) useAgent.setState({ modelOverrides: msg.payload.agentModels, usage: null })
+      return
+    }
+    if (msg.type === "agent_prompts_changed") {
+      useAgent.setState((s) => ({ promptsVersion: s.promptsVersion + 1 }))
       return
     }
     if (msg.type === "connections_changed") {

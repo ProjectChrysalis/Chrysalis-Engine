@@ -24,6 +24,7 @@ import {
   type AgentPrompt,
   type AgentPromptPreset,
   type AgentPromptsFile,
+  type BuiltinSection,
   prefs,
   authApi,
   adminUsersApi,
@@ -47,7 +48,7 @@ import { SpendingTab } from "./spending-settings"
 import { OpenRouterRoutingEditor } from "./openrouter-routing"
 import { routingDraft, routingBody, isOpenRouterConnection } from "./openrouter-routing-state"
 import { LOCALES, setLocale, tr, useLocale, type Locale } from "./i18n/index"
-import { importPromptPreset } from "./agent-prompt-import"
+import { importPromptPreset, withAgentParts } from "./agent-prompt-import"
 
 export const inputClass =
   "min-w-0 flex-1 rounded-lg border border-line bg-panel px-3 py-1.5 text-13 text-ink outline-none placeholder:text-ink-faint focus:border-line-focus"
@@ -89,9 +90,12 @@ type OAuthPick = { id: string; providerId: string; label: string; kind: "builtin
 type ProviderPick = EngineProvider | CustomPick | OAuthPick | LocalPick
 
 export type TabValue = "general" | "api" | "speech" | "agent" | "mcp" | "backups" | "spending" | "server" | "users"
+/** A tab, or a place inside one that a link opens on. */
+export type SettingsTarget = TabValue | "agent-prompts"
 
-export function SettingsBody(props: { onClose: () => void; me: Me; initialTab?: TabValue | null; onLogout: () => void }) {
-  const [tab, setTab] = useState<TabValue>(props.initialTab ?? "general")
+export function SettingsBody(props: { onClose: () => void; me: Me; initialTab?: SettingsTarget | null; onLogout: () => void }) {
+  const [tab, setTab] = useState<TabValue>(props.initialTab === "agent-prompts" ? "agent" : props.initialTab ?? "general")
+  const agentSection = props.initialTab === "agent-prompts" ? "instructions" : "generation"
   const tabs: Array<{ value: TabValue; label: string; icon: ReactNode }> = [
     { value: "general", label: tr("General"), icon: <IconSmall name="outline-sliders" /> },
     { value: "api", label: tr("API connections"), icon: <Icon name="cloud-upload" /> },
@@ -124,7 +128,7 @@ export function SettingsBody(props: { onClose: () => void; me: Me; initialTab?: 
       {v === "general" && <GeneralTab me={props.me} onLogout={props.onLogout} />}
       {v === "api" && <ApiTab />}
       {v === "speech" && <SpeechTab />}
-      {v === "agent" && <AgentTab />}
+      {v === "agent" && <AgentTab section={agentSection} />}
       {v === "mcp" && <McpTab />}
       {v === "backups" && <BackupsTab me={props.me} />}
       {v === "spending" && <SpendingTab />}
@@ -167,7 +171,7 @@ export function SettingsBody(props: { onClose: () => void; me: Me; initialTab?: 
             <SpeechTab />
           </Tabs.Content>
           <Tabs.Content value="agent" className="no-scrollbar">
-            <AgentTab />
+            <AgentTab section={agentSection} />
           </Tabs.Content>
           <Tabs.Content value="mcp" className="no-scrollbar">
             <McpTab />
@@ -562,10 +566,10 @@ function GeneralTab(props: { me: Me; onLogout: () => void }) {
   )
 }
 
-function AgentTab() {
+function AgentTab(props: { section: string }) {
   return (
     <Pane title={tr("Agent")} description={tr("Configure the built-in agent.")}>
-      <AgentSettingsProvider><Tabs variant="section" defaultValue="generation">
+      <AgentSettingsProvider><Tabs variant="section" defaultValue={props.section}>
         <Tabs.List aria-label={tr("Agent")}>
           <Tabs.Trigger value="generation">{tr("Generation")}</Tabs.Trigger>
           <Tabs.Trigger value="instructions">{tr("Instructions")}</Tabs.Trigger>
@@ -629,20 +633,43 @@ function AgentInstructions() {
   )
 }
 
-const NO_PRESET = "__none"
+const partLabel = (part: BuiltinSection): string => ({
+  base: tr("Agent core"),
+  apps: tr("Installed apps"),
+  app: tr("App skills"),
+  docs: tr("Workspace rules"),
+  notes: tr("Notes"),
+  persona: tr("Agent instructions"),
+  mode: tr("Work or plan mode"),
+})[part]
+
+const partHint = (part: BuiltinSection): string => ({
+  base: tr("Tools, workspace layout and rules. Always on."),
+  apps: tr("The apps you have installed."),
+  app: tr("Skills of the app a conversation is about. Empty outside an app."),
+  docs: tr("AGENTS.md and the open app's instructions."),
+  notes: tr("The list of files in notes/."),
+  persona: tr("The text in the box above."),
+  mode: tr("How to act in Work or Plan mode. Always on."),
+})[part]
 
 function AgentPromptPresets() {
   const saved = useResource(() => agentPromptsApi.get())
   const [draft, setDraft] = useState<AgentPromptsFile | null>(null)
+  const [open, setOpen] = useState<ReadonlySet<string>>(new Set())
+  const [preview, setPreview] = useState<{ system: string; message: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState(false)
   const [err, setErr] = useState("")
   const fileInput = useRef<HTMLInputElement>(null)
-  const file: AgentPromptsFile = draft ?? saved.data ?? { active: null, presets: [] }
-  const preset = file.presets.find((p) => p.id === file.active)
-  const edit = (next: AgentPromptsFile) => { setDraft(next); setDone(false); setErr("") }
+  const view = saved.data
+  if (!view) return null
+  const file: AgentPromptsFile = draft ?? view
+  const preset = file.presets.find((p) => p.id === file.active) ?? file.presets[0]
+  if (!preset) return null
+  const edit = (next: AgentPromptsFile) => { setDraft({ active: next.active, presets: next.presets }); setPreview(null); setDone(false); setErr("") }
   const editPreset = (change: (p: AgentPromptPreset) => AgentPromptPreset) =>
-    edit({ ...file, presets: file.presets.map((p) => (p.id === file.active ? change(p) : p)) })
+    edit({ ...file, presets: file.presets.map((p) => (p.id === preset.id ? change(p) : p)) })
   const editPrompt = (id: string, patch: Partial<AgentPrompt>) =>
     editPreset((p) => ({ ...p, prompts: p.prompts.map((q) => (q.id === id ? { ...q, ...patch } : q)) }))
   const move = (index: number, by: number) => editPreset((p) => {
@@ -651,12 +678,22 @@ function AgentPromptPresets() {
     if (item) prompts.splice(index + by, 0, item)
     return { ...p, prompts }
   })
+  const toggle = (id: string) => setOpen((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
   const add = (next: AgentPromptPreset) => edit({ active: next.id, presets: [...file.presets, next] })
+  const custom = preset.prompts.filter((q) => !q.builtin).length
+  const textOf = (q: AgentPrompt) => (q.builtin ? view.builtin[q.builtin] ?? "" : q.content)
+  const showPreview = async () => {
+    try {
+      setPreview(await agentPromptsApi.preview(preset))
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   const importFile = async (picked: File | undefined) => {
     if (!picked) return
     try {
-      const imported = importPromptPreset(JSON.parse(await picked.text()), picked.name.replace(/\.json$/i, ""))
+      const imported = importPromptPreset(JSON.parse(await picked.text()), picked.name.replace(/\.json$/i, ""), view.parts)
       if (!imported) setErr(tr("That file has no prompts to import."))
       else add(imported)
     } catch {
@@ -669,7 +706,8 @@ function AgentPromptPresets() {
     setBusy(true)
     setErr("")
     try {
-      saved.mutate(await agentPromptsApi.put(draft))
+      const stored = await agentPromptsApi.put(draft)
+      saved.mutate({ ...view, ...stored })
       setDraft(null)
       setDone(true)
       setTimeout(() => setDone(false), 1500)
@@ -683,52 +721,93 @@ function AgentPromptPresets() {
   return (
     <div className="flex flex-col gap-2">
       <h3 className="text-13 font-medium text-ink">{tr("Prompt presets")}</h3>
-      <p className="text-12 text-ink-muted">{tr("The active preset's prompts go with every agent conversation.")}</p>
+      <p className="text-12 text-ink-muted">{tr("Everything the agent is told, in order. New conversations use the active preset.")}</p>
       <div className="flex flex-wrap items-center gap-2">
+        <span className="text-12 text-ink-muted">{tr("Active")}</span>
         <Select
           appearance="inline"
           className="min-w-40"
-          options={[NO_PRESET, ...file.presets.map((p) => p.id)]}
-          current={file.active ?? NO_PRESET}
-          label={(id) => (id === NO_PRESET ? tr("No preset") : file.presets.find((p) => p.id === id)?.name ?? id)}
-          onSelect={(id) => edit({ ...file, active: !id || id === NO_PRESET ? null : id })}
+          options={file.presets.map((p) => p.id)}
+          current={preset.id}
+          label={(id) => file.presets.find((p) => p.id === id)?.name ?? id}
+          onSelect={(id) => id && edit({ ...file, active: id })}
         />
-        <Button variant="ghost" size="normal" onClick={() => add({ id: crypto.randomUUID(), name: tr("New preset"), prompts: [] })}>{tr("New preset")}</Button>
-        {preset ? <Button variant="ghost" size="normal" onClick={() => add({ ...preset, id: crypto.randomUUID(), name: `${preset.name} 2`, prompts: preset.prompts.map((q) => ({ ...q, id: crypto.randomUUID() })) })}>{tr("Duplicate")}</Button> : null}
+        <Button variant="ghost" size="normal" onClick={() => add({ id: crypto.randomUUID(), name: tr("New preset"), prompts: withAgentParts([], view.parts) })}>{tr("New preset")}</Button>
+        <Button variant="ghost" size="normal" onClick={() => add({ ...preset, id: crypto.randomUUID(), name: `${preset.name} 2`, prompts: preset.prompts.map((q) => (q.builtin ? q : { ...q, id: crypto.randomUUID() })) })}>{tr("Duplicate")}</Button>
         <Button variant="ghost" size="normal" onClick={() => fileInput.current?.click()}>{tr("Import")}</Button>
         <input ref={fileInput} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { void importFile(e.currentTarget.files?.[0]); e.currentTarget.value = "" }} />
       </div>
-      {preset ? <div className="flex flex-col gap-2">
-          <div className="flex items-center gap-2">
-            <input className={cn(inputClass, "flex-1")} aria-label={tr("Name")} value={preset.name} onChange={(e) => { const name = e.currentTarget.value; editPreset((p) => ({ ...p, name })) }} />
-            <IconButton icon={<Icon name="trash" />} variant="ghost-muted" size="small" title={tr("Delete")} onClick={() => edit({ active: null, presets: file.presets.filter((p) => p.id !== preset.id) })} />
-          </div>
-          {preset.prompts.map((q, i) => (
-            <div key={q.id} className="flex flex-col gap-1.5 rounded-lg border border-line p-2.5">
+      <div className="flex items-center gap-2">
+        <input className={cn(inputClass, "flex-1")} aria-label={tr("Preset name")} value={preset.name} onChange={(e) => { const name = e.currentTarget.value; editPreset((p) => ({ ...p, name })) }} />
+        <IconButton icon={<Icon name="trash" />} variant="ghost-muted" size="small" title={tr("Delete preset")} disabled={file.presets.length < 2} onClick={() => { const presets = file.presets.filter((p) => p.id !== preset.id); edit({ active: presets[0]?.id ?? "", presets }) }} />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        {preset.prompts.map((q, i) => {
+          const locked = !!q.builtin && view.locked.includes(q.builtin)
+          const expanded = open.has(q.id)
+          const text = textOf(q)
+          return (
+            <div key={q.id} className={cn("flex flex-col gap-1.5 rounded-lg border border-line p-2", !q.enabled && "opacity-60")}>
               <div className="flex items-center gap-2">
-                <input type="checkbox" className="size-4 accent-[var(--c-contrast)]" aria-label={tr("On")} checked={q.enabled} onChange={(e) => editPrompt(q.id, { enabled: e.currentTarget.checked })} />
-                <input className={cn(inputClass, "min-w-0 flex-1")} aria-label={tr("Name")} placeholder={tr("Name")} value={q.name} onChange={(e) => editPrompt(q.id, { name: e.currentTarget.value })} />
-                <Select
-                  appearance="inline"
-                  options={["system", "message"] as AgentPrompt["placement"][]}
-                  current={q.placement}
-                  label={(x) => (x === "system" ? tr("System prompt") : tr("Each message"))}
-                  onSelect={(x) => x && editPrompt(q.id, { placement: x })}
-                />
+                <input type="checkbox" className="size-4 accent-[var(--c-contrast)]" aria-label={tr("On")} title={locked ? tr("Always on") : undefined} checked={q.enabled} disabled={locked} onChange={(e) => editPrompt(q.id, { enabled: e.currentTarget.checked })} />
+                <button type="button" className="flex min-w-0 flex-1 items-center gap-1.5 text-left" aria-expanded={expanded} onClick={() => toggle(q.id)}>
+                  <IconSmall name={expanded ? "chevron-down" : "chevron-right"} />
+                  <span className="truncate text-13 text-ink">{q.builtin ? partLabel(q.builtin) : q.name.trim() || tr("Untitled prompt")}</span>
+                  <span className="shrink-0 rounded border border-line px-1.5 text-11 text-ink-muted">
+                    {q.builtin ? tr("Built in") : q.placement === "system" ? tr("System prompt") : tr("Each message")}
+                  </span>
+                  <span className="shrink-0 text-11 text-ink-faint">{text.length ? tr("{n} chars", { n: text.length.toLocaleString() }) : tr("Empty")}</span>
+                </button>
                 <IconButton icon={<IconSmall name="chevron-up" />} variant="ghost-muted" size="small" title={tr("Move up")} disabled={i === 0} onClick={() => move(i, -1)} />
                 <IconButton icon={<IconSmall name="chevron-down" />} variant="ghost-muted" size="small" title={tr("Move down")} disabled={i === preset.prompts.length - 1} onClick={() => move(i, 1)} />
-                <IconButton icon={<IconSmall name="outline-xmark" />} variant="ghost-muted" size="small" title={tr("Delete")} onClick={() => editPreset((p) => ({ ...p, prompts: p.prompts.filter((x) => x.id !== q.id) }))} />
+                {q.builtin ? null : <IconButton icon={<IconSmall name="outline-xmark" />} variant="ghost-muted" size="small" title={tr("Delete")} onClick={() => editPreset((p) => ({ ...p, prompts: p.prompts.filter((x) => x.id !== q.id) }))} />}
               </div>
-              <textarea
-                className="min-h-[96px] w-full resize-y rounded-lg border border-line bg-panel px-3 py-2 text-13 leading-5 text-ink outline-none placeholder:text-ink-faint focus:border-line-focus"
-                placeholder={tr("Prompt text. {{user}} becomes your name.")}
-                value={q.content}
-                onChange={(e) => editPrompt(q.id, { content: e.currentTarget.value })}
-              />
+              {expanded && q.builtin ? <>
+                <p className="text-12 text-ink-muted">{partHint(q.builtin)}</p>
+                {text ? <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-panel px-3 py-2 text-12 leading-5 text-ink">{text}</pre> : null}
+              </> : null}
+              {expanded && !q.builtin ? <>
+                <div className="flex items-center gap-2">
+                  <input className={cn(inputClass, "min-w-0 flex-1")} aria-label={tr("Name")} placeholder={tr("Name")} value={q.name} onChange={(e) => editPrompt(q.id, { name: e.currentTarget.value })} />
+                  <Select
+                    appearance="inline"
+                    options={["system", "message"] as AgentPrompt["placement"][]}
+                    current={q.placement}
+                    label={(x) => (x === "system" ? tr("System prompt") : tr("Each message"))}
+                    onSelect={(x) => x && editPrompt(q.id, { placement: x })}
+                  />
+                </div>
+                <textarea
+                  className="min-h-[96px] w-full resize-y rounded-lg border border-line bg-panel px-3 py-2 text-13 leading-5 text-ink outline-none placeholder:text-ink-faint focus:border-line-focus"
+                  placeholder={tr("Prompt text. {{user}} becomes your name.")}
+                  value={q.content}
+                  onChange={(e) => editPrompt(q.id, { content: e.currentTarget.value })}
+                />
+              </> : null}
             </div>
-          ))}
-          <Button variant="ghost" size="normal" className="self-start" disabled={preset.prompts.length >= 100} onClick={() => editPreset((p) => ({ ...p, prompts: [...p.prompts, { id: crypto.randomUUID(), name: "", enabled: true, placement: "system", content: "" }] }))}>{tr("Add prompt")}</Button>
-        </div> : null}
+          )
+        })}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="ghost" size="normal" disabled={custom >= 100} onClick={() => {
+          const id = crypto.randomUUID()
+          const prompt: AgentPrompt = { id, name: "", enabled: true, placement: "system", content: "" }
+          editPreset((p) => {
+            const mode = p.prompts.findIndex((x) => x.builtin === "mode")
+            const prompts = [...p.prompts]
+            prompts.splice(mode < 0 ? prompts.length : mode, 0, prompt)
+            return { ...p, prompts }
+          })
+          setOpen((s) => new Set(s).add(id))
+        }}>{tr("Add prompt")}</Button>
+        <Button variant="ghost" size="normal" onClick={() => (preview ? setPreview(null) : void showPreview())}>{preview ? tr("Hide full prompt") : tr("Show full prompt")}</Button>
+      </div>
+      {preview ? <div className="flex flex-col gap-1.5">
+        <span className="text-12 text-ink-muted">{tr("System prompt, {n} chars", { n: preview.system.length.toLocaleString() })}</span>
+        <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-panel px-3 py-2 text-12 leading-5 text-ink">{preview.system}</pre>
+        <span className="text-12 text-ink-muted">{preview.message ? tr("Added to each message, {n} chars", { n: preview.message.length.toLocaleString() }) : tr("Nothing is added to your messages.")}</span>
+        {preview.message ? <pre className="max-h-60 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-panel px-3 py-2 text-12 leading-5 text-ink">{preview.message}</pre> : null}
+      </div> : null}
       <div className="flex items-center gap-2">
         <Button variant="neutral" size="normal" disabled={!draft || busy} onClick={save}>{tr("Save presets")}</Button>
         {draft ? <Button variant="ghost" size="normal" onClick={() => { setDraft(null); setErr("") }}>{tr("Discard")}</Button> : null}
