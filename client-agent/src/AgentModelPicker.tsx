@@ -1,7 +1,7 @@
 import { tr } from "@/i18n"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useAui } from "@assistant-ui/react"
-import { CaretDown, Check, Star } from "@phosphor-icons/react"
+import { ChevronDown, Check, Star } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
@@ -63,7 +63,7 @@ export function AgentModelPicker() {
     <Dialog open={open} onOpenChange={(next) => { setOpen(next); if (next) { setQuery(""); setConnection("") } }}>
       <DialogTrigger render={<Button variant="ghost" size="sm" className="agent-composer-model" />} aria-label={tr("Models")}>
         <span className="truncate">{model ? shortModelName(model.label) : tr("Models")}</span>
-        <CaretDown className="size-3 shrink-0" />
+        <ChevronDown className="size-3 shrink-0" />
       </DialogTrigger>
       <DialogContent ref={popup} className="flex h-[min(640px,calc(100dvh-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl" initialFocus={(interaction) => interaction === "touch" || window.matchMedia("(max-width: 767px), (pointer: coarse)").matches ? popup.current : input.current}>
         <div className="shrink-0 px-4 pt-4 pb-3 pr-12">
@@ -94,7 +94,7 @@ export function AgentModelPicker() {
                         <div className="text-muted-foreground mt-0.5 break-all text-xs">{item.connectionName ?? item.provider}{"·"}{item.modelId}</div>
                       </div>
                     </CommandItem>
-                    <Button variant="ghost" size="icon" className="size-9 shrink-0" aria-label={`${favorite ? tr("Remove favorite") : tr("Favorite")}: ${item.label} (${item.connectionName ?? item.provider})`} aria-pressed={favorite} onClick={() => toggleFavorite(id)}><Star className="size-4" weight={favorite ? "fill" : "regular"} /></Button>
+                    <Button variant="ghost" size="icon" className="size-9 shrink-0" aria-label={`${favorite ? tr("Remove favorite") : tr("Favorite")}: ${item.label} (${item.connectionName ?? item.provider})`} aria-pressed={favorite} onClick={() => toggleFavorite(id)}><Star className="size-4" fill={favorite ? "currentColor" : "none"} /></Button>
                   </div>
                 })}
               </CommandGroup>)}

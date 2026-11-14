@@ -1,6 +1,6 @@
 import { tr } from "@/i18n"
 import { useEffect, useState } from "react"
-import { Broom, Plus, TextAa } from "@phosphor-icons/react"
+import { Eraser, Plus, Type } from "lucide-react"
 import { ComposerPrimitive, unstable_useComposerInput, unstable_useSlashCommandAdapter } from "@assistant-ui/react"
 import type { ReactNode } from "react"
 import { agentCommands, appSkills, engineSkills, type UserCommand } from "./api"
@@ -9,8 +9,8 @@ import { useAgent } from "./store"
 /** Icon shown next to a command in the "/" menu. */
 function commandIcon(id: string): ReactNode {
   if (id === "new") return <Plus size={15} />
-  if (id === "compact") return <Broom size={15} />
-  return <TextAa size={15} />
+  if (id === "compact") return <Eraser size={15} />
+  return <Type size={15} />
 }
 
 /**

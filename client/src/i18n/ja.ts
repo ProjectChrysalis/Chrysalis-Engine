@@ -833,6 +833,21 @@ const dict = {
   "Check now": "今すぐ確認",
   "Get new models without waiting for an update": "アップデートを待たずに新しいモデルを取得",
   "Checked daily, OpenRouter hourly. Only model names, prices and limits are downloaded.": "毎日確認します（OpenRouter は 1 時間ごと）。モデル名、価格、上限だけをダウンロードします。",
+  "Ran": "実行",
+  "Read": "読み取り",
+  "Read output": "出力を読み取り",
+  "Searched": "検索",
+  "Wrote": "書き込み",
+  "Undid": "元に戻した",
+  "Requested": "リクエスト",
+  "Rebuilt": "再ビルド",
+  "Checked": "確認",
+  "Inspected": "検査",
+  "Read console": "コンソールを読み取り",
+  "Loaded skill": "スキルを読み込み",
+  "Read docs": "ドキュメントを読み取り",
+  "Asked": "質問",
+  "now": "今",
 }
 
 export default dict

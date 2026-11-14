@@ -1,6 +1,6 @@
 import { tr } from "@/i18n"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { File as FileIcon } from "@phosphor-icons/react"
+import { File as FileIcon } from "lucide-react"
 import { ComposerPrimitive } from "@assistant-ui/react"
 import type { Unstable_TriggerAdapter } from "@assistant-ui/core"
 import type { ReactNode } from "react"

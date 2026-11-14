@@ -2,7 +2,7 @@ import { tr } from "@/i18n"
 "use client";
 
 import { memo, useState } from "react";
-import { WarningCircle, Check, CaretDown, CircleNotch, XCircle } from "@phosphor-icons/react";
+import { AppWindow, BookOpen, CircleAlert, CircleHelp, CircleX, ChevronDown, FilePen, FilePlus, FileText, Globe, Hammer, LoaderCircle, Search, SquareTerminal, Undo2, Wrench, type LucideIcon } from "lucide-react";
 import {
   useToolCallElapsed,
   type ToolApprovalOption,
@@ -75,13 +75,25 @@ function ToolFallbackRoot({
   );
 }
 
-type ToolStatus = ToolCallMessagePartStatus["type"];
 
-const statusIconMap: Record<ToolStatus, React.ElementType> = {
-  running: CircleNotch,
-  complete: Check,
-  incomplete: XCircle,
-  "requires-action": WarningCircle,
+/** What a known tool did, as a verb, and the glyph for its kind. Anything
+ *  else shows under its own name. */
+const TOOL_KINDS: Record<string, { label: () => string; icon: LucideIcon }> = {
+  bash: { label: () => tr("Ran"), icon: SquareTerminal },
+  read_file: { label: () => tr("Read"), icon: FileText },
+  tool_output: { label: () => tr("Read output"), icon: FileText },
+  grep: { label: () => tr("Searched"), icon: Search },
+  edit_file: { label: () => tr("Edited"), icon: FilePen },
+  write_file: { label: () => tr("Wrote"), icon: FilePlus },
+  undo_change: { label: () => tr("Undid"), icon: Undo2 },
+  app_request: { label: () => tr("Requested"), icon: Globe },
+  app_rebuild: { label: () => tr("Rebuilt"), icon: Hammer },
+  app_check: { label: () => tr("Checked"), icon: AppWindow },
+  app_inspect: { label: () => tr("Inspected"), icon: AppWindow },
+  app_console: { label: () => tr("Read console"), icon: AppWindow },
+  skill_load: { label: () => tr("Loaded skill"), icon: BookOpen },
+  skill_read: { label: () => tr("Read docs"), icon: BookOpen },
+  ask_user: { label: () => tr("Asked"), icon: CircleHelp },
 };
 
 const formatToolDuration = (ms: number) => {
@@ -144,14 +156,16 @@ function ToolFallbackTrigger({
   const isCancelled =
     status?.type === "incomplete" && status.reason === "cancelled";
 
-  const Icon = isError && !isRunning ? XCircle : statusIconMap[statusType];
+  const kind = TOOL_KINDS[toolName];
+  const failed = (isError || statusType === "incomplete") && !isRunning && !isCancelled;
+  const Icon = isRunning ? LoaderCircle : failed ? CircleX : statusType === "requires-action" ? CircleAlert : (kind?.icon ?? Wrench);
   const preview = argPreview(args);
 
   return (
     <CollapsibleTrigger
       data-slot="tool-fallback-trigger"
       className={cn(
-        "aui-tool-fallback-trigger group/trigger text-muted-foreground hover:text-foreground flex w-full min-w-0 origin-left items-center gap-2 py-1 text-sm transition-[color,scale] active:scale-[0.99]",
+        "aui-tool-fallback-trigger group/trigger text-muted-foreground hover:bg-accent hover:text-foreground -mx-2 flex h-8 w-[calc(100%+1rem)] min-w-0 items-center gap-2 rounded-(--control-radius) px-2 text-[0.8125rem] transition-colors pointer-coarse:h-10",
         className,
       )}
       {...props}
@@ -159,32 +173,33 @@ function ToolFallbackTrigger({
       <Icon
         data-slot="tool-fallback-trigger-icon"
         className={cn(
-          "aui-tool-fallback-trigger-icon size-3.5 shrink-0",
-          isError && !isRunning && "text-destructive",
+          "aui-tool-fallback-trigger-icon text-muted-foreground/80 size-3.5 shrink-0",
+          failed && "text-destructive",
           isRunning && "animate-spin [animation-duration:0.6s]",
         )}
       />
       <span
         data-slot="tool-fallback-trigger-label"
         className={cn(
-          "aui-tool-fallback-trigger-label-wrapper text-foreground/85 shrink-0 font-mono text-xs leading-none font-medium",
+          "aui-tool-fallback-trigger-label-wrapper text-foreground/85 shrink-0 leading-none",
+          !kind && "font-mono text-xs",
           isCancelled && "line-through opacity-60",
           isRunning && "shimmer motion-reduce:animate-none",
         )}
       >
-        {toolName}
+        {kind ? kind.label() : toolName}
       </span>
       {preview ? (
-        <span className="min-w-0 truncate font-mono text-xs leading-none" title={preview}>
+        <span className="text-muted-foreground min-w-0 truncate font-mono text-xs leading-none" title={preview}>
           {preview}
         </span>
       ) : null}
       <span className="flex-1" />
       <ToolFallbackDuration />
-      <CaretDown
+      <ChevronDown
         data-slot="tool-fallback-trigger-chevron"
         className={cn(
-          "aui-tool-fallback-trigger-chevron size-4 shrink-0",
+          "aui-tool-fallback-trigger-chevron text-muted-foreground/60 size-3.5 shrink-0",
           "transition-transform duration-(--animation-duration) ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
           "-rotate-90",
           "group-data-open/trigger:rotate-0",
@@ -244,7 +259,7 @@ function ToolFallbackArgs({
       className={cn("aui-tool-fallback-args", className)}
       {...props}
     >
-      <pre tabIndex={0} role="region" aria-label={tr("Tool arguments")} className="aui-tool-fallback-args-value bg-muted/50 text-foreground/90 max-h-48 overflow-auto overscroll-contain rounded-md p-2.5 text-xs whitespace-pre-wrap break-words">
+      <pre tabIndex={0} role="region" aria-label={tr("Tool arguments")} className="aui-tool-fallback-args-value bg-code border-border/60 text-foreground/90 max-h-48 overflow-auto overscroll-contain rounded-(--control-radius) border p-2.5 font-mono text-xs leading-5 whitespace-pre-wrap break-words">
         {argsText}
       </pre>
     </div>
@@ -267,7 +282,7 @@ function ToolFallbackResult({
       {...props}
     >
       <p className="aui-tool-fallback-result-header text-muted-foreground text-xs font-medium">{tr("Output")}</p>
-      <pre tabIndex={0} role="region" aria-label={tr("Output")} className="aui-tool-fallback-result-content bg-muted/50 text-foreground/90 mt-1 max-h-[min(24rem,50dvh)] overflow-auto overscroll-contain rounded-md p-2.5 text-xs whitespace-pre-wrap break-words">
+      <pre tabIndex={0} role="region" aria-label={tr("Output")} className="aui-tool-fallback-result-content bg-code border-border/60 text-foreground/90 mt-1 max-h-96 overflow-auto overscroll-contain rounded-(--control-radius) border p-2.5 font-mono text-xs leading-5 whitespace-pre-wrap break-words">
         {typeof result === "string" ? result : JSON.stringify(result, null, 2)}
       </pre>
     </div>

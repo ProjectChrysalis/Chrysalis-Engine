@@ -2,7 +2,7 @@
 
 import { memo, type FC } from "react";
 import { cva, type VariantProps } from "class-variance-authority";
-import { BracketsCurly, DownloadSimple, File as FileIcon, FileText, Image as ImageIcon, MusicNotes, VideoCamera } from "@phosphor-icons/react";
+import { Braces, Download, File as FileIcon, FileText, Image as ImageIcon, Music, Video } from "lucide-react";
 import type { FileMessagePartComponent } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 
@@ -37,16 +37,16 @@ function getMimeTypeIcon(mimeType: string): FC<{ className?: string }> {
     return FileText;
   }
   if (type === "application/json") {
-    return BracketsCurly;
+    return Braces;
   }
   if (type.startsWith("text/")) {
     return FileText;
   }
   if (type.startsWith("audio/")) {
-    return MusicNotes;
+    return Music;
   }
   if (type.startsWith("video/")) {
-    return VideoCamera;
+    return Video;
   }
   return FileIcon;
 }
@@ -193,7 +193,7 @@ function FileDownload({
       )}
       {...props}
     >
-      {children || <DownloadSimple className="size-4" />}
+      {children || <Download className="size-4" />}
     </a>
   );
 }

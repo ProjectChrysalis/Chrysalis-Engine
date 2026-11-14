@@ -833,6 +833,21 @@ const dict = {
   "Check now": "지금 확인",
   "Get new models without waiting for an update": "업데이트를 기다리지 않고 새 모델 받기",
   "Checked daily, OpenRouter hourly. Only model names, prices and limits are downloaded.": "매일 확인합니다. OpenRouter는 매시간 확인합니다. 모델 이름, 가격, 한도만 내려받습니다.",
+  "Ran": "실행함",
+  "Read": "읽음",
+  "Read output": "출력 읽음",
+  "Searched": "검색함",
+  "Wrote": "작성함",
+  "Undid": "되돌림",
+  "Requested": "요청함",
+  "Rebuilt": "다시 빌드함",
+  "Checked": "확인함",
+  "Inspected": "검사함",
+  "Read console": "콘솔 읽음",
+  "Loaded skill": "스킬 불러옴",
+  "Read docs": "문서 읽음",
+  "Asked": "질문함",
+  "now": "방금",
 }
 
 export default dict

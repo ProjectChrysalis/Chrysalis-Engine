@@ -6,10 +6,10 @@ import {
   type ThreadMessage,
 } from "@assistant-ui/react"
 import { Thread } from "@/components/assistant-ui/elements/thread.aui"
-import { ThreadList } from "@/components/assistant-ui/elements/thread-list.aui"
+import { ThreadList, ThreadListNew } from "@/components/assistant-ui/elements/thread-list.aui"
 import { useEffect, useMemo, type ReactNode } from "react"
 import { Dialog } from "@base-ui/react/dialog"
-import { X } from "@phosphor-icons/react"
+import { SquarePen, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { AgentAttachmentAdapter } from "./attachments"
 import { Header } from "./Header"
@@ -123,18 +123,22 @@ export default function App(): ReactNode {
     <AssistantRuntimeProvider runtime={runtime} config={toolConfig}>
       <div className="bg-background text-foreground flex h-dvh overflow-hidden">
         <aside aria-label={tr("Conversations")} className={`bg-sidebar text-sidebar-foreground w-64 shrink-0 flex-col border-r ${sidebarPinned ? "hidden md:flex" : "hidden"}`}>
-          <div className="flex h-12 shrink-0 items-center px-4 text-sm font-semibold">Chrysalis</div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-2"><ThreadList /></div>
+          <div className="flex h-[52px] shrink-0 items-center gap-1 ps-4 pe-2">
+            <span className="flex-1 text-sm font-semibold tracking-tight">Chrysalis</span>
+            <NewChatButton />
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2"><ThreadList /></div>
         </aside>
         <Dialog.Root open={sidebarOpen} onOpenChange={setSidebar}>
           <Dialog.Portal>
             <Dialog.Backdrop className="fixed inset-0 z-40 bg-black/40" />
             <Dialog.Popup finalFocus={() => document.getElementById("agent-sidebar-toggle")} className="bg-sidebar text-sidebar-foreground fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col border-r outline-none">
-              <div className="flex h-14 shrink-0 items-center justify-between px-4">
-                <Dialog.Title className="text-sm font-semibold">{tr("Conversations")}</Dialog.Title>
-                <Dialog.Close render={<Button variant="ghost" size="icon" aria-label={tr("Close sidebar")} />}><X size={18} /></Dialog.Close>
+              <div className="flex h-[52px] shrink-0 items-center gap-1 ps-4 pe-2 pt-[env(safe-area-inset-top)]">
+                <Dialog.Title className="flex-1 text-sm font-semibold tracking-tight">{tr("Conversations")}</Dialog.Title>
+                <NewChatButton />
+                <Dialog.Close render={<Button variant="ghost" size="icon" aria-label={tr("Close sidebar")} />}><X /></Dialog.Close>
               </div>
-              <div className="min-h-0 flex-1 overflow-y-auto p-2"><ThreadList /></div>
+              <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]"><ThreadList /></div>
             </Dialog.Popup>
           </Dialog.Portal>
         </Dialog.Root>
@@ -156,5 +160,13 @@ export default function App(): ReactNode {
         </main>
       </div>
     </AssistantRuntimeProvider>
+  )
+}
+
+function NewChatButton() {
+  return (
+    <ThreadListNew size="icon" className="text-muted-foreground hover:text-foreground size-8 justify-center px-0" aria-label={tr("New chat")} title={tr("New chat")}>
+      <SquarePen />
+    </ThreadListNew>
   )
 }

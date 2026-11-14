@@ -2,7 +2,7 @@ import { tr } from "@/i18n"
 "use client";
 
 import { useEffect, useRef, useState, type FC, type PropsWithChildren } from "react";
-import { Brain, CaretDown, CircleNotch, Wrench } from "@phosphor-icons/react";
+import { Brain, ChevronDown, LoaderCircle, Wrench } from "lucide-react";
 import { useAuiState } from "@assistant-ui/react";
 import {
   Collapsible,
@@ -66,7 +66,7 @@ export const ChainOfThought: FC<
   ]
     .filter(Boolean)
     .join(" · ");
-  const Icon = running ? CircleNotch : toolCount ? Wrench : Brain;
+  const Icon = running ? LoaderCircle : toolCount ? Wrench : Brain;
 
   return (
     <Collapsible
@@ -77,19 +77,19 @@ export const ChainOfThought: FC<
       style={{ "--animation-duration": `${ANIMATION_DURATION}ms` } as React.CSSProperties}
     >
       <CollapsibleTrigger
-        className="group/trigger text-muted-foreground hover:text-foreground flex max-w-full items-center gap-2 py-1.5 text-sm transition-colors"
+        className="group/trigger text-muted-foreground hover:text-foreground flex h-8 max-w-full items-center gap-2 text-[0.8125rem] transition-colors"
       >
         <Icon
           aria-hidden
-          className={cn("size-4 shrink-0", running && "animate-spin [animation-duration:0.8s]")}
+          className={cn("size-3.5 shrink-0", running && "animate-spin [animation-duration:0.8s]")}
         />
         <span className={cn("truncate leading-none", running && "shimmer motion-reduce:animate-none")}>
           {summary}
         </span>
-        <CaretDown
+        <ChevronDown
           aria-hidden
           className={cn(
-            "size-4 shrink-0 -rotate-90 transition-transform duration-(--animation-duration) motion-reduce:transition-none",
+            "text-muted-foreground/60 size-3.5 shrink-0 -rotate-90 transition-transform duration-(--animation-duration) motion-reduce:transition-none",
             "group-data-panel-open/trigger:rotate-0",
           )}
         />
@@ -101,7 +101,7 @@ export const ChainOfThought: FC<
           "[--tw-duration:var(--animation-duration)] motion-reduce:animate-none",
         )}
       >
-        <div className="border-border/70 ms-2 flex flex-col gap-1 border-s ps-4 pt-0.5 pb-2">
+        <div className="border-border ms-[0.4375rem] flex flex-col gap-0.5 border-s ps-4 pt-0.5 pb-2">
           {children}
         </div>
       </CollapsibleContent>
@@ -158,7 +158,7 @@ export const ReasoningStep: FC<{ running: boolean }> = ({ running }) => {
         role="region"
         aria-label={tr("Reasoning")}
         aria-busy={running}
-        className="text-muted-foreground max-h-72 min-w-0 flex-1 overflow-y-auto overscroll-contain text-sm leading-relaxed"
+        className="text-muted-foreground max-h-72 min-w-0 flex-1 overflow-y-auto overscroll-contain text-[0.8125rem] leading-relaxed"
       >
         <div ref={contentRef}>
           <MarkdownText />

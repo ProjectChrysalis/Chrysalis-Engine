@@ -833,6 +833,21 @@ const dict = {
   "Check now": "Jetzt prüfen",
   "Get new models without waiting for an update": "Neue Modelle ohne auf ein Update zu warten",
   "Checked daily, OpenRouter hourly. Only model names, prices and limits are downloaded.": "Täglich geprüft, OpenRouter stündlich. Nur Modellnamen, Preise und Grenzen werden geladen.",
+  "Ran": "Ausgeführt",
+  "Read": "Gelesen",
+  "Read output": "Ausgabe gelesen",
+  "Searched": "Gesucht",
+  "Wrote": "Geschrieben",
+  "Undid": "Rückgängig gemacht",
+  "Requested": "Angefragt",
+  "Rebuilt": "Neu gebaut",
+  "Checked": "Geprüft",
+  "Inspected": "Untersucht",
+  "Read console": "Konsole gelesen",
+  "Loaded skill": "Skill geladen",
+  "Read docs": "Doku gelesen",
+  "Asked": "Gefragt",
+  "now": "jetzt",
 }
 
 export default dict

@@ -1,5 +1,5 @@
 import { useAui } from "@assistant-ui/react"
-import { X } from "@phosphor-icons/react"
+import { X } from "lucide-react"
 import { useAgent } from "./store"
 import { tr } from "./i18n"
 

@@ -7,7 +7,7 @@ import {
   type FC,
   isValidElement,
 } from "react";
-import { X, Plus, FileText, CircleNotch, WarningCircle } from "@phosphor-icons/react";
+import { X, Plus, FileText, LoaderCircle, CircleAlert } from "lucide-react";
 import {
   AttachmentPrimitive,
   ComposerPrimitive,
@@ -175,7 +175,7 @@ const AttachmentUI: FC = () => {
                   aria-hidden="true"
                   className="aui-attachment-tile-uploading bg-background/60 animate-in fade-in-0 absolute inset-0 flex items-center justify-center backdrop-blur-[2px] motion-reduce:animate-none"
                 >
-                  <CircleNotch className="text-muted-foreground size-4 animate-spin" />
+                  <LoaderCircle className="text-muted-foreground size-4 animate-spin" />
                 </div>
               )}
               {isError && (
@@ -183,7 +183,7 @@ const AttachmentUI: FC = () => {
                   aria-hidden="true"
                   className="aui-attachment-tile-error bg-background/70 animate-in fade-in-0 absolute inset-0 flex items-center justify-center backdrop-blur-[2px] motion-reduce:animate-none"
                 >
-                  <WarningCircle className="text-destructive size-4" />
+                  <CircleAlert className="text-destructive size-4" />
                 </div>
               )}
             </TooltipTrigger>

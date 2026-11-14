@@ -833,6 +833,21 @@ const dict = {
   "Check now": "立即检查",
   "Get new models without waiting for an update": "无需等待更新即可获取新模型",
   "Checked daily, OpenRouter hourly. Only model names, prices and limits are downloaded.": "每天检查，OpenRouter 每小时检查。只下载模型名称、价格和限制。",
+  "Ran": "已运行",
+  "Read": "已读取",
+  "Read output": "已读取输出",
+  "Searched": "已搜索",
+  "Wrote": "已写入",
+  "Undid": "已撤销",
+  "Requested": "已请求",
+  "Rebuilt": "已重新构建",
+  "Checked": "已检查",
+  "Inspected": "已查看",
+  "Read console": "已读取控制台",
+  "Loaded skill": "已加载技能",
+  "Read docs": "已阅读文档",
+  "Asked": "已提问",
+  "now": "刚刚",
 }
 
 export default dict

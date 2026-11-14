@@ -2,7 +2,7 @@ import { tr } from "@/i18n"
 "use client";
 
 import { useState, type ComponentProps } from "react";
-import { FilePlus, FileText, Minus, Plus } from "@phosphor-icons/react";
+import { FilePlus, FileText, Minus, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { codeScroll, codeSurface, mono, paper } from "./surfaces";
 

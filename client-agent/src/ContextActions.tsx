@@ -1,6 +1,6 @@
 import { tr } from "@/i18n"
 import { useState } from "react"
-import { Broom, ChartPie } from "@phosphor-icons/react"
+import { Eraser, ChartPie } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "@/components/ui/popover"
 import { useAgent } from "./store"
@@ -57,7 +57,7 @@ export function ContextActions() {
           <div className="agent-context-compact">
             <p className="text-muted-foreground text-xs">{tr("Summarize older messages to free space.")}</p>
             <Button variant="outline" size="sm" disabled={!sessionId || running || pending} onClick={compactConversation}>
-              <Broom className="size-4" aria-hidden />{pending ? tr("Compacting…") : tr("Compact conversation")}
+              <Eraser className="size-4" aria-hidden />{pending ? tr("Compacting…") : tr("Compact conversation")}
             </Button>
           </div>
         </PopoverContent>

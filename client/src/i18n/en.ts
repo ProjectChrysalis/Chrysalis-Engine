@@ -835,6 +835,21 @@ const en = {
   "Check now": "",
   "Get new models without waiting for an update": "",
   "Checked daily, OpenRouter hourly. Only model names, prices and limits are downloaded.": "",
+  "Ran": "",
+  "Read": "",
+  "Read output": "",
+  "Searched": "",
+  "Wrote": "",
+  "Undid": "",
+  "Requested": "",
+  "Rebuilt": "",
+  "Checked": "",
+  "Inspected": "",
+  "Read console": "",
+  "Loaded skill": "",
+  "Read docs": "",
+  "Asked": "",
+  "now": "",
 } as const
 
 export default en

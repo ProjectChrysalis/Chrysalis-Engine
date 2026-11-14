@@ -11,7 +11,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { cva, type VariantProps } from "class-variance-authority";
-import { ArrowsClockwise, Copy, DownloadSimple, Image as ImageIcon, ImageBroken, CircleNotch, ShieldWarning, X } from "@phosphor-icons/react";
+import { RefreshCw, Copy, Download, Image as ImageIcon, ImageOff, LoaderCircle, ShieldAlert, X } from "lucide-react";
 import type {
   ImageMessagePart,
   ImageMessagePartComponent,
@@ -194,7 +194,7 @@ function ImagePreview({
           data-slot="image-preview-error"
           className="bg-muted/50 flex min-h-32 items-center justify-center p-4"
         >
-          <ImageBroken className="text-muted-foreground size-8" />
+          <ImageOff className="text-muted-foreground size-8" />
         </div>
       ) : (
         <img
@@ -366,7 +366,7 @@ function ImageGenerating({ className }: { className?: string }) {
         className,
       )}
     >
-      <CircleNotch className="text-muted-foreground size-8 animate-spin" />
+      <LoaderCircle className="text-muted-foreground size-8 animate-spin" />
       <span className="sr-only">{tr("Generating image…")}</span>
     </div>
   );
@@ -387,7 +387,7 @@ function ImageContentFilterError({
         className,
       )}
     >
-      <ShieldWarning className="text-muted-foreground size-8" />
+      <ShieldAlert className="text-muted-foreground size-8" />
       <p className="text-sm font-medium">{tr("Image could not be generated")}</p>
       {reason && <p className="text-muted-foreground text-xs">{reason}</p>}
     </div>
@@ -427,7 +427,7 @@ function RegenerateButton({
       aria-label={tr("Regenerate image")}
       className="hover:bg-muted inline-flex size-7 items-center justify-center rounded disabled:opacity-50"
     >
-      <ArrowsClockwise
+      <RefreshCw
         className={cn("size-4", isRegenerating && "animate-spin")}
       />
     </button>
@@ -447,7 +447,7 @@ function ImageActions({ part, onRegenerate, className }: ImageActionsProps) {
         aria-label={tr("Download image")}
         className="hover:bg-muted inline-flex size-7 items-center justify-center rounded"
       >
-        <DownloadSimple className="size-4" />
+        <Download className="size-4" />
       </button>
       <button
         type="button"

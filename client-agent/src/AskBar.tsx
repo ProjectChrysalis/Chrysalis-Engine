@@ -1,5 +1,5 @@
 import { tr } from "@/i18n"
-import { ArrowElbowDownLeft, X } from "@phosphor-icons/react"
+import { CornerDownLeft, X } from "lucide-react"
 import { useState, useEffect, type ReactNode } from "react"
 import { useAgent } from "./store"
 
@@ -66,7 +66,7 @@ export function AskBar(): ReactNode {
           title={tr("Send")}
           className="bg-primary text-primary-foreground flex items-center rounded-lg px-2.5"
         >
-          <ArrowElbowDownLeft size={14} />
+          <CornerDownLeft size={14} />
         </button>
       </form>
     </div>

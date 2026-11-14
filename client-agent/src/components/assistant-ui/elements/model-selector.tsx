@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { cva, type VariantProps } from "class-variance-authority";
-import { Check, CaretDown } from "@phosphor-icons/react";
+import { Check, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   Popover,
@@ -297,7 +297,7 @@ function ModelSelectorTrigger({
       {...props}
     >
       {children ?? <ModelSelectorValue />}
-      <CaretDown className="size-4 opacity-50" />
+      <ChevronDown className="size-4 opacity-50" />
     </PopoverTrigger>
   );
 }

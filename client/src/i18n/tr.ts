@@ -833,6 +833,21 @@ const dict = {
   "Check now": "Şimdi kontrol et",
   "Get new models without waiting for an update": "Güncelleme beklemeden yeni modeller",
   "Checked daily, OpenRouter hourly. Only model names, prices and limits are downloaded.": "Günlük kontrol edilir, OpenRouter saatlik. Yalnızca model adları, fiyatları ve sınırları indirilir.",
+  "Ran": "Çalıştırıldı",
+  "Read": "Okundu",
+  "Read output": "Çıktı okundu",
+  "Searched": "Arandı",
+  "Wrote": "Yazıldı",
+  "Undid": "Geri alındı",
+  "Requested": "İstek gönderildi",
+  "Rebuilt": "Yeniden derlendi",
+  "Checked": "Denetlendi",
+  "Inspected": "İncelendi",
+  "Read console": "Konsol okundu",
+  "Loaded skill": "Beceri yüklendi",
+  "Read docs": "Belgeler okundu",
+  "Asked": "Soruldu",
+  "now": "şimdi",
 }
 
 export default dict

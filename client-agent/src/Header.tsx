@@ -2,7 +2,7 @@ import { tr } from "@/i18n"
 import { AgentModelPicker } from "./AgentModelPicker"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Paperclip, SidebarSimple, SlidersHorizontal, WifiSlash, X } from "@phosphor-icons/react"
+import { Paperclip, PanelLeft, SlidersHorizontal, WifiOff, X } from "lucide-react"
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "@/components/ui/popover"
 import { useEffect, useState, type ReactNode } from "react"
 import { api } from "./api"
@@ -148,13 +148,13 @@ export function Header(): ReactNode {
     else state.setSidebar(!sidebarOpen)
   }
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2 px-3 md:px-4">
-      <Button id="agent-sidebar-toggle" variant="ghost" size="icon" className="size-9 shrink-0" aria-label={tr("Toggle sidebar")} onClick={toggleSidebar}>
-        <SidebarSimple size={18} />
+    <header className="flex h-[52px] shrink-0 items-center gap-2 border-b border-border/60 ps-[max(0.5rem,env(safe-area-inset-left))] pe-[max(0.75rem,env(safe-area-inset-right))] sm:ps-3 sm:pe-5">
+      <Button id="agent-sidebar-toggle" variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground shrink-0" aria-label={tr("Toggle sidebar")} onClick={toggleSidebar}>
+        <PanelLeft />
       </Button>
-      <span className="min-w-0 truncate text-sm font-medium">{title?.trim() || tr("New chat")}</span>
-      {workingApp ? <span className="ml-auto max-w-[40%] truncate text-xs text-muted-foreground" title={`${tr("Working app")}: ${workingApp}`}>{workingApp}</span> : null}
-      {wsDown ? <span className="text-destructive ml-auto flex shrink-0 items-center gap-1.5 text-xs" role="status"><WifiSlash size={14} />{tr("Reconnecting")}</span> : null}
+      <h1 className="min-w-0 truncate text-sm font-medium">{title?.trim() || tr("New chat")}</h1>
+      {workingApp ? <span className="border-border text-muted-foreground hidden max-w-[40%] shrink-0 truncate rounded-full border px-2 py-0.5 text-2xs sm:inline" title={`${tr("Working app")}: ${workingApp}`}>{workingApp}</span> : null}
+      {wsDown ? <span className="text-destructive ml-auto flex shrink-0 items-center gap-1.5 text-xs" role="status"><WifiOff className="size-3.5" />{tr("Reconnecting")}</span> : null}
     </header>
   )
 }

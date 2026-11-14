@@ -43,7 +43,7 @@ import {
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import { ArrowDown, ArrowUp, Check, CaretLeft, CaretRight, Copy, DownloadSimple, Chat, Microphone, DotsThree, PencilSimple, ArrowsClockwise, Square } from "@phosphor-icons/react";
+import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, Copy, Download, MessageSquare, Mic, Ellipsis, Pencil, RefreshCw, Square } from "lucide-react";
 import { useEnterSends } from "@/hooks/use-touch-ui";
 import { useAgent as useAgentStore } from "@/store";
 import {
@@ -171,10 +171,10 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
     <ThreadPrimitive.Root
       className="aui-root aui-thread-root bg-background @container flex min-h-0 flex-1 flex-col"
       style={{
-        ["--thread-max-width" as string]: "44rem",
+        ["--thread-max-width" as string]: "46rem",
         ["--composer-bg" as string]: "var(--color-card)",
-        ["--composer-radius" as string]: "1.5rem",
-        ["--composer-padding" as string]: "8px",
+        ["--composer-radius" as string]: "1.25rem",
+        ["--composer-padding" as string]: "0.5rem",
       }}
     >
       <ThreadPrimitive.Viewport
@@ -182,7 +182,7 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
         turnAnchor="bottom"
         autoScroll
         className={cn(
-          "relative flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-y-contain px-3 pt-4 sm:px-4",
+          "relative flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-y-contain ps-[max(0.75rem,env(safe-area-inset-left))] pe-[max(0.75rem,env(safe-area-inset-right))] pt-5 sm:px-5",
           isEmpty && "justify-center",
         )}
       >
@@ -196,7 +196,7 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
         <div
           ref={messagesRef}
           data-slot="aui_message-group"
-          className="mx-auto mb-8 flex w-full max-w-(--thread-max-width) shrink-0 flex-col gap-y-6 empty:hidden"
+          className="mx-auto mb-6 flex w-full max-w-(--thread-max-width) shrink-0 flex-col gap-y-5 empty:hidden"
         >
           <ThreadPrimitive.Messages>
             {() => <ThreadMessage />}
@@ -205,7 +205,7 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
 
         <ThreadPrimitive.ViewportFooter
           className={cn(
-            "aui-thread-viewport-footer bg-background relative mx-auto flex w-full max-w-(--thread-max-width) shrink-0 flex-col gap-2 overflow-visible pt-2 pb-4 md:pb-6",
+            "aui-thread-viewport-footer bg-background relative mx-auto flex w-full max-w-(--thread-max-width) shrink-0 flex-col gap-2 overflow-visible pt-1 pb-3 sm:pb-4",
             !isEmpty && "sticky bottom-0 mt-auto rounded-t-(--composer-radius)",
           )}
         >
@@ -253,7 +253,7 @@ const CompactionDivider: FC = () => {
             onClick={() => setOpen((value) => !value)}
             className="hover:text-foreground flex shrink-0 items-center gap-1.5 py-1 transition-colors"
           >
-            <CaretRight aria-hidden className={cn("size-3 transition-transform", open && "rotate-90")} />
+            <ChevronRight aria-hidden className={cn("size-3 transition-transform", open && "rotate-90")} />
             {label}
           </button>
         ) : (
@@ -279,7 +279,7 @@ const ThreadScrollToBottom: FC = () => {
       <TooltipIconButton
         tooltip={tr("Scroll to bottom")}
         variant="outline"
-        className="aui-thread-scroll-to-bottom dark:border-border dark:bg-background dark:hover:bg-accent absolute -top-12 z-10 self-center rounded-full p-4 disabled:invisible"
+        className="aui-thread-scroll-to-bottom bg-card text-muted-foreground hover:text-foreground absolute -top-11 z-10 size-8 self-center rounded-full shadow-composer disabled:invisible"
       >
         <ArrowDown />
       </TooltipIconButton>
@@ -290,7 +290,7 @@ const ThreadScrollToBottom: FC = () => {
 const ThreadWelcome: FC = () => {
   return (
     <div className="aui-thread-welcome-root mb-6 flex flex-col items-center px-4 text-center">
-      <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-2xl font-medium tracking-tight duration-200">{tr("How can I help you today?")}</h1>
+      <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-xl font-semibold tracking-tight duration-200 sm:text-2xl">{tr("How can I help you today?")}</h1>
       <ThreadWelcomeRecents />
     </div>
   );
@@ -330,9 +330,9 @@ const ThreadWelcomeRecentItem: FC = () => {
       <ThreadListItemPrimitive.Trigger asChild>
         <Button
           variant="ghost"
-          className="text-foreground hover:bg-muted border-border/60 h-auto max-w-56 gap-1.5 rounded-full border px-3.5 py-1.5 text-sm font-normal transition-colors"
+          className="text-muted-foreground hover:text-foreground bg-card h-8 max-w-56 gap-1.5 rounded-full border-border px-3 text-[0.8125rem] font-normal shadow-xs/5"
         >
-          <Chat aria-hidden className="size-3.5 shrink-0 opacity-60" />
+          <MessageSquare aria-hidden className="size-3.5 shrink-0 opacity-60" />
           <span className="min-w-0 truncate">
             <ThreadListItemPrimitive.Title fallback={tr("New chat")} />
           </span>
@@ -358,7 +358,7 @@ const ThreadSuggestionItem: FC = () => {
       <SuggestionPrimitive.Trigger send asChild>
         <Button
           variant="ghost"
-          className="aui-thread-welcome-suggestion text-foreground hover:bg-muted border-border/60 h-auto gap-1.5 rounded-full border px-3.5 py-1.5 text-sm font-normal whitespace-nowrap transition-colors"
+          className="aui-thread-welcome-suggestion text-muted-foreground hover:text-foreground bg-card h-8 gap-1.5 rounded-full border-border px-3 text-[0.8125rem] font-normal whitespace-nowrap shadow-xs/5"
         >
           <SuggestionPrimitive.Title className="aui-thread-welcome-suggestion-text-1" />
           <SuggestionPrimitive.Description className="aui-thread-welcome-suggestion-text-2 empty:hidden" />
@@ -421,12 +421,12 @@ const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
         <ComposerPrimitive.AttachmentDropzone asChild>
           <div
             data-slot="aui_composer-shell"
-            className="border-border/60 data-[dragging=true]:border-ring focus-within:border-border dark:border-muted-foreground/15 dark:focus-within:border-muted-foreground/30 flex w-full cursor-text flex-col gap-2 rounded-(--composer-radius) border bg-(--composer-bg) p-(--composer-padding) transition-[border-color] data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_50%,var(--color-background))]"
+            className="border-border focus-within:border-ring/45 data-[dragging=true]:border-ring shadow-composer flex w-full cursor-text flex-col gap-1 rounded-(--composer-radius) border bg-(--composer-bg) p-(--composer-padding) transition-[border-color,box-shadow] data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_50%,var(--color-background))]"
           >
             <ComposerAttachments />
             <ComposerPrimitive.Input
               placeholder={tr("Message")}
-              className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 outline-none"
+              className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 pt-1.5 pb-1 text-base leading-6 outline-none pointer-fine:text-sm"
               rows={1}
               autoFocus={autoFocus}
               onKeyDown={(event) => {
@@ -469,10 +469,10 @@ const ComposerAction: FC = () => {
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="aui-composer-dictate text-muted-foreground hover:text-foreground size-7 rounded-full"
+                className="aui-composer-dictate text-muted-foreground hover:text-foreground size-8 rounded-full"
                 aria-label={tr("Start voice input")}
               >
-                <Microphone className="aui-composer-dictate-icon size-4" />
+                <Mic className="aui-composer-dictate-icon size-4" />
               </TooltipIconButton>
             </ComposerPrimitive.Dictate>
           </AuiIf>
@@ -484,7 +484,7 @@ const ComposerAction: FC = () => {
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="aui-composer-stop-dictation text-destructive size-7 rounded-full"
+                className="aui-composer-stop-dictation text-destructive size-8 rounded-full"
                 aria-label={tr("Stop voice input")}
               >
                 <Square className="aui-composer-stop-dictation-icon size-3.5 animate-pulse fill-current" />
@@ -500,7 +500,7 @@ const ComposerAction: FC = () => {
               type="button"
               variant="default"
               size="icon"
-              className="aui-composer-send size-7 rounded-full"
+              className="aui-composer-send size-8 rounded-full disabled:opacity-40"
               aria-label={tr("Send")}
             >
               <ArrowUp className="aui-composer-send-icon size-4" />
@@ -508,7 +508,7 @@ const ComposerAction: FC = () => {
           </ComposerPrimitive.Send>
         </AuiIf>
         <AuiIf condition={(s) => s.thread.isRunning}>
-          <TooltipIconButton tooltip={tr("Queue message")} aria-label={tr("Queue message")} type="button" disabled={stopping} className="size-7 rounded-full" onClick={async () => {
+          <TooltipIconButton tooltip={tr("Queue message")} aria-label={tr("Queue message")} type="button" disabled={stopping} variant="secondary" className="size-8 rounded-full" onClick={async () => {
             const composer = aui.composer.getState();
             if (useAgentStore.getState().stopping || !composer.text.trim()) return;
     if (composer.attachments.length) { useAgentStore.getState().setBanner({ kind: "error", text: tr("Send attachments after the run finishes") }); return; }
@@ -520,7 +520,7 @@ const ComposerAction: FC = () => {
               type="button"
               variant="default"
               size="icon"
-              className="aui-composer-cancel size-7 rounded-full"
+              className="aui-composer-cancel bg-foreground text-background hover:bg-foreground/85 size-8 rounded-full shadow-none inset-shadow-none"
               disabled={stopping}
               aria-label={stopping ? tr("Stopping") : tr("Stop generating")}
             >
@@ -536,7 +536,7 @@ const ComposerAction: FC = () => {
 const MessageError: FC = () => {
   return (
     <MessagePrimitive.Error>
-      <ErrorPrimitive.Root className="aui-message-error-root border-destructive bg-destructive/10 text-destructive dark:bg-destructive/5 mt-2 rounded-md border p-3 text-sm dark:text-red-200">
+      <ErrorPrimitive.Root className="aui-message-error-root border-destructive/30 bg-destructive/8 text-destructive mt-2 rounded-(--control-radius) border px-3 py-2 text-[0.8125rem]">
         <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2" />
       </ErrorPrimitive.Root>
     </MessagePrimitive.Error>
@@ -559,7 +559,7 @@ const AssistantMessage: FC = () => {
     >
       <div
         data-slot="aui_assistant-message-content"
-        className="text-foreground px-1 text-sm leading-relaxed wrap-break-word sm:px-2"
+        className="text-foreground px-1 text-sm leading-relaxed wrap-break-word"
       >
         {/* reasoning and tool calls between two pieces of the answer are one
             step list, interleaved in the order the model produced them */}
@@ -621,7 +621,7 @@ const AssistantMessage: FC = () => {
 
       <div
         data-slot="aui_assistant-message-footer"
-        className={cn("ms-2 flex items-center", ACTION_BAR_HEIGHT)}
+        className={cn("flex items-center", ACTION_BAR_HEIGHT)}
       >
         <BranchPicker />
         <AssistantActionBar />
@@ -670,12 +670,12 @@ const AssistantActionBar: FC = () => {
     <ActionBarPrimitive.Root
       hideWhenRunning
       autohide="not-last"
-      className="aui-assistant-action-bar-root text-muted-foreground animate-in fade-in col-start-3 row-start-2 -ms-1 flex gap-1 duration-200"
+      className="aui-assistant-action-bar-root text-muted-foreground/80 animate-in fade-in col-start-3 row-start-2 flex gap-0.5 duration-200"
     >
       <CopyAction />
       <ActionBarPrimitive.Reload asChild>
         <TooltipIconButton tooltip={tr("Refresh")}>
-          <ArrowsClockwise />
+          <RefreshCw />
         </TooltipIconButton>
       </ActionBarPrimitive.Reload>
       <ActionBarMorePrimitive.Root>
@@ -684,18 +684,18 @@ const AssistantActionBar: FC = () => {
             tooltip={tr("More")}
             className="data-[state=open]:bg-accent"
           >
-            <DotsThree />
+            <Ellipsis />
           </TooltipIconButton>
         </ActionBarMorePrimitive.Trigger>
         <ActionBarMorePrimitive.Content
           side="bottom"
           align="start"
           sideOffset={6}
-          className="aui-action-bar-more-content bg-popover text-popover-foreground data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:animate-out data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-[8rem] overflow-hidden rounded-xl border p-1.5"
+          className="aui-action-bar-more-content bg-popover text-popover-foreground data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:animate-out data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-[8rem] overflow-hidden rounded-(--control-radius) border p-1 shadow-lg/5"
         >
           <ActionBarPrimitive.ExportMarkdown asChild>
-            <ActionBarMorePrimitive.Item className="aui-action-bar-more-item hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none">
-              <DownloadSimple className="size-4" />{tr("Export as Markdown")}</ActionBarMorePrimitive.Item>
+            <ActionBarMorePrimitive.Item className="aui-action-bar-more-item hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex h-8 cursor-pointer items-center gap-2 rounded-md px-2 text-sm outline-none select-none [&_svg]:text-muted-foreground">
+              <Download className="size-4" />{tr("Export as Markdown")}</ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>
         </ActionBarMorePrimitive.Content>
       </ActionBarMorePrimitive.Root>
@@ -719,13 +719,13 @@ const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
       data-slot="aui_user-message-root"
-      className="fade-in slide-in-from-bottom-1 animate-in grid auto-rows-auto grid-cols-[minmax(20%,1fr)_auto] content-start gap-y-2 px-1 duration-150 sm:px-2 [contain-intrinsic-size:auto_200px] [content-visibility:auto] [&:where(>*)]:col-start-2"
+      className="fade-in slide-in-from-bottom-1 animate-in grid auto-rows-auto grid-cols-[minmax(20%,1fr)_auto] content-start gap-y-2 duration-150 [contain-intrinsic-size:auto_200px] [content-visibility:auto] [&:where(>*)]:col-start-2"
       data-role="user"
     >
       <UserMessageAttachments />
 
       <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0">
-        <div className="aui-user-message-content peer bg-muted text-foreground rounded-2xl px-3.5 py-2 text-sm leading-relaxed wrap-break-word empty:hidden">
+        <div className="aui-user-message-content peer bg-message text-foreground border-border/60 max-w-full rounded-2xl rounded-ee-md border px-3.5 py-2 text-sm leading-relaxed wrap-break-word whitespace-pre-wrap empty:hidden dark:border-transparent">
           <MessagePrimitive.Parts
             components={{ File: UserFilePart, Image: UserImagePart }}
           />
@@ -752,7 +752,7 @@ const UserActionBar: FC = () => {
     >
       <ActionBarPrimitive.Edit asChild>
         <TooltipIconButton tooltip={tr("Edit")} className="aui-user-action-edit">
-          <PencilSimple />
+          <Pencil />
         </TooltipIconButton>
       </ActionBarPrimitive.Edit>
     </ActionBarPrimitive.Root>
@@ -766,9 +766,9 @@ const EditComposer: FC = () => {
       data-slot="aui_edit-composer-wrapper"
       className="flex flex-col px-2 [contain-intrinsic-size:auto_200px] [content-visibility:auto]"
     >
-      <ComposerPrimitive.Root className="aui-edit-composer-root border-border/60 dark:border-muted-foreground/15 ms-auto flex w-full max-w-[85%] cursor-text flex-col rounded-(--composer-radius) border bg-(--composer-bg)">
+      <ComposerPrimitive.Root className="aui-edit-composer-root border-border focus-within:border-ring/45 shadow-composer ms-auto flex w-full max-w-[85%] cursor-text flex-col rounded-(--composer-radius) border bg-(--composer-bg)">
         <ComposerPrimitive.Input
-          className="aui-edit-composer-input text-foreground min-h-14 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-base outline-none"
+          className="aui-edit-composer-input text-foreground min-h-14 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-base outline-none pointer-fine:text-sm"
           autoFocus
           submitOnEnter={enterSends}
           enterKeyHint={enterSends ? "send" : "enter"}
@@ -805,7 +805,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
     >
       <BranchPickerPrimitive.Previous asChild>
         <TooltipIconButton tooltip={tr("Previous")}>
-          <CaretLeft />
+          <ChevronLeft />
         </TooltipIconButton>
       </BranchPickerPrimitive.Previous>
       <span className="aui-branch-picker-state font-medium">
@@ -813,7 +813,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
       </span>
       <BranchPickerPrimitive.Next asChild>
         <TooltipIconButton tooltip={tr("Next")}>
-          <CaretRight />
+          <ChevronRight />
         </TooltipIconButton>
       </BranchPickerPrimitive.Next>
     </BranchPickerPrimitive.Root>
