@@ -59,7 +59,7 @@ it("sends the active preset's prompts: system ones in the instructions, message 
   expect(second.indexOf("Be plain.")).toBeGreaterThan(second.indexOf("Again"));
 }, 20_000);
 
-it("orders the system prompt by the preset, between the agent's own parts", async () => {
+it("orders the system prompt by the preset, fills macros, and keeps the mode on", async () => {
   const users = new UserService(root);
   users.create("alice", "user", { password: "test-password-1" });
   const p = bootstrapUserDir(root, "alice");
@@ -71,16 +71,20 @@ it("orders the system prompt by the preset, between the agent's own parts", asyn
   faux.setResponses([(context: unknown) => { system = JSON.stringify(context); return fauxAssistantMessage("ok"); }]);
   writePrompts(p, { active: "first", presets: [{ id: "first", name: "First", prompts: [
     { id: "lead", name: "Lead", enabled: true, placement: "system", content: "LEAD PROMPT" },
-    { id: "builtin-base", name: "", enabled: false, placement: "system", content: "", builtin: "base" },
+    { id: "builtin-base", name: "", enabled: true, placement: "system", content: "MY MAIN for {{user}}. Rules: {{instructions}} {{unknown}}", builtin: "base" },
     { id: "builtin-persona", name: "", enabled: false, placement: "system", content: "", builtin: "persona" },
+    { id: "builtin-mode", name: "", enabled: false, placement: "system", content: "", builtin: "mode" },
   ] }] });
   const agent = await UserAgent.create("alice", svc, p, users, defaultInstanceConfig(), { sessionId: "order" });
   await agent.run("Hi");
-  expect(system.indexOf("# Lead\\nLEAD PROMPT")).toBeGreaterThan(-1);
-  expect(system.indexOf("LEAD PROMPT")).toBeLessThan(system.indexOf("You are the personal agent"));
-  // the core part cannot be switched off; the persona can
-  expect(system).toContain("You are the personal agent");
-  expect(system).not.toContain("PERSONA TEXT");
+  expect(system.indexOf("LEAD PROMPT")).toBeLessThan(system.indexOf("MY MAIN"));
+  // the main prompt is the user's text, with macros filled and unknown ones left alone
+  expect(system).toContain("MY MAIN for alice. Rules: # Personal instructions from alice\\nPERSONA TEXT {{unknown}}");
+  expect(system).not.toContain("You are the personal agent");
+  // the persona marker is off, so its text appears only where the macro put it
+  expect(system.split("PERSONA TEXT").length).toBe(2);
+  // the mode cannot be switched off
+  expect(readPrompts(p).presets[0]?.prompts.find((q) => q.builtin === "mode")?.enabled).toBe(true);
 }, 20_000);
 
 it("starts from a Default preset holding every part of the agent's own prompt", () => {
@@ -131,7 +135,7 @@ it("imports a roleplay preset's prompts in order, with their on/off state and pl
   expect(importPromptPreset({ prompts: [{ identifier: "chatHistory", marker: true }] }, "x", BUILTIN_SECTIONS)).toBeNull();
 });
 
-it("shows each part's text and previews an unsaved preset through the settings API", async () => {
+it("shows the shipped main prompt and each marker, and previews an unsaved preset through the settings API", async () => {
   const { buildApp } = await import("../src/server/app.js");
   const { EventBus } = await import("../src/server/ws.js");
   const { SessionService } = await import("../src/sessions.js");
@@ -142,17 +146,19 @@ it("shows each part's text and previews an unsaved preset through the settings A
   fs.writeFileSync(p.persona, "PERSONA TEXT");
   const app = buildApp({ users, sessions: new SessionService(root), config: defaultInstanceConfig(), dataDir: root, bus: new EventBus() });
   const send = (method: string, route: string, body?: unknown) => app.request(route, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
-  const view = await (await send("GET", "/v1/settings/agent-prompts")).json() as AgentPromptsFile & { builtin: Record<string, string>; parts: string[] };
+  type View = AgentPromptsFile & { parts: { main: string; markers: Record<string, string> }; order: string[]; macros: Record<string, string> };
+  const view = await (await send("GET", "/v1/settings/agent-prompts")).json() as View;
   expect(view.active).toBe("default");
-  expect(view.parts).toEqual([...BUILTIN_SECTIONS]);
-  expect(view.builtin.persona).toContain("PERSONA TEXT");
-  expect(view.builtin.base).toContain("You are the personal agent");
+  expect(view.order).toEqual([...BUILTIN_SECTIONS]);
+  expect(view.parts.main).toContain('You are the personal agent of "{{user}}"');
+  expect(view.parts.markers.persona).toContain("PERSONA TEXT");
+  expect(view.macros.persona).toBe("instructions");
   const draft = { ...view.presets[0]!, prompts: [
     { id: "each", name: "", enabled: true, placement: "message", content: "Reply to {{user}} briefly." },
     ...view.presets[0]!.prompts.map((q) => (q.builtin === "persona" ? { ...q, enabled: false } : q)),
   ] };
   const preview = await (await send("POST", "/v1/settings/agent-prompts/preview", { preset: draft })).json() as { system: string; message: string };
-  expect(preview.system).toContain("You are the personal agent");
+  expect(preview.system).toContain('You are the personal agent of "alice"');
   expect(preview.system).not.toContain("PERSONA TEXT");
   expect(preview.message).toContain("Reply to alice briefly.");
   expect((await send("POST", "/v1/settings/agent-prompts/preview", { preset: { id: "x" } })).status).toBe(400);

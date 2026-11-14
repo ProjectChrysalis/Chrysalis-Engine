@@ -23,8 +23,7 @@ import type { UserPaths } from "../paths.js";
 import { listApps, readApp } from "../apps/manager.js";
 import type { InstanceConfig } from "../config.js";
 import type { ServerSettings } from "../server/settings.js";
-import { messagePrompts, orderedSections, PROMPTS_FILE } from "./prompt-presets.js";
-import type { BuiltinSection } from "./prompt-preset-types.js";
+import { messagePrompts, orderedSections, PROMPTS_FILE, type PromptParts } from "./prompt-presets.js";
 import type { UserService } from "../users.js";
 import type { McpRegistry, McpToolInfo } from "../mcp/registry.js";
 import { Type } from "typebox";
@@ -375,7 +374,8 @@ export class UserAgent {
     }
 
     tools.push(...buildSkillTools(paths, username, appContext, opts.mode === "plan", (tool, args, signal) => policy.check(tool, args, signal)), outputTool(paths.root), inspectionTool(() => appContext.appId, opts.inspect, serviceUnseen(paths)));
-    const liveSections = () => promptSections(username, isAdmin, paths, opts.sandbox, appContext, opts.mode === "plan");
+    const liveParts = () => builtinSections(username, isAdmin, paths, opts.sandbox, appContext, opts.mode === "plan");
+    const liveSections = () => orderedSections(paths, username, liveParts());
     const pFile = promptFile(paths, sessionId);
     const frozen = readFrozenPrompt(pFile) ?? writeFrozenPrompt(pFile, liveSections());
     tools.push({
@@ -562,7 +562,7 @@ export class UserAgent {
         return svc.agentStreamFn(m, c, maxTokens !== undefined ? { ...o, maxTokens } : o, sessionId, { ...generation, reasoning: level });
       },
     });
-    return new UserAgent(agent, sessionId, sFile, budget, () => { failures.clear(); toolCount.value = 0; modelSteps.value = 0; delete budget.halt; delete budget.planAccepted; }, contextUpdate, () => messagePrompts(paths, username));
+    return new UserAgent(agent, sessionId, sFile, budget, () => { failures.clear(); toolCount.value = 0; modelSteps.value = 0; delete budget.halt; delete budget.planAccepted; }, contextUpdate, () => messagePrompts(paths, username, liveParts()));
   }
 
   /** The session as its model sees it now, read from the session file. */
@@ -1449,20 +1449,19 @@ function updatesAsUserTurns(messages: AgentMessage[]): AgentMessage[] {
  * later update can replace one by name. The instruction files follow the
  * general prompt, so where they disagree they are what was read last.
  */
-function promptSections(username: string, isAdmin: boolean, paths: UserPaths, sandbox: AgentToolOptions["sandbox"] | undefined, context: AppContext, plan: boolean): Record<string, string> {
-  return orderedSections(paths, username, builtinSections(username, isAdmin, paths, sandbox, context, plan));
-}
-
-/** Each part of the agent's own system prompt, before the active preset orders and filters them. */
-export function builtinSections(username: string, isAdmin: boolean, paths: UserPaths, sandbox: AgentToolOptions["sandbox"] | undefined, context: AppContext, plan: boolean): Record<BuiltinSection, string> {
+/** The agent's own prompt parts: the main prompt as it ships, and the text of each dynamic part. */
+export function builtinSections(username: string, isAdmin: boolean, paths: UserPaths, sandbox: AgentToolOptions["sandbox"] | undefined, context: AppContext, plan: boolean): PromptParts {
   return {
-    base: basePrompt(username, isAdmin, paths, sandbox),
-    apps: installedAppsSection(paths),
-    app: `# Conversation app and skills\n${skillCatalog(paths, context)}`,
-    docs: instructionDocs(paths, context.appId),
-    notes: notesIndex(paths, username),
-    persona: personaSection(paths, username),
-    mode: plan ? PLAN_MODE_PROMPT : WORK_MODE_PROMPT,
+    main: mainPromptTemplate(isAdmin),
+    markers: {
+      apps: installedAppsSection(paths),
+      app: `# Conversation app and skills\n${skillCatalog(paths, context)}`,
+      docs: instructionDocs(paths, context.appId),
+      notes: notesIndex(paths, username),
+      persona: personaSection(paths, username),
+      shell: shellSection(paths, sandbox),
+      mode: plan ? PLAN_MODE_PROMPT : WORK_MODE_PROMPT,
+    },
   };
 }
 
@@ -1475,8 +1474,9 @@ function personaSection(paths: UserPaths, username: string): string {
   }
 }
 
-function basePrompt(username: string, isAdmin: boolean, paths: UserPaths, sandbox?: AgentToolOptions["sandbox"]): string {
-  const base = `You are the personal agent of "${username}" on their Chrysalis instance — a local engine where EVERYTHING is files you can edit (like code): apps, characters, chats, plugins, looks. The workspace contract below maps the layout; this adds what only your tools see.
+/** The main prompt as it ships, with {{user}} where the name goes. */
+function mainPromptTemplate(isAdmin: boolean): string {
+  const base = `You are the personal agent of "{{user}}" on their Chrysalis instance — a local engine where EVERYTHING is files you can edit (like code): apps, characters, chats, plugins, looks. The workspace contract below maps the layout; this adds what only your tools see.
 
 # Apps
 - apps/<id>/manifest.json is { name, version, kind, origin }. An app's plugins/<id>/ holds manifest.json {permissions} + plugin.js (the entry; it may import more modules from its folder by relative path).
@@ -1498,11 +1498,15 @@ Load the chrysalis-docs engine skill when a task depends on engine behavior or c
 - console.log/info/warn/debug from an open app page are captured: app_console reads them back like a test log (newest last). Print, let the page run, read. Nothing is captured while no page has the app open.
 - Big files are normal (a character card can pass 100 KB): grep for the field you need or read a line slice — never load a whole large JSON just to change one value.
 - When building something big (a new app), plan the file layout first, write it, then reload and summarize what you made and how to use it.`;
-  let out = isAdmin ? `${base}\n\n${ADMIN_TOOLS_PROMPT}` : base;
-  // shell availability shapes how the agent approaches heavy work
+  return isAdmin ? `${base}\n\n${ADMIN_TOOLS_PROMPT}` : base;
+}
+
+/** How to use the bash tool, or "" while the shell is off: its availability shapes how the agent approaches heavy work. */
+function shellSection(paths: UserPaths, sandbox?: AgentToolOptions["sandbox"]): string {
+  let out = "";
   if (sandbox && sandbox.config.provider !== "off") {
     out +=
-      "\n\n# Shell (bash tool)\n" +
+      "# Shell (bash tool)\n" +
       "Your bash tool runs in a sandbox in the user's browser, never on their machine. The workspace is /workspace (each command starts there) and stays mounted between calls; files a command changes are saved to the user's files when it finishes. /tmp also lasts between calls.\n" +
       "- Shell: busybox ash with the bash basics (functions, $(...), [[ ]], here-docs, set -euo pipefail, bash script.sh, ./script.sh by its #! line). No bash arrays, no brace expansion like {a,b}, no process substitution <(...) or >(...), and no background jobs. Compare temporary files instead. Set the bash tool timeout_ms for time limits; do not invoke timeout or nohup. Each call starts a fresh shell; a tool timeout discards unsaved changes and /tmp.\n" +
       "- Commands: coreutils and findutils with the GNU options you know (ls -R, grep -rn --include/--exclude-dir, find -maxdepth/-exec, xargs -I, sort -k, sed -i, awk, head -c, diff -u, patch, od, xxd, sha256sum, bc, tree), plus rg, fd, jq (real jq 1.7), curl, wget, tar, gzip, zip, unzip, file.\n" +

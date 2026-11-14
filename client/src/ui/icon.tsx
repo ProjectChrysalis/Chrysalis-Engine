@@ -3,7 +3,7 @@
 import type { ComponentPropsWithoutRef } from "react"
 import {
   ArrowClockwise, ArrowLeft, ArrowSquareOut, ArrowUUpLeft, Brain, CaretDown, CaretLeft, CaretRight, CaretUp,
-  Chat, ChartBar, ChatCircle, CheckCircle, ClockCounterClockwise, CloudArrowUp, Code, Columns, Copy, DownloadSimple, FolderPlus, GearSix, HardDrives, Info,
+  Chat, ChartBar, ChatCircle, CheckCircle, ClockCounterClockwise, CloudArrowUp, Code, Columns, Copy, DotsSixVertical, DownloadSimple, Eye, FolderPlus, GearSix, HardDrives, Info,
   Lock, PencilSimpleLine, Plus, PlusSquare, Prohibit, SignOut, SlidersHorizontal,
   SpeakerHigh, SquaresFour, Stop, Storefront, TerminalWindow, Trash, X,
 } from "@phosphor-icons/react"
@@ -38,6 +38,8 @@ const glyphs = {
   "chevron-right": CaretRight,
   "chevron-down": CaretDown,
   "chevron-up": CaretUp,
+  eye: Eye,
+  grip: DotsSixVertical,
   "folder-add-left": FolderPlus,
   "grid-plus": Plus,
   "outline-chevron-down": CaretDown,

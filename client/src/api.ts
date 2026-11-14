@@ -1,7 +1,7 @@
 import { tr } from "./i18n/index"
 import type { AppUpdate, StoreList } from "./types"
 import type { OpenRouterRouting } from "../../src/providers/openrouter-routing"
-import type { AgentPromptPreset, AgentPromptsFile, BuiltinSection } from "../../src/agent/prompt-preset-types"
+import type { AgentPromptPreset, AgentPromptsFile, BuiltinSection, Marker } from "../../src/agent/prompt-preset-types"
 export type { OpenRouterRouting } from "../../src/providers/openrouter-routing"
 // Chrysalis engine HTTP client for the launcher shell (auth, settings,
 // connections, apps). The agent chat lives in its own app (client-agent/).
@@ -233,9 +233,14 @@ export const personaApi = {
   put: (persona: string) => api("PUT", "/v1/settings/persona", { persona }),
 }
 
-export type { AgentPrompt, AgentPromptPreset, AgentPromptsFile, BuiltinSection } from "../../src/agent/prompt-preset-types"
-/** The presets, with the agent's own prompt parts in their default order and the text each holds right now. */
-export type AgentPromptsView = AgentPromptsFile & { builtin: Record<BuiltinSection, string>; parts: BuiltinSection[]; locked: BuiltinSection[] }
+export type { AgentPrompt, AgentPromptPreset, AgentPromptsFile, BuiltinSection, Marker } from "../../src/agent/prompt-preset-types"
+/** The presets, with the main prompt as it ships, each marker's text right now, the default order and each marker's macro name. */
+export type AgentPromptsView = AgentPromptsFile & {
+  parts: { main: string; markers: Record<Marker, string> }
+  order: BuiltinSection[]
+  locked: BuiltinSection[]
+  macros: Record<Marker, string>
+}
 
 export const agentPromptsApi = {
   get: () => api<AgentPromptsView>("GET", "/v1/settings/agent-prompts"),

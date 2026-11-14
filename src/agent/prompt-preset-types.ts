@@ -1,20 +1,39 @@
 /** Shapes of agent-prompts.json, shared with the shell and the agent UI (types only there: the shell builds from its own folder). */
 export type PromptPlacement = "system" | "message";
 
-/** The parts of the agent's own system prompt, in their default order. */
-export const BUILTIN_SECTIONS = ["base", "apps", "app", "docs", "notes", "persona", "mode"] as const;
-export type BuiltinSection = (typeof BUILTIN_SECTIONS)[number];
+/** Dynamic parts of the agent's prompt, filled in when a conversation starts. */
+export const MARKERS = ["shell", "apps", "app", "docs", "notes", "persona", "mode"] as const;
+export type Marker = (typeof MARKERS)[number];
 
-/** Parts the agent cannot work without: the tool guide and the current mode. */
-export const LOCKED_SECTIONS: readonly BuiltinSection[] = ["base", "mode"];
+/** The agent's main prompt: plain text the user may rewrite. */
+export const MAIN = "base";
+export type BuiltinSection = typeof MAIN | Marker;
+
+/** The default order of the agent's own entries. */
+export const BUILTIN_SECTIONS: readonly BuiltinSection[] = [MAIN, ...MARKERS];
+
+/** Parts the agent cannot work without: Plan mode depends on the mode part. */
+export const LOCKED_SECTIONS: readonly BuiltinSection[] = ["mode"];
+
+/** Macro name in prompt text ({{name}}) for each marker's content. */
+export const MARKER_MACROS: Record<Marker, string> = {
+  shell: "shell",
+  apps: "apps",
+  app: "skills",
+  docs: "rules",
+  notes: "notes",
+  persona: "instructions",
+  mode: "mode",
+};
 
 export interface AgentPrompt {
   id: string;
   name: string;
   enabled: boolean;
   placement: PromptPlacement;
+  /** The prompt's text. On the main prompt, "" means the text as it ships, which follows engine updates. */
   content: string;
-  /** Set on an entry that stands for one part of the agent's own prompt; its text comes from the engine. */
+  /** Set on the agent's own entries: the main prompt or a marker. */
   builtin?: BuiltinSection;
 }
 
@@ -28,4 +47,3 @@ export interface AgentPromptsFile {
   active: string;
   presets: AgentPromptPreset[];
 }
-

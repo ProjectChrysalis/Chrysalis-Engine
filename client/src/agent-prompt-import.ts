@@ -4,10 +4,10 @@ const newId = () => crypto.randomUUID()
 
 const builtin = (section: BuiltinSection): AgentPrompt => ({ id: `builtin-${section}`, name: "", enabled: true, placement: "system", content: "", builtin: section })
 
-/** Prompts placed between the agent's own parts (`parts`, in their default order): after everything it knows, before the mode. */
-export function withAgentParts(prompts: AgentPrompt[], parts: readonly BuiltinSection[]): AgentPrompt[] {
+/** Prompts placed between the agent's own entries (`order`, their default order): after everything it knows, before the mode. */
+export function withAgentParts(prompts: AgentPrompt[], order: readonly BuiltinSection[]): AgentPrompt[] {
   const present = new Set(prompts.flatMap((p) => (p.builtin ? [p.builtin] : [])))
-  const missing = parts.filter((s) => !present.has(s))
+  const missing = order.filter((s) => !present.has(s))
   return [...missing.filter((s) => s !== "mode").map(builtin), ...prompts, ...(missing.includes("mode") ? [builtin("mode")] : [])]
 }
 
@@ -20,7 +20,7 @@ const AFTER_HISTORY = new Set(["jailbreak", "postHistoryInstructions"])
  * text become prompts here, in their order and with their on/off state;
  * empty placeholders (character card, world info, chat history) are left out.
  */
-export function importPromptPreset(json: unknown, fallbackName: string, parts: readonly BuiltinSection[]): AgentPromptPreset | null {
+export function importPromptPreset(json: unknown, fallbackName: string, order: readonly BuiltinSection[]): AgentPromptPreset | null {
   if (!json || typeof json !== "object") return null
   const raw = json as { name?: unknown; prompts?: unknown; prompt_order?: unknown }
   if (!Array.isArray(raw.prompts)) return null
@@ -28,17 +28,21 @@ export function importPromptPreset(json: unknown, fallbackName: string, parts: r
   const items = raw.prompts.filter((p): p is Record<string, unknown> => !!p && typeof p === "object")
   if (items.every((p) => p.placement === "system" || p.placement === "message")) {
     const prompts = items.flatMap((p): AgentPrompt[] => {
-      if (parts.includes(p.builtin as BuiltinSection)) return [{ ...builtin(p.builtin as BuiltinSection), enabled: p.enabled !== false }]
+      if (order.includes(p.builtin as BuiltinSection)) {
+        // the main prompt keeps its text; markers are filled in by the engine
+        const content = p.builtin === "base" && typeof p.content === "string" ? p.content.slice(0, 64_000) : ""
+        return [{ ...builtin(p.builtin as BuiltinSection), enabled: p.enabled !== false, content }]
+      }
       return typeof p.content === "string" ? [{
         id: newId(), name: typeof p.name === "string" ? p.name.slice(0, 120) : "", enabled: p.enabled !== false,
-        placement: p.placement === "message" ? "message" : "system", content: p.content.slice(0, 32_000),
+        placement: p.placement === "message" ? "message" : "system", content: p.content.slice(0, 64_000),
       }] : []
     })
-    return { id: newId(), name, prompts: withAgentParts(prompts, parts) }
+    return { id: newId(), name, prompts: withAgentParts(prompts, order) }
   }
   const orders = Array.isArray(raw.prompt_order) ? raw.prompt_order.filter((o): o is { character_id?: unknown; order?: unknown } => !!o && typeof o === "object") : []
-  const order = (orders.find((o) => o.character_id === 100001) ?? orders.find((o) => o.character_id === 100000) ?? orders[0])?.order
-  const listed = Array.isArray(order) ? order.filter((o): o is { identifier: string; enabled?: unknown } => !!o && typeof o === "object" && typeof (o as { identifier?: unknown }).identifier === "string") : []
+  const chosen = (orders.find((o) => o.character_id === 100001) ?? orders.find((o) => o.character_id === 100000) ?? orders[0])?.order
+  const listed = Array.isArray(chosen) ? chosen.filter((o): o is { identifier: string; enabled?: unknown } => !!o && typeof o === "object" && typeof (o as { identifier?: unknown }).identifier === "string") : []
   const byId = new Map(items.map((p) => [String(p.identifier ?? ""), p]))
   const sequence = [
     ...listed.map((o) => ({ prompt: byId.get(o.identifier), enabled: o.enabled !== false })),
@@ -54,8 +58,8 @@ export function importPromptPreset(json: unknown, fallbackName: string, parts: r
       name: (typeof prompt.name === "string" ? prompt.name : id).slice(0, 120),
       enabled,
       placement: afterHistory ? "message" : "system",
-      content: prompt.content.slice(0, 32_000),
+      content: prompt.content.slice(0, 64_000),
     })
   }
-  return prompts.length ? { id: newId(), name, prompts: withAgentParts(prompts.slice(0, 100), parts) } : null
+  return prompts.length ? { id: newId(), name, prompts: withAgentParts(prompts.slice(0, 100), order) } : null
 }

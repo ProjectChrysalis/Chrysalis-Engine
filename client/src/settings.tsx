@@ -20,11 +20,6 @@ import {
   mcpApi,
   listProviders,
   personaApi,
-  agentPromptsApi,
-  type AgentPrompt,
-  type AgentPromptPreset,
-  type AgentPromptsFile,
-  type BuiltinSection,
   prefs,
   authApi,
   adminUsersApi,
@@ -48,7 +43,7 @@ import { SpendingTab } from "./spending-settings"
 import { OpenRouterRoutingEditor } from "./openrouter-routing"
 import { routingDraft, routingBody, isOpenRouterConnection } from "./openrouter-routing-state"
 import { LOCALES, setLocale, tr, useLocale, type Locale } from "./i18n/index"
-import { importPromptPreset, withAgentParts } from "./agent-prompt-import"
+import { AgentPromptPresets } from "./agent-prompt-presets"
 
 export const inputClass =
   "min-w-0 flex-1 rounded-lg border border-line bg-panel px-3 py-1.5 text-13 text-ink outline-none placeholder:text-ink-faint focus:border-line-focus"
@@ -629,191 +624,6 @@ function AgentInstructions() {
           </Button> : null}
         {saved ? <span className="text-12 text-success">{tr("Saved")}</span> : null}
       </div>
-    </div>
-  )
-}
-
-const partLabel = (part: BuiltinSection): string => ({
-  base: tr("Agent core"),
-  apps: tr("Installed apps"),
-  app: tr("App skills"),
-  docs: tr("Workspace rules"),
-  notes: tr("Notes"),
-  persona: tr("Agent instructions"),
-  mode: tr("Work or plan mode"),
-})[part]
-
-const partHint = (part: BuiltinSection): string => ({
-  base: tr("Tools, workspace layout and rules. Always on."),
-  apps: tr("The apps you have installed."),
-  app: tr("Skills of the app a conversation is about. Empty outside an app."),
-  docs: tr("AGENTS.md and the open app's instructions."),
-  notes: tr("The list of files in notes/."),
-  persona: tr("The text in the box above."),
-  mode: tr("How to act in Work or Plan mode. Always on."),
-})[part]
-
-function AgentPromptPresets() {
-  const saved = useResource(() => agentPromptsApi.get())
-  const [draft, setDraft] = useState<AgentPromptsFile | null>(null)
-  const [open, setOpen] = useState<ReadonlySet<string>>(new Set())
-  const [preview, setPreview] = useState<{ system: string; message: string } | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [done, setDone] = useState(false)
-  const [err, setErr] = useState("")
-  const fileInput = useRef<HTMLInputElement>(null)
-  const view = saved.data
-  if (!view) return null
-  const file: AgentPromptsFile = draft ?? view
-  const preset = file.presets.find((p) => p.id === file.active) ?? file.presets[0]
-  if (!preset) return null
-  const edit = (next: AgentPromptsFile) => { setDraft({ active: next.active, presets: next.presets }); setPreview(null); setDone(false); setErr("") }
-  const editPreset = (change: (p: AgentPromptPreset) => AgentPromptPreset) =>
-    edit({ ...file, presets: file.presets.map((p) => (p.id === preset.id ? change(p) : p)) })
-  const editPrompt = (id: string, patch: Partial<AgentPrompt>) =>
-    editPreset((p) => ({ ...p, prompts: p.prompts.map((q) => (q.id === id ? { ...q, ...patch } : q)) }))
-  const move = (index: number, by: number) => editPreset((p) => {
-    const prompts = [...p.prompts]
-    const [item] = prompts.splice(index, 1)
-    if (item) prompts.splice(index + by, 0, item)
-    return { ...p, prompts }
-  })
-  const toggle = (id: string) => setOpen((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
-  const add = (next: AgentPromptPreset) => edit({ active: next.id, presets: [...file.presets, next] })
-  const custom = preset.prompts.filter((q) => !q.builtin).length
-  const textOf = (q: AgentPrompt) => (q.builtin ? view.builtin[q.builtin] ?? "" : q.content)
-  const showPreview = async () => {
-    try {
-      setPreview(await agentPromptsApi.preview(preset))
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  const importFile = async (picked: File | undefined) => {
-    if (!picked) return
-    try {
-      const imported = importPromptPreset(JSON.parse(await picked.text()), picked.name.replace(/\.json$/i, ""), view.parts)
-      if (!imported) setErr(tr("That file has no prompts to import."))
-      else add(imported)
-    } catch {
-      setErr(tr("That file has no prompts to import."))
-    }
-  }
-
-  const save = async () => {
-    if (!draft) return
-    setBusy(true)
-    setErr("")
-    try {
-      const stored = await agentPromptsApi.put(draft)
-      saved.mutate({ ...view, ...stored })
-      setDraft(null)
-      setDone(true)
-      setTimeout(() => setDone(false), 1500)
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className="flex flex-col gap-2">
-      <h3 className="text-13 font-medium text-ink">{tr("Prompt presets")}</h3>
-      <p className="text-12 text-ink-muted">{tr("Everything the agent is told, in order. New conversations use the active preset.")}</p>
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-12 text-ink-muted">{tr("Active")}</span>
-        <Select
-          appearance="inline"
-          className="min-w-40"
-          options={file.presets.map((p) => p.id)}
-          current={preset.id}
-          label={(id) => file.presets.find((p) => p.id === id)?.name ?? id}
-          onSelect={(id) => id && edit({ ...file, active: id })}
-        />
-        <Button variant="ghost" size="normal" onClick={() => add({ id: crypto.randomUUID(), name: tr("New preset"), prompts: withAgentParts([], view.parts) })}>{tr("New preset")}</Button>
-        <Button variant="ghost" size="normal" onClick={() => add({ ...preset, id: crypto.randomUUID(), name: `${preset.name} 2`, prompts: preset.prompts.map((q) => (q.builtin ? q : { ...q, id: crypto.randomUUID() })) })}>{tr("Duplicate")}</Button>
-        <Button variant="ghost" size="normal" onClick={() => fileInput.current?.click()}>{tr("Import")}</Button>
-        <input ref={fileInput} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { void importFile(e.currentTarget.files?.[0]); e.currentTarget.value = "" }} />
-      </div>
-      <div className="flex items-center gap-2">
-        <input className={cn(inputClass, "flex-1")} aria-label={tr("Preset name")} value={preset.name} onChange={(e) => { const name = e.currentTarget.value; editPreset((p) => ({ ...p, name })) }} />
-        <IconButton icon={<Icon name="trash" />} variant="ghost-muted" size="small" title={tr("Delete preset")} disabled={file.presets.length < 2} onClick={() => { const presets = file.presets.filter((p) => p.id !== preset.id); edit({ active: presets[0]?.id ?? "", presets }) }} />
-      </div>
-      <div className="flex flex-col gap-1.5">
-        {preset.prompts.map((q, i) => {
-          const locked = !!q.builtin && view.locked.includes(q.builtin)
-          const expanded = open.has(q.id)
-          const text = textOf(q)
-          return (
-            <div key={q.id} className={cn("flex flex-col gap-1.5 rounded-lg border border-line p-2", !q.enabled && "opacity-60")}>
-              <div className="flex items-center gap-2">
-                <input type="checkbox" className="size-4 accent-[var(--c-contrast)]" aria-label={tr("On")} title={locked ? tr("Always on") : undefined} checked={q.enabled} disabled={locked} onChange={(e) => editPrompt(q.id, { enabled: e.currentTarget.checked })} />
-                <button type="button" className="flex min-w-0 flex-1 items-center gap-1.5 text-left" aria-expanded={expanded} onClick={() => toggle(q.id)}>
-                  <IconSmall name={expanded ? "chevron-down" : "chevron-right"} />
-                  <span className="truncate text-13 text-ink">{q.builtin ? partLabel(q.builtin) : q.name.trim() || tr("Untitled prompt")}</span>
-                  <span className="shrink-0 rounded border border-line px-1.5 text-11 text-ink-muted">
-                    {q.builtin ? tr("Built in") : q.placement === "system" ? tr("System prompt") : tr("Each message")}
-                  </span>
-                  <span className="shrink-0 text-11 text-ink-faint">{text.length ? tr("{n} chars", { n: text.length.toLocaleString() }) : tr("Empty")}</span>
-                </button>
-                <IconButton icon={<IconSmall name="chevron-up" />} variant="ghost-muted" size="small" title={tr("Move up")} disabled={i === 0} onClick={() => move(i, -1)} />
-                <IconButton icon={<IconSmall name="chevron-down" />} variant="ghost-muted" size="small" title={tr("Move down")} disabled={i === preset.prompts.length - 1} onClick={() => move(i, 1)} />
-                {q.builtin ? null : <IconButton icon={<IconSmall name="outline-xmark" />} variant="ghost-muted" size="small" title={tr("Delete")} onClick={() => editPreset((p) => ({ ...p, prompts: p.prompts.filter((x) => x.id !== q.id) }))} />}
-              </div>
-              {expanded && q.builtin ? <>
-                <p className="text-12 text-ink-muted">{partHint(q.builtin)}</p>
-                {text ? <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-panel px-3 py-2 text-12 leading-5 text-ink">{text}</pre> : null}
-              </> : null}
-              {expanded && !q.builtin ? <>
-                <div className="flex items-center gap-2">
-                  <input className={cn(inputClass, "min-w-0 flex-1")} aria-label={tr("Name")} placeholder={tr("Name")} value={q.name} onChange={(e) => editPrompt(q.id, { name: e.currentTarget.value })} />
-                  <Select
-                    appearance="inline"
-                    options={["system", "message"] as AgentPrompt["placement"][]}
-                    current={q.placement}
-                    label={(x) => (x === "system" ? tr("System prompt") : tr("Each message"))}
-                    onSelect={(x) => x && editPrompt(q.id, { placement: x })}
-                  />
-                </div>
-                <textarea
-                  className="min-h-[96px] w-full resize-y rounded-lg border border-line bg-panel px-3 py-2 text-13 leading-5 text-ink outline-none placeholder:text-ink-faint focus:border-line-focus"
-                  placeholder={tr("Prompt text. {{user}} becomes your name.")}
-                  value={q.content}
-                  onChange={(e) => editPrompt(q.id, { content: e.currentTarget.value })}
-                />
-              </> : null}
-            </div>
-          )
-        })}
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <Button variant="ghost" size="normal" disabled={custom >= 100} onClick={() => {
-          const id = crypto.randomUUID()
-          const prompt: AgentPrompt = { id, name: "", enabled: true, placement: "system", content: "" }
-          editPreset((p) => {
-            const mode = p.prompts.findIndex((x) => x.builtin === "mode")
-            const prompts = [...p.prompts]
-            prompts.splice(mode < 0 ? prompts.length : mode, 0, prompt)
-            return { ...p, prompts }
-          })
-          setOpen((s) => new Set(s).add(id))
-        }}>{tr("Add prompt")}</Button>
-        <Button variant="ghost" size="normal" onClick={() => (preview ? setPreview(null) : void showPreview())}>{preview ? tr("Hide full prompt") : tr("Show full prompt")}</Button>
-      </div>
-      {preview ? <div className="flex flex-col gap-1.5">
-        <span className="text-12 text-ink-muted">{tr("System prompt, {n} chars", { n: preview.system.length.toLocaleString() })}</span>
-        <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-panel px-3 py-2 text-12 leading-5 text-ink">{preview.system}</pre>
-        <span className="text-12 text-ink-muted">{preview.message ? tr("Added to each message, {n} chars", { n: preview.message.length.toLocaleString() }) : tr("Nothing is added to your messages.")}</span>
-        {preview.message ? <pre className="max-h-60 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-panel px-3 py-2 text-12 leading-5 text-ink">{preview.message}</pre> : null}
-      </div> : null}
-      <div className="flex items-center gap-2">
-        <Button variant="neutral" size="normal" disabled={!draft || busy} onClick={save}>{tr("Save presets")}</Button>
-        {draft ? <Button variant="ghost" size="normal" onClick={() => { setDraft(null); setErr("") }}>{tr("Discard")}</Button> : null}
-        {done ? <span className="text-12 text-success">{tr("Saved")}</span> : null}
-      </div>
-      {err ? <div className="text-12 text-danger">{err}</div> : null}
     </div>
   )
 }
