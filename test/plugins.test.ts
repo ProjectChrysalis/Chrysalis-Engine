@@ -940,3 +940,20 @@ it("a scheduled hook sees a stop written while its model request was running", a
   finish({ text: "", model: "mock", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costTotal: 0, priced: false } });
   expect(await pending).toEqual({ stopped: true });
 }, 20_000);
+
+it("zip.build packs text natively without the zip permission and refuses unsafe names", async () => {
+  writePlugin("packer", { name: "Packer", version: "1.0.0", origin: "local", permissions: ["routes"] }, `
+    export function handleRoute(req, host) {
+      if (req.path === "/bad") return { status: 200, json: { zip: host.zip.build([{ name: "../x.json", text: "{}" }]) } };
+      return { status: 200, json: { zip: host.zip.build([{ name: "chats/é.jsonl", text: "{\\"mes\\":\\"café ✓\\"}" }, { name: "a.json", text: "{}" }]) } };
+    }
+  `);
+  const plugin = discoverPlugins(path.join(dir, "plugins"))[0]!;
+  const out = await runPluginRoute(plugin, { method: "GET", path: "/", query: {}, body: null }, deps(["routes"]));
+  const { unzipSync, strFromU8 } = await import("fflate");
+  const files = unzipSync(Buffer.from((out?.json as { zip: string }).zip, "base64"));
+  expect(Object.keys(files).sort()).toEqual(["a.json", "chats/é.jsonl"]);
+  expect(strFromU8(files["chats/é.jsonl"]!)).toBe('{"mes":"café ✓"}');
+  const bad = await runPluginRoute(plugin, { method: "GET", path: "/bad", query: {}, body: null }, deps(["routes"]));
+  expect(bad?.status).toBe(500);
+});

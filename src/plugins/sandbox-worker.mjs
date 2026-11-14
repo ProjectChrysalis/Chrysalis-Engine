@@ -25,7 +25,9 @@
  *                                         adds to a file, zip.image stores an
  *                                         image entry as media, zip.read
  *                                         hands a large text entry over in
- *                                         line-aligned slices; fs.query reads
+ *                                         line-aligned slices, zip.build makes
+ *                                         an archive from text (no permission
+ *                                         needed); fs.query reads
  *                                         fields of many JSON files through
  *                                         an index, fs.lines / spliceLines
  *                                         reach JSONL records by position
@@ -40,7 +42,7 @@ import { parentPort } from "node:worker_threads";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { unzipSync } from "fflate";
+import { unzipSync, zipSync } from "fflate";
 import { inflateSync } from "node:zlib";
 import { INDEX_DIR, lines as readRecords, query as queryIndex, splice as spliceRecords } from "./data-index.mjs";
 
@@ -556,8 +558,27 @@ port.on("message", async (msg) => {
     let storeImage = null;
     const zipSvc = (() => {
       const denied = () => { throw new Error("permission \"zip\" not granted (add \"zip\" to manifest permissions)"); };
-      if (!zipAllowed) return { entries: denied, list: denied };
+      // builds an archive from text the plugin already holds, so it reads
+      // nothing and needs no permission; native, where a guest-side zip of a
+      // whole library took minutes
+      const build = (files) => {
+        if (!Array.isArray(files)) throw new Error("zip.build takes a list of { name, text }");
+        const entries = {};
+        let total = 0;
+        for (const file of files) {
+          const name = file?.name;
+          if (typeof name !== "string" || !name || name.startsWith("/") || name.split("/").includes("..") || typeof file.text !== "string") throw new Error("zip.build: invalid entry");
+          if (Object.hasOwn(entries, name)) throw new Error("zip.build: duplicate entry " + name);
+          const bytes = Buffer.from(file.text, "utf8");
+          total += bytes.length;
+          if (total > 1024 * 1024 * 1024) throw new Error("zip.build: archive over 1 GB");
+          entries[name] = [bytes, { level: 0, mtime: 315532800000 }];
+        }
+        return Buffer.from(zipSync(entries)).toString("base64");
+      };
+      if (!zipAllowed) return { entries: denied, list: denied, build };
       return {
+        build,
         list: () => Object.keys(zipEntries()).length,
         entries: () => {
           const entries = zipEntries();
