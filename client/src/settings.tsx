@@ -936,6 +936,7 @@ function EditConnection(props: { connection: EngineConnection; onDone: () => voi
   const [baseUrl, setBaseUrl] = useState(c.baseUrl ?? "")
   const [key, setKey] = useState("")
   const [routing, setRouting] = useState(() => routingDraft(c.openRouterRouting))
+  const [flex, setFlex] = useState(c.serviceTier === "flex")
   const [err, setErr] = useState("")
   const [busy, setBusy] = useState(false)
   const [format, setFormat] = useState<FormatChoice>({ id: c.promptFormat ?? "auto", custom: c.promptFormatCustom ?? EMPTY_FORMAT })
@@ -971,6 +972,7 @@ function EditConnection(props: { connection: EngineConnection; onDone: () => voi
         ...(!c.providerId && baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
         ...(key.trim() ? { key: key.trim() } : {}),
         ...(!c.oauthProvider ? { models: modelDefs() } : {}),
+        ...(c.providerId === "google" ? { serviceTier: flex ? "flex" as const : null } : {}),
         ...(c.api === "openai-text" ? formatBody(format) : {}),
         ...(isOpenRouterConnection({ ...c, baseUrl }) || c.openRouterRouting ? { openRouterRouting: isOpenRouterConnection({ ...c, baseUrl }) ? routingBody(routing, tr("Price caps must be non-negative numbers.")) : null } : {}),
       })
@@ -999,6 +1001,7 @@ function EditConnection(props: { connection: EngineConnection; onDone: () => voi
         </label>
         {c.api === "openai-text" ? <PromptFormatEditor value={format} onChange={setFormat} /> : null}</>: null}
       {!c.oauthProvider ? <ModelsEditor builtin={!!c.providerId} mode={modelsMode} setMode={setModelsMode} models={models} setModels={setModels} /> : null}
+      {c.providerId === "google" ? <FlexTierToggle checked={flex} onChange={setFlex} /> : null}
       {isOpenRouterConnection({ ...c, baseUrl }) ? <OpenRouterRoutingEditor value={routing} onChange={setRouting} inputClass={inputClass} /> : null}
       <label className="flex flex-col gap-1 text-12 text-ink-muted">
         {c.credentialType === "oauth"
@@ -1328,6 +1331,7 @@ function ProviderForm(props: { provider: ProviderPick; onBack: () => void; onDon
   const [baseUrl, setBaseUrl] = useState(props.provider.baseUrl ?? "")
   const [key, setKey] = useState("")
   const [routing, setRouting] = useState(() => routingDraft())
+  const [flex, setFlex] = useState(false)
   const [err, setErr] = useState("")
   const [busy, setBusy] = useState(false)
   const [modelsMode, setModelsMode] = useState<"auto" | "manual">("auto")
@@ -1370,7 +1374,7 @@ function ProviderForm(props: { provider: ProviderPick; onBack: () => void; onDon
                 proxyUrl: proxyUrl.trim(),
                 ...(modelsMode === "manual" ? { models: modelDefs() as never } : {}),
               }
-            : { providerId: props.provider.id, models: modelDefs() }),
+            : { providerId: props.provider.id, models: modelDefs(), ...(props.provider.id === "google" && flex ? { serviceTier: "flex" as const } : {}) }),
         ...(key.trim() ? { key: key.trim() } : {}),
         ...(isOpenRouterConnection({ providerId: props.provider.id, baseUrl, api: isCustom() ? customApi() : undefined }) ? { openRouterRouting: routingBody(routing, tr("Price caps must be non-negative numbers.")) } : {}),
       })
@@ -1414,6 +1418,7 @@ function ProviderForm(props: { provider: ProviderPick; onBack: () => void; onDon
       </label>
       {isCustom() || !usingProxy() ? <ModelsEditor builtin={isBuiltin()} mode={modelsMode} setMode={setModelsMode} models={models} setModels={setModels} /> : null}
       {isOpenRouterConnection({ providerId: props.provider.id, baseUrl, api: isCustom() ? customApi() : undefined }) ? <OpenRouterRoutingEditor value={routing} onChange={setRouting} inputClass={inputClass} /> : null}
+      {props.provider.id === "google" && !usingProxy() ? <FlexTierToggle checked={flex} onChange={setFlex} /> : null}
       {isCustom() && customApi() === "openai-text" ? <PromptFormatEditor value={format} onChange={setFormat} /> : null}
       {isBuiltin() ? <div className="flex flex-col gap-1.5">
           <button
@@ -1520,6 +1525,18 @@ function PromptFormatEditor(props: { value: FormatChoice; onChange: (v: FormatCh
           <p className="text-11 leading-4 text-ink-faint sm:col-span-2">{tr("Type \\n for a newline.")}</p>
         </div> : null}
     </div>
+  )
+}
+
+function FlexTierToggle(props: { checked: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <label className="flex flex-col gap-0.5 rounded-lg border border-line p-2.5">
+      <span className="flex items-center gap-2 text-12 font-medium text-ink">
+        <input type="checkbox" className="size-4 accent-[var(--c-contrast)]" checked={props.checked} onChange={(e) => props.onChange(e.currentTarget.checked)} />
+        {tr("Flex tier")}
+      </span>
+      <span className="text-11 leading-4 text-ink-faint">{tr("Half price on Gemini 2.5 and newer. Slower, and may fail when Google is busy.")}</span>
+    </label>
   )
 }
 

@@ -55,7 +55,7 @@ import { curatedProviders, loadCustomProviders, reservedProviderIds } from "../p
 import { UserAgent, instructionDocsStamp, promptFile, listSessions, renameSession, archiveSession, sessionDir, isReasoningLevel, type AgentStreamEvent, type ReasoningLevel, type SessionCompactRecord } from "../agent/agent.js";
 import { clearUsage, usageSummary } from "../usage.js";
 import { compactionCut, fileActivity, lastSessionModel, summarizeMessages, type FileActivity } from "../agent/compact.js";
-import { listConnections, createConnection, updateConnection, deleteConnection, validateConnectionInput, validatePromptFormatInput, readConnections, connectionKeyUsable, type ConnectionInfo } from "../connections.js";
+import { listConnections, createConnection, updateConnection, deleteConnection, validateConnectionInput, validatePromptFormatInput, validateServiceTier, readConnections, connectionKeyUsable, type ConnectionInfo } from "../connections.js";
 import { supportsOpenRouterRouting, validateOpenRouterRouting, type OpenRouterRouting } from "../providers/openrouter-routing.js";
 import { createRoutingCatalog } from "../providers/openrouter-catalog.js";
 import { PROMPT_FORMATS, type PromptFormat } from "../providers/prompt-formats.js";
@@ -3058,7 +3058,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   app.patch("/v1/settings/connections/:id", async (c) => {
     const u = c.get("user");
     const p = c.get("paths");
-    const body = await c.req.json<{ name?: string; baseUrl?: string; key?: string; models?: unknown; promptFormat?: unknown; promptFormatCustom?: unknown; openRouterRouting?: unknown }>().catch(() => null) ?? {};
+    const body = await c.req.json<{ name?: string; baseUrl?: string; key?: string; models?: unknown; promptFormat?: unknown; promptFormatCustom?: unknown; openRouterRouting?: unknown; serviceTier?: unknown }>().catch(() => null) ?? {};
     let baseUrl: string | undefined;
     if (body.baseUrl !== undefined) {
       const check = validateConnectionInput({ name: "x", api: "openai-completions", baseUrl: body.baseUrl });
@@ -3089,6 +3089,12 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       }
       routing = { openRouterRouting: checked.value };
     }
+    let tier: { serviceTier?: "flex" | null } = {};
+    if (body.serviceTier !== undefined) {
+      const checked = validateServiceTier(body.serviceTier, readConnections(p).connections[c.req.param("id")]?.providerId);
+      if (!checked.ok) return c.json({ error: checked.error }, 400);
+      tier = { serviceTier: checked.value };
+    }
     const updated = updateConnection(p, c.req.param("id"), {
       ...(typeof body.name === "string" ? { name: body.name } : {}),
       ...(baseUrl !== undefined ? { baseUrl } : {}),
@@ -3096,6 +3102,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       ...(models !== undefined ? { models } : {}),
       ...format,
       ...routing,
+      ...tier,
     });
     if (!updated) return c.json({ error: "connection not found" }, 404);
     connectionsMutated(u, updated.id);

@@ -42,6 +42,16 @@ export interface ConnectionDef {
    *  "custom" with `promptFormatCustom`. */
   promptFormat?: string;
   promptFormatCustom?: PromptFormat;
+  /** Google only: "flex" asks for the half-price tier on the models it serves. */
+  serviceTier?: "flex";
+}
+
+/** A service tier from untrusted input: "flex" on a Google connection, or null to clear it. */
+export function validateServiceTier(value: unknown, providerId: string | undefined): { ok: true; value: "flex" | null } | { ok: false; error: string } {
+  if (value === null || value === undefined) return { ok: true, value: null };
+  if (value !== "flex") return { ok: false, error: "service tier must be \"flex\" or null" };
+  if (providerId !== "google") return { ok: false, error: "the Flex tier is for Google connections" };
+  return { ok: true, value };
 }
 
 /** A text completion connection's format choice from untrusted input. */
@@ -201,6 +211,7 @@ export function validateConnectionInput(input: {
   promptFormat?: unknown;
   promptFormatCustom?: unknown;
   openRouterRouting?: unknown;
+  serviceTier?: unknown;
 }):
   | { ok: true; value: ConnectionInput }
   | { ok: false; error: string } {
@@ -242,6 +253,8 @@ export function validateConnectionInput(input: {
     }
     const checked = validateConnectionModels(input.models);
     if (!checked.ok) return checked;
+    const tier = validateServiceTier(input.serviceTier, builtin.id);
+    if (!tier.ok) return tier;
     if (Array.isArray(checked.value)) {
       const catalog = catalogProviders().find((provider) => provider.id === builtin.id)?.getModels() ?? [];
       for (const model of checked.value) {
@@ -250,7 +263,7 @@ export function validateConnectionInput(input: {
         }
       }
     }
-    return { ok: true, value: { name, providerId: builtin.id, ...(input.models !== undefined ? { models: checked.value } : {}), ...(routing ? { openRouterRouting: routing } : {}), ...(key ? { key } : {}) } };
+    return { ok: true, value: { name, providerId: builtin.id, ...(input.models !== undefined ? { models: checked.value } : {}), ...(routing ? { openRouterRouting: routing } : {}), ...(tier.value ? { serviceTier: tier.value } : {}), ...(key ? { key } : {}) } };
   }
 
   // Radius gateway: OAuth-only connection kind
@@ -294,7 +307,7 @@ export function listConnections(p: UserPaths): ConnectionInfo[] {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-type ConnectionInput = Pick<ConnectionDef, "providerId" | "oauthProvider" | "gateway" | "api" | "baseUrl" | "proxyOf" | "models" | "promptFormat" | "promptFormatCustom" | "openRouterRouting"> & { name: string; key?: string };
+type ConnectionInput = Pick<ConnectionDef, "providerId" | "oauthProvider" | "gateway" | "api" | "baseUrl" | "proxyOf" | "models" | "promptFormat" | "promptFormatCustom" | "openRouterRouting" | "serviceTier"> & { name: string; key?: string };
 
 export function createConnection(p: UserPaths, value: ConnectionInput): ConnectionInfo {
   const file = readConnections(p);
@@ -303,7 +316,7 @@ export function createConnection(p: UserPaths, value: ConnectionInput): Connecti
   const def: ConnectionDef = value.oauthProvider
     ? { name: value.name, oauthProvider: value.oauthProvider, gateway: value.gateway! }
     : value.providerId
-      ? { name: value.name, providerId: value.providerId, ...(value.models !== undefined ? { models: value.models } : {}) }
+      ? { name: value.name, providerId: value.providerId, ...(value.models !== undefined ? { models: value.models } : {}), ...(value.serviceTier ? { serviceTier: value.serviceTier } : {}) }
       : {
           name: value.name,
           api: value.api!,
@@ -328,7 +341,7 @@ export function createConnection(p: UserPaths, value: ConnectionInput): Connecti
 export function updateConnection(
   p: UserPaths,
   id: string,
-  patch: { name?: string; baseUrl?: string; key?: string; models?: ConnectionDef["models"]; promptFormat?: string; promptFormatCustom?: PromptFormat; openRouterRouting?: OpenRouterRouting | null },
+  patch: { name?: string; baseUrl?: string; key?: string; models?: ConnectionDef["models"]; promptFormat?: string; promptFormatCustom?: PromptFormat; openRouterRouting?: OpenRouterRouting | null; serviceTier?: "flex" | null },
 ): ConnectionInfo | null {
   const file = readConnections(p);
   const def = file.connections[id];
@@ -344,6 +357,10 @@ export function updateConnection(
     else delete def.openRouterRouting;
   }
   if (!supportsOpenRouterRouting(def)) delete def.openRouterRouting;
+  if (patch.serviceTier !== undefined && def.providerId === "google") {
+    if (patch.serviceTier) def.serviceTier = patch.serviceTier;
+    else delete def.serviceTier;
+  }
   if (patch.promptFormat !== undefined && def.api === "openai-text") {
     def.promptFormat = patch.promptFormat;
     if (patch.promptFormat === "custom" && patch.promptFormatCustom) def.promptFormatCustom = patch.promptFormatCustom;

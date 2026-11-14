@@ -44,6 +44,8 @@ const en = {
   "Max output price ($/million tokens)": "",
   "Reset routing": "",
   "Custom models": "",
+  "Flex tier": "",
+  "Half price on Gemini 2.5 and newer. Slower, and may fail when Google is busy.": "",
   "Models are discovered from the endpoint. Pick Manual to set model IDs and limits.": "",
   "Keeps the provider catalog. New IDs need context and max output tokens.": "",
   "Context window sets the auto-compact threshold.": "",

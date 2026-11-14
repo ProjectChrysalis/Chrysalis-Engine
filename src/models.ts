@@ -14,6 +14,7 @@ import { loadCustomProviders, curatedProviders, buildProvider, withAdditionalMod
 import { readConnections, authTarget, connectionKeyUsable, readAuth } from "./connections.js";
 import { formatFromModelName, formatFromTemplate, parsePromptFormat, promptFormatById, renderPrompt, stopStrings, type PromptFormat } from "./providers/prompt-formats.js";
 import { capCacheRefreshPayload } from "./providers/cache-refresh.js";
+import { withFlexTier } from "./providers/service-tier.js";
 import { cacheStreamOptions, type CacheRequest } from "./providers/prompt-cache.js";
 import { log } from "./logger.js";
 import { generationError, providerError, withGooglePromptFeedback } from "./providers/errors.js";
@@ -345,6 +346,8 @@ export class UserModelService {
       if (def.providerId) {
         const provider = models.getProvider(def.providerId);
         if (provider && Array.isArray(def.models)) models.setProvider(withAdditionalModels(provider, def.models));
+        const current = models.getProvider(def.providerId);
+        if (current && def.providerId === "google" && def.serviceTier === "flex") models.setProvider(withFlexTier(current));
         continue;
       }
       if (def.oauthProvider === "radius" && def.gateway) {
