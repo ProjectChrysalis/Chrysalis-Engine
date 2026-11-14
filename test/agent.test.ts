@@ -119,6 +119,19 @@ describe("agent tools", () => {
       .rejects.toThrow(/matches 2 times/);
   });
 
+  it("edit_file: a quote that only differs in whitespace still applies; /tmp is named", async () => {
+    const p = bootstrapUserDir(dataDir, "alice");
+    fs.mkdirSync(path.join(p.apps, "roleplay", "data"), { recursive: true });
+    const f = path.join(p.apps, "roleplay", "data", "note.txt");
+    fs.writeFileSync(f, "first\n  second  \nthird\n");
+    const tools = buildUserTools("alice", p, { dataDir: p.root });
+    const edit = tools.find((t) => t.name === "edit_file")!;
+    await edit.execute("t1", { path: "apps/roleplay/data/note.txt", oldText: "second\nthird", newText: "2nd $& 3rd" });
+    expect(fs.readFileSync(f, "utf8")).toBe("first\n  2nd $& 3rd\n");
+    await expect(edit.execute("t2", { path: "apps/roleplay/data/note.txt", oldText: "fourth", newText: "x" })).rejects.toThrow(/not found/);
+    await expect(tools.find((t) => t.name === "read_file")!.execute("t3", { path: "/tmp/out.txt" })).rejects.toThrow(/bash sandbox's \/tmp/);
+  });
+
   it("write_file commits immediately as the agent author; read_file missing → error", async () => {
     const p = bootstrapUserDir(dataDir, "alice");
     const tools = buildUserTools("alice", p, { dataDir: p.root });

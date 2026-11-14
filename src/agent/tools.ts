@@ -11,6 +11,7 @@ import { createTwoFilesPatch } from "diff";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { UserPaths } from "../paths.js";
 import { agentReadDenied, agentWriteDenied, safeResolve } from "../paths.js";
+import { replaceLines, searchRegex } from "./text-match.js";
 import type { SandboxRunner } from "../sandbox/index.js";
 import { readSandboxSettings } from "../sandbox/network.js";
 import { makePathGuard } from "../sandbox/workspace.js";
@@ -76,6 +77,15 @@ function looksBinary(abs: string): boolean {
   } finally {
     fs.closeSync(fd);
   }
+}
+
+/** A workspace path for the file tools. /tmp is the bash sandbox's own
+ *  scratch space in the browser, which these tools cannot see. */
+function workspacePath(root: string, rel: string): string {
+  if (/^\/tmp(\/|$)/.test(rel.replace(/\\/g, "/"))) {
+    throw new Error(`${rel} is in the bash sandbox's /tmp, which the file tools cannot reach. Use bash to work with it, or keep the file in the workspace.`);
+  }
+  return safeResolve(root, rel);
 }
 
 function textResult(text: string, details: unknown = {}): { content: { type: "text"; text: string }[]; details: unknown } {
@@ -148,7 +158,7 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
         const denied = agentReadDenied(rel);
         if (denied) throw new Error(`Refused: ${denied}`);
       }
-      const abs = safeResolve(p.root, rel);
+      const abs = workspacePath(p.root, rel);
       try { guard.assertReadable(abs, rel); } catch (e) { throw e as Error; }
       if (!fs.existsSync(abs)) throw new Error(`File not found: ${rel}`);
       const stat = fs.statSync(abs);
@@ -200,7 +210,7 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
         const { path: rel, oldText, newText } = params as { path: string; oldText: string; newText: string };
         const denied = agentWriteDenied(rel);
         if (denied) throw new Error(`Refused: ${rel} is not agent-writable.`);
-        const abs = safeResolve(p.root, rel);
+        const abs = workspacePath(p.root, rel);
         guard.assertReadable(abs, rel);
         guard.assertWritable(abs, rel);
         if (!fs.existsSync(abs)) throw new Error(`File not found: ${rel}`);
@@ -208,9 +218,15 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
         const expected = (params as { expectedRevision?: string }).expectedRevision ?? readRevisions.get(abs);
         if (expected && expected !== revisionOf(content)) throw new Error("File changed since it was read. Read it again before editing.");
         const count = content.split(oldText).length - 1;
-        if (count === 0) throw new Error("oldText not found in file.");
         if (count > 1) throw new Error(`oldText matches ${count} times — include more surrounding lines to make it unique.`);
-        const next = content.replace(oldText, newText);
+        let next: string;
+        if (count === 1) next = content.replace(oldText, () => newText);
+        else {
+          const loose = replaceLines(content, oldText, newText);
+          if (loose.kind === "ambiguous") throw new Error(`oldText matches ${loose.count} places once whitespace and quote style are ignored. Include more surrounding lines to make it unique.`);
+          if (loose.kind === "none") throw new Error("oldText not found in file. Read the part you are editing again and copy it exactly.");
+          next = loose.content;
+        }
         atomicText(abs, next);
         readRevisions.set(abs, revisionOf(next));
         const changeId = recordChange(p.root, [{ path: rel, before: content, after: next }]);
@@ -243,11 +259,11 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
     async execute(_id, params) {
       const { pattern, ignoreCase } = params as { pattern: string; ignoreCase?: boolean };
       const rel = (params as { path?: string }).path ?? ".";
-      const start = safeResolve(p.root, rel);
+      const start = workspacePath(p.root, rel);
       guard.assertReadable(start, rel);
       let re: RegExp;
       try {
-        re = new RegExp(pattern, ignoreCase ? "gi" : "g");
+        re = searchRegex(pattern, ignoreCase);
       } catch (e) {
         throw new Error(`Invalid regex: ${(e as Error).message}`);
       }
@@ -310,7 +326,7 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
         const { path: rel, content } = params as { path: string; content: string };
         const denied = agentWriteDenied(rel);
         if (denied) throw new Error(`Refused: ${rel} is not agent-writable.`);
-        const abs = safeResolve(p.root, rel);
+        const abs = workspacePath(p.root, rel);
         guard.assertWritable(abs, rel);
         // read the file the write replaces BEFORE it lands: the write commits
         // immediately, so afterwards there is nothing left to diff against
@@ -595,7 +611,7 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
       const sendable = (rel: string): string => {
         const denied = agentReadDenied(rel);
         if (denied || /(^|\/)auth\.json$/i.test(rel.replace(/\\/g, "/"))) throw new Error(`File not found: ${rel}`);
-        const abs = safeResolve(p.root, rel);
+        const abs = workspacePath(p.root, rel);
         guard.assertReadable(abs, rel);
         if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) throw new Error(`File not found: ${rel}`);
         if (fs.statSync(abs).size > MAX_UPLOAD_BYTES) throw new Error(`${rel} is too large to send (32 MB at most).`);
@@ -653,7 +669,7 @@ export function buildUserTools(username: string, p: UserPaths, opts: AgentToolOp
     name: "bash",
     label: "Run shell command",
     description:
-      "Run a shell command in the sandbox in the user's browser (busybox ash, coreutils, git, python3, node, jq, rg, curl; the workspace at /workspace), never on this machine. Files the command changes are saved to the user's files when it finishes; commit them with git in the shell. A file is fetched the first time a command reads it: what anything else writes to it while that command runs is not seen, so watching a file means one command per look, not a loop in one. Use it for scripts, data work, edits across many files and checking your work, not for reading or editing one file (read_file/edit_file). Output is capped (~64KB per stream, head and tail kept). Process substitution <(...) and >(...) and background processes are unavailable. Use temporary files for diff, and timeout_ms for limits rather than the timeout command.",
+      "Run a shell command in the sandbox in the user's browser (busybox ash, coreutils, git, python3, node, jq, rg, curl; the workspace at /workspace), never on this machine. Files the command changes are saved to the user's files when it finishes; commit them with git in the shell. A file is fetched the first time a command reads it: what anything else writes to it while that command runs is not seen, so watching a file means one command per look, not a loop in one. Use it for scripts, data work, edits across many files and checking your work, not for reading or editing one file (read_file/edit_file). Output is capped (~64KB per stream, head and tail kept). Process substitution <(...) and >(...) and background processes are unavailable. Use temporary files for diff, and timeout_ms for limits rather than the timeout command. /tmp lasts until the sandbox restarts (a page reload, a stop or a timeout), so keep anything that matters in the workspace.",
     parameters: Type.Object({
       command: Type.String({ description: "The shell command line. Runs with cwd = the user's workspace" }),
       timeout_ms: Type.Optional(

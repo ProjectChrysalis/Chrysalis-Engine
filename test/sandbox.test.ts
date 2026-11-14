@@ -268,6 +268,22 @@ describe("browser runner readiness", () => {
     expect("stdout" in res && res.stdout).toBe("wasi\n");
   });
 
+  it("says when a command ran with a new /tmp", async () => {
+    const { bus, emitted } = busStub();
+    const runner = new BrowserSandbox(cfg, bus, 50);
+    runner.hello("alice", "host123456", true);
+    const once = async (scratch: string) => {
+      const pending = runner.run("alice", "/tmp", { command: "ls /tmp" });
+      await new Promise((r) => setTimeout(r, 10));
+      runner.resolve("alice", emitted.at(-1)![2].id, { exitCode: 0, stdout: "", stderr: "", scratch });
+      const res = await pending;
+      return "stderr" in res ? res.stderr : "";
+    };
+    expect(await once("host123456:a")).toBe("");
+    expect(await once("host123456:a")).toBe("");
+    expect(await once("host123456:b")).toMatch(/new sandbox, so \/tmp started empty/);
+  });
+
   it("cancels a pending command and refuses its late result", async () => {
     const { bus, emitted } = busStub();
     const runner = new BrowserSandbox(cfg, bus, 50);

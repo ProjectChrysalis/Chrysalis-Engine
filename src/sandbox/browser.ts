@@ -50,6 +50,8 @@ export class BrowserSandbox implements SandboxRunner {
   /** Pages (user:host) that kept heartbeating but missed a command: their
    *  event stream is gone, and they are not addressed until it is back. */
   private deaf = new Set<string>();
+  /** The /tmp each user's last command ran with (see SandboxFrame.scratch). */
+  private scratch = new Map<string, string>();
 
   constructor(
     private cfg: SandboxConfig,
@@ -227,13 +229,21 @@ export class BrowserSandbox implements SandboxRunner {
   }
 
   /** A host finished a command. */
-  resolve(username: string, id: unknown, result: { exitCode?: number | null; stdout?: string; stderr?: string; timedOut?: boolean; truncated?: boolean }): boolean {
+  resolve(username: string, id: unknown, result: { exitCode?: number | null; stdout?: string; stderr?: string; timedOut?: boolean; truncated?: boolean; scratch?: string }): boolean {
     if (typeof id !== "string") return false;
     const key = `${username}:${id}`;
     const p = this.pending.get(key);
     if (!p) return false;
+    // /tmp lives in one sandbox frame: a reload, another tab or a stopped
+    // command starts a new one, and files the agent left there are gone
+    let stderr = String(result.stderr ?? "");
+    const before = this.scratch.get(username);
+    if (result.scratch) {
+      if (before && before !== result.scratch) stderr += `${stderr && !stderr.endsWith("\n") ? "\n" : ""}sandbox: this command ran in a new sandbox, so /tmp started empty. Recreate files you kept there, or keep them in the workspace.\n`;
+      this.scratch.set(username, result.scratch);
+    } else this.scratch.delete(username);
     const so = capOutput(String(result.stdout ?? ""));
-    const se = capOutput(String(result.stderr ?? ""));
+    const se = capOutput(stderr);
     p.resolve({
       exitCode: typeof result.exitCode === "number" ? result.exitCode : null,
       stdout: so.text,

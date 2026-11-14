@@ -104,6 +104,8 @@ class SandboxFrame {
   dead = false;
   /** What this frame's runtime has been told about the workspace. */
   known = new Map<string, Meta>();
+  /** Names this frame's /tmp, which lives and dies with it. */
+  readonly scratch = `${HOST_ID}:${Math.random().toString(36).slice(2, 10)}`;
   fresh = true;
 
   constructor() {
@@ -417,7 +419,7 @@ async function execute(id: string, command: string, timeoutMs: number, signal: A
   let stderr = out.stderr;
   if (notes.length) stderr += `${stderr && !stderr.endsWith("\n") ? "\n" : ""}sandbox: these changes were not saved to your files:\n${notes.map((n) => `  ${n}`).join("\n")}\n`;
   if (tree.truncated) stderr += "sandbox: the workspace has more files than the sandbox lists; some are not visible here.\n";
-  result(id, { exitCode: out.exitCode, stdout: out.stdout, stderr, timedOut: false, truncated: false });
+  result(id, { exitCode: out.exitCode, stdout: out.stdout, stderr, timedOut: false, truncated: false, scratch: f.scratch });
 }
 
 const listener: BusListener = (type, payload) => {

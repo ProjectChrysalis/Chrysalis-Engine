@@ -1539,7 +1539,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   app.post("/v1/sandbox/result", async (c) => {
     if (!(sandbox instanceof BrowserSandbox)) return c.json({ error: "this instance does not use the browser sandbox" }, 409);
     const body = await c.req
-      .json<{ id?: unknown; exitCode?: unknown; stdout?: unknown; stderr?: unknown; timedOut?: unknown; truncated?: unknown }>()
+      .json<{ id?: unknown; exitCode?: unknown; stdout?: unknown; stderr?: unknown; timedOut?: unknown; truncated?: unknown; scratch?: unknown }>()
       .catch(() => ({}) as Record<string, unknown>);
     const accepted = sandbox.resolve(c.get("user").username, body.id, {
       exitCode: typeof body.exitCode === "number" ? body.exitCode : null,
@@ -1547,6 +1547,7 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       stderr: typeof body.stderr === "string" ? body.stderr : "",
       timedOut: body.timedOut === true,
       truncated: body.truncated === true,
+      ...(typeof body.scratch === "string" && body.scratch.length <= 128 ? { scratch: body.scratch } : {}),
     });
     return accepted ? c.json({ ok: true }) : c.json({ error: "that run is no longer waiting" }, 409);
   });
