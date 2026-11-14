@@ -646,7 +646,11 @@ async function start(homeDir: string, dataDir: string, loaded: LoadedConfig): Pr
     sessionCookie: SESSION_COOKIE,
   });
   let listener: Listener | null = null;
-  const catalog = new ModelCatalog({ dataDir, enabled: () => config.modelUpdates });
+  const catalog = new ModelCatalog({
+    dataDir,
+    enabled: () => config.modelUpdates,
+    onChanged: () => { for (const u of users.list()) bus.emit(u.username, "connections_changed", {}); },
+  });
   const settings = new ServerSettings({
     homeDir,
     dataDir,

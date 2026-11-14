@@ -189,7 +189,8 @@ export class ModelCatalog {
   private readonly fetch: typeof fetch;
   private readonly registry: string;
 
-  constructor(private readonly opts: { dataDir: string; enabled: () => boolean; fetch?: typeof fetch; registry?: string; bundled?: string }) {
+  /** `onChanged` runs whenever the models in use changed, so open pages can list them again. */
+  constructor(private readonly opts: { dataDir: string; enabled: () => boolean; fetch?: typeof fetch; registry?: string; bundled?: string; onChanged?: () => void }) {
     this.fetch = opts.fetch ?? fetch;
     this.registry = opts.registry ?? REGISTRY;
     this.load();
@@ -249,6 +250,7 @@ export class ModelCatalog {
     } catch {
       this.apply(null);
     }
+    this.opts.onChanged?.();
     if (this.opts.enabled() && !this.checkedAt) void this.refresh().catch(() => undefined);
   }
 
@@ -293,6 +295,7 @@ export class ModelCatalog {
         fs.writeFileSync(tmp, JSON.stringify(file));
         fs.renameSync(tmp, this.file);
         this.apply(file);
+        this.opts.onChanged?.();
         log.info(`[models] model list updated from ${latest}: ${this.status().added} new models`);
       } else if (current) {
         const file = { ...current.file, fetchedAt: new Date().toISOString() };
