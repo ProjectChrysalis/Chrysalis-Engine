@@ -1,6 +1,7 @@
 import { tr } from "./i18n/index"
 import type { AppUpdate, StoreList } from "./types"
 import type { OpenRouterRouting } from "../../src/providers/openrouter-routing"
+import type { AgentPromptsFile } from "../../src/agent/prompt-preset-types"
 export type { OpenRouterRouting } from "../../src/providers/openrouter-routing"
 // Chrysalis engine HTTP client for the launcher shell (auth, settings,
 // connections, apps). The agent chat lives in its own app (client-agent/).
@@ -230,6 +231,13 @@ export async function listProviders(): Promise<EngineProvider[]> {
 export const personaApi = {
   get: () => api<{ persona: string }>("GET", "/v1/settings/persona").then((r) => r.persona ?? ""),
   put: (persona: string) => api("PUT", "/v1/settings/persona", { persona }),
+}
+
+export type { AgentPrompt, AgentPromptPreset, AgentPromptsFile } from "../../src/agent/prompt-preset-types"
+
+export const agentPromptsApi = {
+  get: () => api<AgentPromptsFile>("GET", "/v1/settings/agent-prompts"),
+  put: (file: AgentPromptsFile) => api<AgentPromptsFile>("PUT", "/v1/settings/agent-prompts", file),
 }
 
 export const mcpApi = {

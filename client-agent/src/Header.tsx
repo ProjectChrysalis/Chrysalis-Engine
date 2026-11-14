@@ -4,8 +4,34 @@ import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Paperclip, SidebarSimple, SlidersHorizontal, WifiSlash, X } from "@phosphor-icons/react"
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "@/components/ui/popover"
-import { useEffect, type ReactNode } from "react"
+import { useEffect, useState, type ReactNode } from "react"
+import { api } from "./api"
+import type { AgentPromptsFile } from "../../src/agent/prompt-preset-types"
 import { useAgent } from "./store"
+
+const NO_PRESET = "__none"
+
+/** Switches the active prompt preset; the presets themselves are edited in Settings. */
+function PromptPresetPicker(): ReactNode {
+  const [file, setFile] = useState<AgentPromptsFile | null>(null)
+  const running = useAgent((s) => s.running)
+  useEffect(() => { void api<AgentPromptsFile>("GET", "/v1/settings/agent-prompts").then(setFile).catch(() => setFile(null)) }, [])
+  if (!file?.presets.length) return null
+  const choose = async (value: string) => {
+    const latest = await api<AgentPromptsFile>("GET", "/v1/settings/agent-prompts")
+    setFile(await api<AgentPromptsFile>("PUT", "/v1/settings/agent-prompts", { ...latest, active: value === NO_PRESET ? null : value }))
+  }
+  const items = [{ label: tr("No preset"), value: NO_PRESET }, ...file.presets.map((p) => ({ label: p.name, value: p.id }))]
+  return (
+    <div className="agent-setting">
+      <span className="agent-setting-label">{tr("Prompt preset")}</span>
+      <Select items={items} value={file.active ?? NO_PRESET} onValueChange={(v) => void choose(String(v ?? NO_PRESET)).catch(() => undefined)} disabled={running}>
+        <SelectTrigger className="agent-composer-mode" aria-label={tr("Prompt preset")}><SelectValue /></SelectTrigger>
+        <SelectContent>{items.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
+      </Select>
+    </div>
+  )
+}
 
 function ComposerSettings(): ReactNode {
   const mode = useAgent((s) => s.mode)
@@ -55,6 +81,7 @@ function ComposerSettings(): ReactNode {
         <span className="agent-setting-label">{tr("Current model")}</span>
         <AgentModelPicker />
       </div>
+      <PromptPresetPicker />
       <div className="agent-setting">
         <span className="agent-setting-label">{tr("Queued messages")}</span>
         <Select items={[{ label: tr("Change course now"), value: "steer" }, { label: tr("After this task"), value: "followUp" }]} value={queueMode} onValueChange={value => useAgent.setState({ queueMode: value === "followUp" ? "followUp" : "steer" })}>

@@ -2,7 +2,7 @@
 // Phosphor glyph so a rename here never ripples into markup.
 import type { ComponentPropsWithoutRef } from "react"
 import {
-  ArrowClockwise, ArrowLeft, ArrowSquareOut, ArrowUUpLeft, Brain, CaretDown, CaretLeft, CaretRight,
+  ArrowClockwise, ArrowLeft, ArrowSquareOut, ArrowUUpLeft, Brain, CaretDown, CaretLeft, CaretRight, CaretUp,
   Chat, ChartBar, ChatCircle, CheckCircle, ClockCounterClockwise, CloudArrowUp, Code, Columns, Copy, DownloadSimple, FolderPlus, GearSix, HardDrives, Info,
   Lock, PencilSimpleLine, Plus, PlusSquare, Prohibit, SignOut, SlidersHorizontal,
   SpeakerHigh, SquaresFour, Stop, Storefront, TerminalWindow, Trash, X,
@@ -37,6 +37,7 @@ const glyphs = {
   "chevron-left": CaretLeft,
   "chevron-right": CaretRight,
   "chevron-down": CaretDown,
+  "chevron-up": CaretUp,
   "folder-add-left": FolderPlus,
   "grid-plus": Plus,
   "outline-chevron-down": CaretDown,

@@ -20,6 +20,10 @@ import {
   mcpApi,
   listProviders,
   personaApi,
+  agentPromptsApi,
+  type AgentPrompt,
+  type AgentPromptPreset,
+  type AgentPromptsFile,
   prefs,
   authApi,
   adminUsersApi,
@@ -43,6 +47,7 @@ import { SpendingTab } from "./spending-settings"
 import { OpenRouterRoutingEditor } from "./openrouter-routing"
 import { routingDraft, routingBody, isOpenRouterConnection } from "./openrouter-routing-state"
 import { LOCALES, setLocale, tr, useLocale, type Locale } from "./i18n/index"
+import { importPromptPreset } from "./agent-prompt-import"
 
 export const inputClass =
   "min-w-0 flex-1 rounded-lg border border-line bg-panel px-3 py-1.5 text-13 text-ink outline-none placeholder:text-ink-faint focus:border-line-focus"
@@ -568,7 +573,7 @@ function AgentTab() {
           <Tabs.Trigger value="tools">{tr("Tools")}</Tabs.Trigger>
         </Tabs.List>
         <Tabs.Content value="generation" keepMounted><AgentModelSettings section="generation" inputClass={inputClass} /></Tabs.Content>
-        <Tabs.Content value="instructions" keepMounted><AgentInstructions /></Tabs.Content>
+        <Tabs.Content value="instructions" keepMounted><div className="flex flex-col gap-6 pb-4"><AgentInstructions /><div className="border-t border-line pt-5"><AgentPromptPresets /></div></div></Tabs.Content>
         <Tabs.Content value="context" keepMounted><AgentModelSettings section="context" inputClass={inputClass} /></Tabs.Content>
         <Tabs.Content value="tools" keepMounted>
           <div className="flex flex-col gap-6 pb-4"><InternetSection /><div className="border-t border-line pt-5"><HelpersSection /></div><div className="border-t border-line pt-5"><AgentSkills /></div></div>
@@ -620,6 +625,116 @@ function AgentInstructions() {
           </Button> : null}
         {saved ? <span className="text-12 text-success">{tr("Saved")}</span> : null}
       </div>
+    </div>
+  )
+}
+
+const NO_PRESET = "__none"
+
+function AgentPromptPresets() {
+  const saved = useResource(() => agentPromptsApi.get())
+  const [draft, setDraft] = useState<AgentPromptsFile | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState(false)
+  const [err, setErr] = useState("")
+  const fileInput = useRef<HTMLInputElement>(null)
+  const file: AgentPromptsFile = draft ?? saved.data ?? { active: null, presets: [] }
+  const preset = file.presets.find((p) => p.id === file.active)
+  const edit = (next: AgentPromptsFile) => { setDraft(next); setDone(false); setErr("") }
+  const editPreset = (change: (p: AgentPromptPreset) => AgentPromptPreset) =>
+    edit({ ...file, presets: file.presets.map((p) => (p.id === file.active ? change(p) : p)) })
+  const editPrompt = (id: string, patch: Partial<AgentPrompt>) =>
+    editPreset((p) => ({ ...p, prompts: p.prompts.map((q) => (q.id === id ? { ...q, ...patch } : q)) }))
+  const move = (index: number, by: number) => editPreset((p) => {
+    const prompts = [...p.prompts]
+    const [item] = prompts.splice(index, 1)
+    if (item) prompts.splice(index + by, 0, item)
+    return { ...p, prompts }
+  })
+  const add = (next: AgentPromptPreset) => edit({ active: next.id, presets: [...file.presets, next] })
+
+  const importFile = async (picked: File | undefined) => {
+    if (!picked) return
+    try {
+      const imported = importPromptPreset(JSON.parse(await picked.text()), picked.name.replace(/\.json$/i, ""))
+      if (!imported) setErr(tr("That file has no prompts to import."))
+      else add(imported)
+    } catch {
+      setErr(tr("That file has no prompts to import."))
+    }
+  }
+
+  const save = async () => {
+    if (!draft) return
+    setBusy(true)
+    setErr("")
+    try {
+      saved.mutate(await agentPromptsApi.put(draft))
+      setDraft(null)
+      setDone(true)
+      setTimeout(() => setDone(false), 1500)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="text-13 font-medium text-ink">{tr("Prompt presets")}</h3>
+      <p className="text-12 text-ink-muted">{tr("The active preset's prompts go with every agent conversation.")}</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Select
+          appearance="inline"
+          className="min-w-40"
+          options={[NO_PRESET, ...file.presets.map((p) => p.id)]}
+          current={file.active ?? NO_PRESET}
+          label={(id) => (id === NO_PRESET ? tr("No preset") : file.presets.find((p) => p.id === id)?.name ?? id)}
+          onSelect={(id) => edit({ ...file, active: !id || id === NO_PRESET ? null : id })}
+        />
+        <Button variant="ghost" size="normal" onClick={() => add({ id: crypto.randomUUID(), name: tr("New preset"), prompts: [] })}>{tr("New preset")}</Button>
+        {preset ? <Button variant="ghost" size="normal" onClick={() => add({ ...preset, id: crypto.randomUUID(), name: `${preset.name} 2`, prompts: preset.prompts.map((q) => ({ ...q, id: crypto.randomUUID() })) })}>{tr("Duplicate")}</Button> : null}
+        <Button variant="ghost" size="normal" onClick={() => fileInput.current?.click()}>{tr("Import")}</Button>
+        <input ref={fileInput} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { void importFile(e.currentTarget.files?.[0]); e.currentTarget.value = "" }} />
+      </div>
+      {preset ? <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-2">
+            <input className={cn(inputClass, "flex-1")} aria-label={tr("Name")} value={preset.name} onChange={(e) => { const name = e.currentTarget.value; editPreset((p) => ({ ...p, name })) }} />
+            <IconButton icon={<Icon name="trash" />} variant="ghost-muted" size="small" title={tr("Delete")} onClick={() => edit({ active: null, presets: file.presets.filter((p) => p.id !== preset.id) })} />
+          </div>
+          {preset.prompts.map((q, i) => (
+            <div key={q.id} className="flex flex-col gap-1.5 rounded-lg border border-line p-2.5">
+              <div className="flex items-center gap-2">
+                <input type="checkbox" className="size-4 accent-[var(--c-contrast)]" aria-label={tr("On")} checked={q.enabled} onChange={(e) => editPrompt(q.id, { enabled: e.currentTarget.checked })} />
+                <input className={cn(inputClass, "min-w-0 flex-1")} aria-label={tr("Name")} placeholder={tr("Name")} value={q.name} onChange={(e) => editPrompt(q.id, { name: e.currentTarget.value })} />
+                <Select
+                  appearance="inline"
+                  options={["system", "message"] as AgentPrompt["placement"][]}
+                  current={q.placement}
+                  label={(x) => (x === "system" ? tr("System prompt") : tr("Each message"))}
+                  onSelect={(x) => x && editPrompt(q.id, { placement: x })}
+                />
+                <IconButton icon={<IconSmall name="chevron-up" />} variant="ghost-muted" size="small" title={tr("Move up")} disabled={i === 0} onClick={() => move(i, -1)} />
+                <IconButton icon={<IconSmall name="chevron-down" />} variant="ghost-muted" size="small" title={tr("Move down")} disabled={i === preset.prompts.length - 1} onClick={() => move(i, 1)} />
+                <IconButton icon={<IconSmall name="outline-xmark" />} variant="ghost-muted" size="small" title={tr("Delete")} onClick={() => editPreset((p) => ({ ...p, prompts: p.prompts.filter((x) => x.id !== q.id) }))} />
+              </div>
+              <textarea
+                className="min-h-[96px] w-full resize-y rounded-lg border border-line bg-panel px-3 py-2 text-13 leading-5 text-ink outline-none placeholder:text-ink-faint focus:border-line-focus"
+                placeholder={tr("Prompt text. {{user}} becomes your name.")}
+                value={q.content}
+                onChange={(e) => editPrompt(q.id, { content: e.currentTarget.value })}
+              />
+            </div>
+          ))}
+          <Button variant="ghost" size="normal" className="self-start" disabled={preset.prompts.length >= 100} onClick={() => editPreset((p) => ({ ...p, prompts: [...p.prompts, { id: crypto.randomUUID(), name: "", enabled: true, placement: "system", content: "" }] }))}>{tr("Add prompt")}</Button>
+        </div> : null}
+      <div className="flex items-center gap-2">
+        <Button variant="neutral" size="normal" disabled={!draft || busy} onClick={save}>{tr("Save presets")}</Button>
+        {draft ? <Button variant="ghost" size="normal" onClick={() => { setDraft(null); setErr("") }}>{tr("Discard")}</Button> : null}
+        {done ? <span className="text-12 text-success">{tr("Saved")}</span> : null}
+      </div>
+      {err ? <div className="text-12 text-danger">{err}</div> : null}
     </div>
   )
 }

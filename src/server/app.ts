@@ -55,6 +55,7 @@ import { curatedProviders, loadCustomProviders, reservedProviderIds } from "../p
 import { UserAgent, instructionDocsStamp, promptFile, listSessions, renameSession, archiveSession, sessionDir, isReasoningLevel, type AgentStreamEvent, type ReasoningLevel, type SessionCompactRecord } from "../agent/agent.js";
 import { clearUsage, usageSummary } from "../usage.js";
 import { compactionCut, fileActivity, lastSessionModel, summarizeMessages, type FileActivity } from "../agent/compact.js";
+import { readPrompts, validatePromptsFile, writePrompts } from "../agent/prompt-presets.js";
 import { listConnections, createConnection, updateConnection, deleteConnection, validateConnectionInput, validatePromptFormatInput, validateServiceTier, readConnections, connectionKeyUsable, type ConnectionInfo } from "../connections.js";
 import { supportsOpenRouterRouting, validateOpenRouterRouting, type OpenRouterRouting } from "../providers/openrouter-routing.js";
 import { createRoutingCatalog } from "../providers/openrouter-catalog.js";
@@ -3042,6 +3043,20 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     await git.commitAll(p.root, u.username, "settings: agent instructions").catch(() => undefined);
     evictAgents(u.username); // system prompt snapshots at agent creation
     return c.json({ ok: true });
+  });
+
+  // agent prompt presets (agent-prompts.json, git-tracked)
+  app.get("/v1/settings/agent-prompts", (c) => c.json(readPrompts(c.get("paths"))));
+
+  app.put("/v1/settings/agent-prompts", async (c) => {
+    const u = c.get("user");
+    const p = c.get("paths");
+    const checked = validatePromptsFile(await c.req.json().catch(() => null));
+    if (!checked.ok) return c.json({ error: checked.error }, 400);
+    writePrompts(p, checked.value);
+    await git.commitAll(p.root, u.username, "settings: agent prompt presets").catch(() => undefined);
+    bus.emit(u.username, "agent_prompts_changed", {});
+    return c.json(checked.value);
   });
 
   app.post("/v1/settings/connections", async (c) => {
