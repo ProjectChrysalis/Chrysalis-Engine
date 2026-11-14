@@ -738,3 +738,23 @@ describe("app-requested prompt cache (GenerateRequest.cache)", () => {
     expect(captured!.onPayload).toBeUndefined();
   });
 });
+
+it("cache replay retains tool schemas but never executes calls or follows tool rounds", async () => {
+  const svc = makeService();
+  const handle = fauxProvider({ models: [{ id: "refresh-tools" }] });
+  handle.setResponses([{ ...fauxAssistantMessage(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "call", name: "write", arguments: {} }] }]);
+  svc.models.setProvider(handle.provider);
+  let calls = 0;
+  let captured: { tools?: unknown[]; options?: { maxTokens?: number; onPayload?: (payload: unknown) => unknown } } = {};
+  const models = svc.models as unknown as { streamSimple: (...args: unknown[]) => unknown };
+  const original = models.streamSimple.bind(models);
+  models.streamSimple = (...args: unknown[]) => { captured = { tools: (args[1] as { tools?: unknown[] }).tools, options: args[2] as typeof captured.options }; return original(...args); };
+  await svc.generate({ model: "faux/refresh-tools", refreshOnly: true, messages: [{ role: "user", content: "same prompt" }],
+    tools: [{ name: "write", description: "Write", parameters: { type: "object", properties: {} } }],
+    executeTool: async () => { calls++; return { text: "should not run" }; }, presetParams: { max_tokens: 1 },
+  });
+  expect(calls).toBe(0);
+  expect(captured.tools).toHaveLength(1);
+  expect(captured.options?.maxTokens).toBe(1);
+  expect(captured.options!.onPayload!({ max_tokens: 4000, max_completion_tokens: 4000 })).toMatchObject({ max_tokens: 1, max_completion_tokens: 1 });
+});

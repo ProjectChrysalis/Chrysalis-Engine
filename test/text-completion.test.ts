@@ -116,6 +116,12 @@ describe("openai-text connections (local serving stack protocol)", () => {
     // the 3 cached tokens are part of the 17 prompt tokens, not on top of them
     expect(result.usage).toMatchObject({ input: 14, output: 5, cacheRead: 3, costTotal: 0 });
     expect(result.model).toBe("c_local/tiny-story");
+
+    await svc.generate({ model: "c_local/tiny-story", messages: [{ role: "user", content: "hello" }], refreshOnly: true,
+      presetParams: { max_tokens: 4000, params: { max_tokens: 8000, n: 20, best_of: 20 } } });
+    expect(received!.body.max_tokens).toBe(1);
+    expect(received!.body.n).toBe(1);
+    expect(received!.body.best_of).toBe(1);
   }, 20_000);
 
   it("refuses non-loopback plain-http endpoints (same policy as embeddings)", async () => {

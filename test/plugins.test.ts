@@ -920,3 +920,23 @@ it("filesystem change reports include recursively removed files", async () => {
   const out = await runPluginRoute(plugin, { method: "POST", path: "/", query: {}, body: null }, deps(["fs", "routes"]));
   expect(out?.fsWrites?.sort()).toEqual(["nested/a.json", "nested/b.json", "new.json"]);
 });
+
+it("a scheduled hook sees a stop written while its model request was running", async () => {
+  writePlugin("scheduled", { name: "Scheduled", version: "1.0.0", origin: "local", permissions: ["store", "llm", "routes", "schedule"] }, `
+    export function onTick(ctx, host) {
+      if (!host.llm.results.ping) { host.llm.request("ping", { messages: [{ role: "user", content: "test" }] }); return ctx; }
+      return { stopped: host.store.get("stopped") };
+    }
+    export function handleRoute(req, host) { host.store.put("stopped", true); return { status: 200, json: {} }; }
+  `);
+  const plugin = discoverPlugins(path.join(dir, "plugins"))[0]!;
+  let finish!: (value: unknown) => void;
+  let started!: () => void;
+  const began = new Promise<void>((resolve) => { started = resolve; });
+  const d = { ...deps(), models: { generate: async () => { started(); return await new Promise((resolve) => { finish = resolve; }); } } as never };
+  const pending = runPluginHook(plugin, "onTick", {}, d);
+  await began;
+  await runPluginRoute(plugin, { method: "POST", path: "/stop", query: {}, body: {} }, d);
+  finish({ text: "", model: "mock", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costTotal: 0, priced: false } });
+  expect(await pending).toEqual({ stopped: true });
+}, 20_000);

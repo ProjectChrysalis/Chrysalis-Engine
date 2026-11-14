@@ -13,6 +13,7 @@ import { radiusProvider } from "@earendil-works/pi-ai/providers/radius";
 import { loadCustomProviders, curatedProviders, buildProvider, withAdditionalModels, reservedProviderIds, isLocalEndpoint, abortLocalGeneration, type CredentialWithBinding } from "./providers/custom.js";
 import { readConnections, authTarget, connectionKeyUsable, readAuth } from "./connections.js";
 import { formatFromModelName, formatFromTemplate, parsePromptFormat, promptFormatById, renderPrompt, stopStrings, type PromptFormat } from "./providers/prompt-formats.js";
+import { capCacheRefreshPayload } from "./providers/cache-refresh.js";
 import { cacheStreamOptions, type CacheRequest } from "./providers/prompt-cache.js";
 import { log } from "./logger.js";
 import { generationError, providerError, withGooglePromptFeedback } from "./providers/errors.js";
@@ -168,6 +169,10 @@ export interface GenerateRequest {
    * Omitted = provider default.
    */
   cache?: CacheRequest;
+  /** Retain a scoped replay snapshot; an optional identifier correlates hook responses. */
+  captureCache?: boolean | string;
+  /** Internal replay mode: keep tool definitions but never execute them. */
+  refreshOnly?: boolean;
   /** Opt-in tool calling (SPEC §5.3): tools exposed to the model + executor. */
   tools?: PiTool[];
   executeTool?: (name: string, args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }>;
@@ -209,6 +214,11 @@ export interface GenerateResult {
   reasoningTimeMs?: number;
   /** Total wall time of the generation (measured by the traced generate()). */
   genTimeMs?: number;
+  reasoningEnabled?: boolean;
+  effectiveReasoning?: GenerateRequest["reasoning"];
+  startedAt?: number;
+  finishedAt?: number;
+  cacheRefresh?: { token?: string; reason?: string; startedAt: number; expiresAt: number; windowMs: number };
   /** Echo of the request's presetParams (sampler snapshot for the caller). */
   requestParams?: GenerateRequest["presetParams"];
   /** Echo of the request's assistantPrefill metadata. */
@@ -580,7 +590,7 @@ export class UserModelService {
     return ctx ? { ...m, contextWindow: ctx } : m;
   }
 
-  private async resolveModel(pattern: string | null | undefined): Promise<Model<Api>> {
+  async resolveModel(pattern: string | null | undefined): Promise<Model<Api>> {
     const available = await this.models.getAvailable();
     if (available.length === 0) {
       throw new ModelNotConfiguredError(
@@ -633,7 +643,10 @@ export class UserModelService {
       llmLogResult(req.source, res.model || label, Date.now() - t0, res);
       // stateless echoes for two-phase callers (their module state resets
       // between passes): timing, sampler snapshot, prefill metadata
-      res.genTimeMs = Date.now() - t0;
+      res.reasoningEnabled ??= !!req.reasoning && req.reasoning !== "off";
+      res.finishedAt = Date.now();
+      res.startedAt = t0;
+      res.genTimeMs = res.finishedAt - t0;
       if (req.presetParams && Object.keys(req.presetParams).length > 0) res.requestParams = req.presetParams;
       if (req.assistantPrefill) res.assistantPrefill = req.assistantPrefill;
       return res;
@@ -653,16 +666,23 @@ export class UserModelService {
    *  model's lowest level, and later requests to that model start there. */
   private async generateWithReasoningFloor(req: GenerateRequest, onDelta?: (delta: string) => void, onThinking?: (delta: string) => void): Promise<GenerateResult> {
     const unset = !req.reasoning || req.reasoning === "off";
+    if (req.refreshOnly) return this.generateInner(req, onDelta, onThinking);
     const known = unset && req.model ? this.reasoningFloor.get(req.model) : undefined;
     try {
-      return await this.generateInner(known ? { ...req, reasoning: known } : req, onDelta, onThinking);
+      const result = await this.generateInner(known ? { ...req, reasoning: known } : req, onDelta, onThinking);
+      result.effectiveReasoning = known ?? req.reasoning;
+      result.reasoningEnabled = !!known || (!!req.reasoning && req.reasoning !== "off");
+      return result;
     } catch (e) {
       if (!unset || known || !/reasoning is mandatory|cannot be disabled|reasoning.{0,40}required/i.test((e as Error).message)) throw e;
       const model = await this.resolveModel(req.model).catch(() => null);
       const lowest = (model ? getSupportedThinkingLevels(model) : []).find((l) => l !== "off") ?? "low";
       const level = lowest as NonNullable<GenerateRequest["reasoning"]>;
       if (req.model) this.reasoningFloor.set(req.model, level);
-      return this.generateInner({ ...req, reasoning: level }, onDelta, onThinking);
+      const result = await this.generateInner({ ...req, reasoning: level }, onDelta, onThinking);
+      result.effectiveReasoning = level;
+      result.reasoningEnabled = true;
+      return result;
     }
   }
 
@@ -777,6 +797,7 @@ export class UserModelService {
       ...(stop.length ? { stop } : {}),
       stream_options: { include_usage: true },
     };
+    if (req.refreshOnly) capCacheRefreshPayload("openai-completions", body);
     const auth = await this.textCompletionAuth(model.provider);
 
     llmLogRequest(req.source, {
@@ -936,6 +957,10 @@ export class UserModelService {
     // app-requested cache behavior: retention for every provider, explicit
     // breakpoint placement for the transports that take markers
     const cacheOptions = req.cache ? cacheStreamOptions(model, req.cache) : {};
+    if (req.refreshOnly) {
+      const rewrite = cacheOptions.onPayload;
+      cacheOptions.onPayload = (payload: unknown) => capCacheRefreshPayload(model.api, rewrite ? rewrite(payload) : payload);
+    }
     // text-completion connections never reach pi-ai: the chat turns flatten
     // into a single prompt and stream back through the same callbacks
     if (this.textCompletions.has(model.provider)) {
@@ -1154,7 +1179,7 @@ export class UserModelService {
       const toolCalls = final.content.filter(
         (c): c is Extract<typeof c, { type: "toolCall" }> => c.type === "toolCall",
       );
-      if (final.stopReason !== "toolUse" || toolCalls.length === 0 || !hasToolExec) {
+      if (req.refreshOnly || final.stopReason !== "toolUse" || toolCalls.length === 0 || !hasToolExec) {
         const res = this.resultFrom(final, model, toolTrace, req, thinkMs, textBeforeTools);
         // aborted replies render as segments even without tool calls — a
         // cancelled mid-thought reply keeps its thinking block inline

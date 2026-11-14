@@ -31,6 +31,7 @@
  *                               once after its code moved between versions
  */
 import fs from "node:fs";
+import { promptRefreshes } from "../providers/cache-refresh.js";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { appPluginId, userPluginId, validPluginFolder } from "./ids.js";
@@ -87,7 +88,7 @@ export interface LlmRequestHook {
 
 export interface PluginRuntimeDeps {
   store: PluginStoreService;
-  models: Pick<UserModelService, "generate" | "embed">;
+  models: Pick<UserModelService, "generate" | "embed"> & Partial<Pick<UserModelService, "resolveModel">>;
   /** settings.json pluginGrants — required for imported plugins. */
   grantsFor: (pluginId: string) => string[];
   /** When set, plugin llm requests tagged with a `stream` descriptor get
@@ -447,7 +448,7 @@ export async function collectSiblingTools(
  *  wire format stripped live, so the decoded text still streams. */
 const LLM_PATCH_FIELDS = [
   "messages", "systemPrompt", "model", "sessionId", "reasoning", "thinkingBudget",
-  "reasoningTags", "assistantPrefill", "promptFormat", "presetParams", "cache", "schema", "streamMuted", "streamDecode",
+  "reasoningTags", "assistantPrefill", "promptFormat", "presetParams", "cache", "schema", "streamMuted", "streamDecode", "captureCache",
 ] as const;
 
 /** Sibling plugins that can patch this plugin's llm requests: llmRequest
@@ -838,6 +839,13 @@ async function runPassRequests(
   }
   if (!caps.llm) return results;
   for (const { key, req } of r.llmRequests ?? []) {
+    const owner = plugin.appId ? path.dirname(plugin.dir) : plugin.dir;
+    const refreshToken = (req as { refreshToken?: unknown }).refreshToken;
+    if (typeof refreshToken === "string") {
+      try { results.llm[key] = await promptRefreshes.refresh(owner, refreshToken, (request) => deps.models.generate(request)); }
+      catch (e) { results.llm[key] = emptyGeneration((e as Error).message); }
+      continue;
+    }
     // `stream` is an app-level routing descriptor, not a GenerateRequest
     // field — strip it and use it to route live deltas when a sink exists.
     // `wantsTools` likewise: a marker asking for sibling-contributed tools.
@@ -848,6 +856,7 @@ async function runPassRequests(
       if (wantsTools === true && deps.siblingTools) toolBridge = mergeToolBridges(toolBridge, await deps.siblingTools(plugin));
     }
     delete clean.tools;
+    delete clean.refreshOnly;
     const patched = mode === "route" ? await applyLlmRequestHooks(plugin, key, clean, deps) : clean;
     // routing requests a patch may carry, not model fields: a quiet stream
     // (no live deltas at all) or a live decoder for a wire format. Neither
@@ -877,6 +886,13 @@ async function runPassRequests(
     const abortSignal = streamTag && deps.abortCtlFor ? deps.abortCtlFor(streamTag) : null;
     try {
       let out = await deps.models.generate({ ...request, ...toolBridge, ...(onToolEvent ? { onToolEvent } : {}), ...(abortSignal ? { signal: abortSignal } : {}), source: llmSourceOf(plugin) }, onDelta, onThinking);
+      if (request.captureCache && out.model !== "error" && !abortSignal?.aborted) {
+        const snapshot = { ...request, ...toolBridge, model: out.model, source: llmSourceOf(plugin) };
+        try {
+          const model = await deps.models.resolveModel?.(out.model);
+          if (model) out.cacheRefresh = promptRefreshes.remember(owner, snapshot, out, model);
+        } catch (e) { log.warn(`[plugin:${plugin.id}] cache snapshot unavailable: ${(e as Error).message}`); }
+      }
       // whatever the decoder still holds is decidable now (end of stream)
       decoder?.flush();
       // cancelled generations never commit: the client owns what a cancel
@@ -1208,8 +1224,6 @@ async function hookPasses(
 ): Promise<HookOutcome> {
   const storeOk = hasCapAny(plugin, "store", deps);
   const caps = passCaps(plugin, deps);
-  const storeSnapshot = snapshotOf(plugin, deps);
-
   let results = noResults();
   let current: Record<string, unknown> = ctx;
 
@@ -1218,7 +1232,7 @@ async function hookPasses(
       ...pluginCode(plugin),
       hook,
       ctx: current as unknown,
-      storeSnapshot,
+      storeSnapshot: snapshotOf(plugin, deps),
       storeAllowed: storeOk,
       llmAllowed: caps.llm,
       llmResults: results.llm,
