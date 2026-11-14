@@ -87,7 +87,7 @@
 }
 
 :root {
-  /* Quiet zinc surfaces with one blue accent. The canvas is a hair off
+  /* Quiet zinc surfaces with one green accent, the same as the apps'. The canvas is a hair off
      white so cards and the composer lift off it; dark mode is true black
      with raised surfaces a step above it, separated by borders, not fills. */
   --radius: 0.5rem;
@@ -98,7 +98,7 @@
   --card-foreground: oklch(21% 0.006 285.885);
   --popover: oklch(100% 0 0);
   --popover-foreground: oklch(21% 0.006 285.885);
-  --primary: oklch(0.488 0.217 264);
+  --primary: #2eaf5a;
   --primary-foreground: oklch(100% 0 0);
   --secondary: oklch(98.5% 0 0);
   --secondary-foreground: oklch(27.4% 0.006 286.033);
@@ -111,7 +111,7 @@
   --warning: oklch(76.9% 0.188 70.08);
   --border: oklch(92% 0.004 286.32);
   --input: oklch(87.1% 0.006 286.286);
-  --ring: oklch(0.488 0.217 264);
+  --ring: #2eaf5a;
   /* a user turn, one step past the accent so it stands off the canvas */
   --message-surface: color-mix(in srgb, oklch(92% 0.004 286.32) 55%, oklch(96.7% 0.001 286.375));
   --code-surface: color-mix(in srgb, oklch(100% 0 0) 90%, oklch(99.2% 0 0));
@@ -123,12 +123,12 @@
   --chart-5: oklch(0.769 0.188 70.08);
   --sidebar: oklch(98.5% 0 0);
   --sidebar-foreground: oklch(21% 0.006 285.885);
-  --sidebar-primary: oklch(0.488 0.217 264);
+  --sidebar-primary: #2eaf5a;
   --sidebar-primary-foreground: oklch(100% 0 0);
   --sidebar-accent: oklch(96.7% 0.001 286.375);
   --sidebar-accent-foreground: oklch(21% 0.006 285.885);
   --sidebar-border: oklch(92% 0.004 286.32);
-  --sidebar-ring: oklch(0.488 0.217 264);
+  --sidebar-ring: #2eaf5a;
   --sidebar-row-hover: oklch(99.2% 0 0);
   --sidebar-row-selected: oklch(100% 0 0);
 }
@@ -140,8 +140,8 @@
   --card-foreground: oklch(97% 0 0);
   --popover: color-mix(in srgb, oklch(14.5% 0 0) 97%, white);
   --popover-foreground: oklch(97% 0 0);
-  --primary: oklch(0.571 0.21 264);
-  --primary-foreground: oklch(100% 0 0);
+  --primary: #54d17d;
+  --primary-foreground: #0d1f14;
   --secondary: rgb(255 255 255 / 3%);
   --secondary-foreground: oklch(97% 0 0);
   --muted: rgb(255 255 255 / 3%);
@@ -153,7 +153,7 @@
   --warning: oklch(82.8% 0.189 84.429);
   --border: rgb(255 255 255 / 8%);
   --input: rgb(255 255 255 / 11%);
-  --ring: oklch(0.571 0.21 264);
+  --ring: #54d17d;
   --message-surface: color-mix(in srgb, oklch(14.5% 0 0) 92%, white);
   --code-surface: color-mix(in srgb, oklch(14.5% 0 0) 97%, white);
   --composer-shadow: 0 14px 32px -18px rgb(0 0 0 / 75%);
@@ -164,12 +164,12 @@
   --chart-5: oklch(0.645 0.246 16.439);
   --sidebar: color-mix(in srgb, oklch(14.5% 0 0) 97%, white);
   --sidebar-foreground: oklch(97% 0 0);
-  --sidebar-primary: oklch(0.571 0.21 264);
-  --sidebar-primary-foreground: oklch(100% 0 0);
+  --sidebar-primary: #54d17d;
+  --sidebar-primary-foreground: #0d1f14;
   --sidebar-accent: rgb(255 255 255 / 4%);
   --sidebar-accent-foreground: oklch(97% 0 0);
   --sidebar-border: rgb(255 255 255 / 8%);
-  --sidebar-ring: oklch(0.571 0.21 264);
+  --sidebar-ring: #54d17d;
   --sidebar-row-hover: rgb(255 255 255 / 4%);
   --sidebar-row-selected: rgb(255 255 255 / 6%);
 }
