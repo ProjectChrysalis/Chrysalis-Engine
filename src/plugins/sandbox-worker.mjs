@@ -565,6 +565,8 @@ port.on("message", async (msg) => {
         if (!Array.isArray(files)) throw new Error("zip.build takes a list of { name, text }");
         const entries = {};
         let total = 0;
+        // zip dates are local wall-clock time from 1980 on: the moment of export always fits
+        const mtime = new Date();
         for (const file of files) {
           const name = file?.name;
           if (typeof name !== "string" || !name || name.startsWith("/") || name.split("/").includes("..") || typeof file.text !== "string") throw new Error("zip.build: invalid entry");
@@ -572,7 +574,7 @@ port.on("message", async (msg) => {
           const bytes = Buffer.from(file.text, "utf8");
           total += bytes.length;
           if (total > 1024 * 1024 * 1024) throw new Error("zip.build: archive over 1 GB");
-          entries[name] = [bytes, { level: 0, mtime: 315532800000 }];
+          entries[name] = [bytes, { level: 0, mtime }];
         }
         return Buffer.from(zipSync(entries)).toString("base64");
       };
