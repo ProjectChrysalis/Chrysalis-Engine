@@ -951,7 +951,8 @@ it("zip.build packs text natively without the zip permission and refuses unsafe 
   const plugin = discoverPlugins(path.join(dir, "plugins"))[0]!;
   const out = await runPluginRoute(plugin, { method: "GET", path: "/", query: {}, body: null }, deps(["routes"]));
   const { unzipSync, strFromU8 } = await import("fflate");
-  const files = unzipSync(Buffer.from((out?.json as { zip: string }).zip, "base64"));
+  if (!out) throw new Error("Packer returned no response");
+  const files = unzipSync(Buffer.from((out.json as { zip: string }).zip, "base64"));
   expect(Object.keys(files).sort()).toEqual(["a.json", "chats/é.jsonl"]);
   expect(strFromU8(files["chats/é.jsonl"]!)).toBe('{"mes":"café ✓"}');
   const bad = await runPluginRoute(plugin, { method: "GET", path: "/bad", query: {}, body: null }, deps(["routes"]));
