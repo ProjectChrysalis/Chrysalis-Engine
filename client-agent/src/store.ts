@@ -58,6 +58,7 @@ export interface AgentState {
   setApp: (appId: string | null) => Promise<void>
   msgs: Msg[]
   running: boolean
+  runStartedAt: number | null
   stopping: boolean
   banner: Banner | null
   ask: PendingAsk | null
@@ -171,6 +172,7 @@ export const useAgent = create<AgentState>()((set, get) => {
     },
     msgs: [],
     running: false,
+    runStartedAt: null,
     stopping: false,
     banner: null,
     ask: null,
@@ -230,7 +232,7 @@ export const useAgent = create<AgentState>()((set, get) => {
       runSequence += 1
       liveId = null
       rememberSession(id)
-      set({ running: false, stopping: false, sessionId: id, msgs: [], banner: null, ask: null, sidebarOpen: false, usage: null })
+      set({ runStartedAt: null, running: false, stopping: false, sessionId: id, msgs: [], banner: null, ask: null, sidebarOpen: false, usage: null })
       try {
         const r = await sessionsApi.get(id)
         if (get().sessionId === id) {
@@ -281,7 +283,7 @@ export const useAgent = create<AgentState>()((set, get) => {
       if (get().running) void get().stop()
       streamDeltaBatcher.reset()
       rememberSession(null)
-      set({ running: false, stopping: false, sessionId: null, appId: null, msgs: [], banner: null, ask: null, sidebarOpen: false, usage: null })
+      set({ runStartedAt: null, running: false, stopping: false, sessionId: null, appId: null, msgs: [], banner: null, ask: null, sidebarOpen: false, usage: null })
     },
 
     send: async (text, images, urls) => {
@@ -325,6 +327,7 @@ export const useAgent = create<AgentState>()((set, get) => {
         msgs: [...s.msgs, userMsg, { id, role: "assistant", parts: [], streaming: true }],
         selection: null,
         running: true,
+        runStartedAt: null,
         stopping: false,
         sessionId: sid,
         banner: null,
@@ -528,7 +531,7 @@ export const useAgent = create<AgentState>()((set, get) => {
 
 let lastLiveSeq = 0
 let lastLiveRun: string | null = null
-function restoreLive(live: { id: string; seq: number; user: string; events: StreamEvent[] }): void {
+function restoreLive(live: { id: string; at: number; seq: number; user: string; events: StreamEvent[] }): void {
   if (lastLiveRun === live.id && lastLiveSeq > live.seq) return;
   streamDeltaBatcher.reset();
   lastLiveRun = live.id; lastLiveSeq = live.seq;
@@ -559,7 +562,7 @@ function restoreLive(live: { id: string; seq: number; user: string; events: Stre
       else parts = applyStreamEvent(parts, event);
     }
     liveId = `${prefix}_${index}`;
-    return { msgs: [...msgs, { id: liveId, role: "assistant", parts, streaming: true }], queue: [...queue.values()], running: true, usage };
+    return { msgs: [...msgs, { id: liveId, role: "assistant", parts, streaming: true }], queue: [...queue.values()], running: true, runStartedAt: live.at, usage };
   });
 }
 let retry = 0
@@ -586,7 +589,7 @@ export function connectWs(): void {
     setTimeout(connectWs, wait)
   }
   ws.onmessage = (ev) => {
-    let msg: { type?: string; build?: number; payload?: { sessionId?: string; delta?: string; ev?: StreamEvent; seq?: number; runId?: string; id?: string; appId?: string; mode?: string; reasoning?: string | null; agentModels?: Record<string, AgentModelOverrides> } }
+    let msg: { type?: string; build?: number; payload?: { sessionId?: string; delta?: string; ev?: StreamEvent; seq?: number; runId?: string; runAt?: number; id?: string; appId?: string; mode?: string; reasoning?: string | null; agentModels?: Record<string, AgentModelOverrides> } }
     try {
       msg = JSON.parse(ev.data as string)
     } catch {
@@ -674,6 +677,9 @@ export function connectWs(): void {
       if (lastLiveRun !== payload.runId) { lastLiveRun = payload.runId; lastLiveSeq = 0; }
       if (payload.seq <= lastLiveSeq) return;
       lastLiveSeq = payload.seq;
+    }
+    if ((msg.type === "agent_delta" || msg.type === "agent_event") && typeof payload.runAt === "number" && Number.isFinite(payload.runAt) && payload.runAt > 0 && payload.runAt !== st.runStartedAt) {
+      useAgent.setState({ runStartedAt: payload.runAt });
     }
     if (msg.type === "agent_delta" && payload.delta) {
       streamDeltaBatcher.enqueue({ type: "text", delta: payload.delta })

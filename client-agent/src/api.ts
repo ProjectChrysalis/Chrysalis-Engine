@@ -202,7 +202,7 @@ export async function agentCommands(): Promise<UserCommand[]> {
   return r.commands ?? []
 }
 
-export const agentState = (sessionId: string): Promise<{ running: boolean; live?: { id: string; seq: number; user: string; events: import("./streaming.js").StreamEvent[] } | null; queue: { id: string; text: string; mode?: "steer" | "followUp" }[]; ask?: { id: string; sessionId: string; question: string; options?: string[]; detail?: string } | null }> => api("GET", `/v1/agent/state?sessionId=${encodeURIComponent(sessionId)}`)
+export const agentState = (sessionId: string): Promise<{ running: boolean; live?: { id: string; at: number; seq: number; user: string; events: import("./streaming.js").StreamEvent[] } | null; queue: { id: string; text: string; mode?: "steer" | "followUp" }[]; ask?: { id: string; sessionId: string; question: string; options?: string[]; detail?: string } | null }> => api("GET", `/v1/agent/state?sessionId=${encodeURIComponent(sessionId)}`)
 
 export const agentApps = () => api<{ apps: { id: string; name: string }[] }>("GET", "/v1/agent/apps");
 export const setAgentTarget = (id: string, appId: string | null) => api("POST", `/v1/agent/sessions/${encodeURIComponent(id)}/target`, { appId });

@@ -16,6 +16,8 @@ import { Image } from "@/components/assistant-ui/elements/image";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { ChainOfThought, ReasoningStep } from "@/components/assistant-ui/elements/chain-of-thought";
 import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
+import { VirtualThread } from "./virtual-thread";
+import { RunClock } from "./run-clock";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -134,8 +136,9 @@ export const Thread: FC<ThreadProps> = ({
  * sizes are watched here too — at the bottom before a change, back at the
  * bottom after it. Scrolling up is the only thing that stops the follow.
  */
-function useFollowBottom(contentRef: RefObject<HTMLDivElement | null>) {
+function useFollowBottom(contentRef: RefObject<HTMLDivElement | null>, virtualized: boolean) {
   useEffect(() => {
+    if (virtualized) return;
     const content = contentRef.current;
     const viewport = content?.closest<HTMLElement>('[data-slot="aui_thread-viewport"]');
     if (!content || !viewport) return;
@@ -156,7 +159,7 @@ function useFollowBottom(contentRef: RefObject<HTMLDivElement | null>) {
       viewport.removeEventListener("scroll", onScroll);
       observer.disconnect();
     };
-  }, [contentRef]);
+  }, [contentRef, virtualized]);
 }
 
 const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
@@ -165,7 +168,9 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
 }) => {
   const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
   const messagesRef = useRef<HTMLDivElement>(null);
-  useFollowBottom(messagesRef);
+  const longThread = useAuiState((s) => s.thread.messages.length >= 100);
+  useFollowBottom(messagesRef, longThread);
+  const sessionId = useAgentStore((s) => s.sessionId);
 
   return (
     <ThreadPrimitive.Root
@@ -177,7 +182,13 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
         ["--composer-padding" as string]: "0.5rem",
       }}
     >
-      <ThreadPrimitive.Viewport
+      {longThread ? <VirtualThread key={sessionId} Message={ThreadMessage} footer={<>
+        <RunClock />
+        <ThreadFollowupSuggestions />
+        <AskBar />
+        <MessageQueue />
+        <Composer autoFocus={autoFocus} />
+      </>} /> : <ThreadPrimitive.Viewport
         data-slot="aui_thread-viewport"
         turnAnchor="bottom"
         autoScroll
@@ -210,6 +221,7 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
           )}
         >
           <ThreadScrollToBottom />
+          <RunClock />
           <ThreadFollowupSuggestions />
           <AskBar />
           <MessageQueue />
@@ -218,7 +230,7 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
             <ThreadSuggestions />
           </AuiIf>
         </ThreadPrimitive.ViewportFooter>
-      </ThreadPrimitive.Viewport>
+      </ThreadPrimitive.Viewport>}
     </ThreadPrimitive.Root>
   );
 };
@@ -555,7 +567,7 @@ const AssistantMessage: FC = () => {
     <MessagePrimitive.Root
       data-slot="aui_assistant-message-root"
       data-role="assistant"
-      className="fade-in slide-in-from-bottom-1 animate-in relative -mb-7.5 pb-7.5 duration-150 [contain-intrinsic-size:auto_200px] [content-visibility:auto]"
+      className="group/message fade-in slide-in-from-bottom-1 animate-in relative -mb-7.5 pb-7.5 duration-150 [contain-intrinsic-size:auto_200px] [content-visibility:auto]"
     >
       <div
         data-slot="aui_assistant-message-content"
@@ -625,6 +637,7 @@ const AssistantMessage: FC = () => {
       >
         <BranchPicker />
         <AssistantActionBar />
+        <MessageTime />
       </div>
     </MessagePrimitive.Root>
   );
@@ -719,7 +732,7 @@ const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
       data-slot="aui_user-message-root"
-      className="fade-in slide-in-from-bottom-1 animate-in grid auto-rows-auto grid-cols-[minmax(20%,1fr)_auto] content-start gap-y-2 duration-150 [contain-intrinsic-size:auto_200px] [content-visibility:auto] [&:where(>*)]:col-start-2"
+      className="group/message fade-in slide-in-from-bottom-1 animate-in grid auto-rows-auto grid-cols-[minmax(20%,1fr)_auto] content-start gap-y-2 duration-150 [contain-intrinsic-size:auto_200px] [content-visibility:auto] [&:where(>*)]:col-start-2"
       data-role="user"
     >
       <UserMessageAttachments />
@@ -735,6 +748,8 @@ const UserMessage: FC = () => {
         </div>
       </div>
 
+      <MessageTime />
+
       <BranchPicker
         data-slot="aui_user-branch-picker"
         className="col-span-full col-start-1 row-start-3 -me-1 justify-end"
@@ -742,6 +757,17 @@ const UserMessage: FC = () => {
     </MessagePrimitive.Root>
   );
 };
+
+function MessageTime() {
+  const id = useAuiState((s) => s.message.id);
+  const at = useAgentStore((s) => s.msgs.find((m) => m.id === id)?.runAt);
+  if (at === undefined || !Number.isFinite(at)) return null;
+  const date = new Date(at);
+  if (!Number.isFinite(date.getTime())) return null;
+  return <time dateTime={date.toISOString()} title={date.toLocaleString()} className="text-muted-foreground px-1 text-[0.6875rem] transition-opacity [@media(hover:hover)]:opacity-0 group-hover/message:opacity-100 group-focus-within/message:opacity-100" aria-label={tr("Run started")}>
+    {date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+  </time>;
+}
 
 const UserActionBar: FC = () => {
   return (

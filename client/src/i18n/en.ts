@@ -669,6 +669,8 @@ const en = {
   "of": "",
 
   "Working": "",
+  "Run elapsed time": "",
+  "Run started": "",
   "Thought": "",
   "Thought for {time}": "",
   "Tool calls: {count}": "",

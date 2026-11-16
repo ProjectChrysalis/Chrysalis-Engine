@@ -626,6 +626,8 @@ const dict = {
   "of": "van",
 
   "Working": "Bezig",
+  "Run elapsed time": "Verstreken tijd",
+  "Run started": "Uitvoering gestart",
   "Thought": "Overweging",
   "Thought for {time}": "Nagedacht voor {time}",
   "Tool calls: {count}": "Toolaanroepen: {count}",

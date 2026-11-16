@@ -626,6 +626,8 @@ const dict = {
   "of": "/",
 
   "Working": "Çalışıyor",
+  "Run elapsed time": "Geçen süre",
+  "Run started": "Çalışma başlangıcı",
   "Thought": "Düşünce",
   "Thought for {time}": "{time} boyunca düşündü",
   "Tool calls: {count}": "Araç çağrıları: {count}",

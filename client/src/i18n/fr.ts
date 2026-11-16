@@ -626,6 +626,8 @@ const dict = {
   "of": "sur",
 
   "Working": "En cours",
+  "Run elapsed time": "Durée d’exécution",
+  "Run started": "Début de l’exécution",
   "Thought": "Réflexion",
   "Thought for {time}": "Réflexion pendant {time}",
   "Tool calls: {count}": "Appels d’outils : {count}",

@@ -2652,8 +2652,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     activeRuns.set(runKey, agent);
     try {
       const stream = {
-        onDelta: (d: string) => bus.emit(u.username, "agent_delta", { sessionId: agent.sessionId, runId: agent.liveSnapshot()?.id, seq: agent.liveSnapshot()?.seq, delta: d }),
-        onEvent: (ev: AgentStreamEvent) => bus.emit(u.username, "agent_event", { sessionId: agent.sessionId, runId: agent.liveSnapshot()?.id, seq: agent.liveSnapshot()?.seq, ev }),
+        onDelta: (d: string) => bus.emit(u.username, "agent_delta", { sessionId: agent.sessionId, runId: agent.liveSnapshot()?.id, runAt: agent.liveSnapshot()?.at, seq: agent.liveSnapshot()?.seq, delta: d }),
+        onEvent: (ev: AgentStreamEvent) => bus.emit(u.username, "agent_event", { sessionId: agent.sessionId, runId: agent.liveSnapshot()?.id, runAt: agent.liveSnapshot()?.at, seq: agent.liveSnapshot()?.seq, ev }),
         signal: controller.signal,
       };
       let result = await agent.run(body.message, {

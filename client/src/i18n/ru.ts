@@ -626,6 +626,8 @@ const dict = {
   "of": "из",
 
   "Working": "Работает",
+  "Run elapsed time": "Время выполнения",
+  "Run started": "Начало выполнения",
   "Thought": "Размышление",
   "Thought for {time}": "Размышление: {time}",
   "Tool calls: {count}": "Вызовы инструментов: {count}",

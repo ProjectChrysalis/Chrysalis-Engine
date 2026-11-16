@@ -626,6 +626,8 @@ const dict = {
   "of": "/",
 
   "Working": "処理中",
+  "Run elapsed time": "実行経過時間",
+  "Run started": "実行開始",
   "Thought": "思考",
   "Thought for {time}": "{time} 思考しました",
   "Tool calls: {count}": "ツール呼び出し: {count}",
