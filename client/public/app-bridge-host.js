@@ -392,20 +392,34 @@
   function storageKey(username, appId) {
     return "chrysalis.app-storage." + username + "." + appId;
   }
+  /** Parsed app storage by storage key. Reading and parsing an app's whole
+   *  storage on every write it makes stalled typing in a large app, so the
+   *  parsed copy is kept; another tab's write drops it (storage event). */
+  var storageCache = new Map();
+  window.addEventListener("storage", function (e) {
+    if (e.key === null) storageCache.clear();
+    else storageCache.delete(e.key);
+  });
   function readStorage(username, appId) {
+    var key = storageKey(username, appId);
+    var cached = storageCache.get(key);
+    if (cached) return cached;
+    var store = { local: {}, session: {} };
     try {
-      var raw = localStorage.getItem(storageKey(username, appId));
+      var raw = localStorage.getItem(key);
       var parsed = raw ? JSON.parse(raw) : null;
       if (parsed && typeof parsed === "object") {
         if (!parsed.local) parsed.local = {};
         if (!parsed.session) parsed.session = {};
-        return parsed;
+        store = parsed;
       }
     } catch { /* fall through */ }
-    return { local: {}, session: {} };
+    storageCache.set(key, store);
+    return store;
   }
-  function writeStorage(username, appId, store) {
-    try { localStorage.setItem(storageKey(username, appId), JSON.stringify(store)); } catch { /* quota */ }
+  function writeStorage(username, appId, text) {
+    try { localStorage.setItem(storageKey(username, appId), text); }
+    catch { storageCache.delete(storageKey(username, appId)); /* quota: reread what was kept */ }
   }
   /** One app's storage share of the shell origin's quota. localStorage is
    *  one budget for the shell and every app; an app filling it would break
@@ -417,14 +431,18 @@
     if (d.op === "set" && typeof d.key === "string") {
       var prev = Object.prototype.hasOwnProperty.call(ns, d.key) ? ns[d.key] : undefined;
       ns[d.key] = String(d.value);
-      if (JSON.stringify(store).length > MAX_APP_STORAGE) {
+      var text = JSON.stringify(store);
+      if (text.length > MAX_APP_STORAGE) {
         if (prev === undefined) delete ns[d.key]; else ns[d.key] = prev;
         return;
       }
+      writeStorage(record.username, record.appId, text);
+      return;
     }
-    else if (d.op === "remove" && typeof d.key === "string") delete ns[d.key];
+    if (d.op === "remove" && typeof d.key === "string") delete ns[d.key];
     else if (d.op === "clear") store[d.which === "session" ? "session" : "local"] = {};
-    writeStorage(record.username, record.appId, store);
+    else return;
+    writeStorage(record.username, record.appId, JSON.stringify(store));
   }
 
   window.addEventListener("message", function (e) {

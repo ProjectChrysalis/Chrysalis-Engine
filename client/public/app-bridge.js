@@ -36,7 +36,7 @@
   }
   function bytesToB64(bytes) {
     var s = "";
-    for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    for (var i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
     return btoa(s);
   }
   function b64ToText(b64) {
@@ -334,6 +334,21 @@
     return seed;
   }
   var seed = snapshot();
+  /** The URL length the browser refused for the snapshot; longer ones are
+   *  not tried again on every write. */
+  var snapshotRefused = Infinity;
+  /** The hash with its __storage param set to `value`, other params as they
+   *  were. Spliced as text: the snapshot is most of a long hash, and parsing
+   *  and re-encoding all of it on every write stalled typing. */
+  function withSnapshot(hash, value) {
+    var parts = hash ? hash.split("&") : [];
+    var entry = "__storage=" + value;
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i].slice(0, 10) === "__storage=") { parts[i] = entry; return parts.join("&"); }
+    }
+    parts.push(entry);
+    return parts.join("&");
+  }
   function makeStorage(which, initial) {
     var data = {};
     Object.keys(initial || {}).forEach(function (k) { data[k] = String(initial[k]); });
@@ -341,13 +356,19 @@
     function pushOp(op, key, value) {
       // A frame reload uses its current URL, not the host's newer storage.
       // Keep that bootstrap snapshot current without adding history entries.
+      // It is written now, not later: a reload started right after a write
+      // reads the URL before any unload event could update it.
       try {
-        var params = new URLSearchParams(location.hash.slice(1));
-        params.set("__storage", bytesToB64(new TextEncoder().encode(JSON.stringify(seed))));
-        var hash = "#" + params.toString();
-        if (hash !== location.hash) {
-          try { window.history.replaceState(null, "", hash); }
-          catch { location.replace(hash); }
+        var hash = "#" + withSnapshot(location.hash.slice(1), encodeURIComponent(bytesToB64(new TextEncoder().encode(JSON.stringify(seed)))));
+        if (hash.length >= snapshotRefused) { /* the browser refuses a URL this long */ }
+        else if (hash !== location.hash) {
+          try {
+            try { window.history.replaceState(null, "", hash); }
+            catch { location.replace(hash); }
+          } catch (e) {
+            snapshotRefused = hash.length;
+            console.warn("App storage is too large to survive a reload of this page", e);
+          }
         }
       } catch (e) { console.warn("Could not refresh app storage snapshot", e); }
 
@@ -359,8 +380,18 @@
     }
     var methods = {
       getItem: function (k) { k = String(k); return Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null; },
-      setItem: function (k, v) { k = String(k); data[k] = String(v); pushOp("set", k, data[k]); },
-      removeItem: function (k) { k = String(k); delete data[k]; pushOp("remove", k, null); },
+      // A value the frame already holds is not sent again: state libraries
+      // save their whole state on every change, most of them changing nothing.
+      setItem: function (k, v) {
+        k = String(k); v = String(v);
+        if (Object.prototype.hasOwnProperty.call(data, k) && data[k] === v) return;
+        data[k] = v; pushOp("set", k, v);
+      },
+      removeItem: function (k) {
+        k = String(k);
+        if (!Object.prototype.hasOwnProperty.call(data, k)) return;
+        delete data[k]; pushOp("remove", k, null);
+      },
       clear: function () { Object.keys(data).forEach(function (k) { delete data[k]; }); pushOp("clear", null, null); },
       key: function (i) { return Object.keys(data)[i] || null; },
     };
@@ -373,8 +404,7 @@
       },
       set: function (t, p, v) {
         if (typeof p !== "string" || methods[p]) return true;
-        t[p] = String(v);
-        pushOp("set", p, t[p]);
+        methods.setItem(p, v);
         return true;
       },
       deleteProperty: function (t, p) {
