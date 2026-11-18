@@ -182,28 +182,12 @@ export async function commitAll(
 ): Promise<string | null> {
   return withRepoLock(dir, async () => {
     await ensureRepo(dir); // self-heal: repos are normally created at user bootstrap
-    const matrix = await statusRows(dir);
-    let changed = 0;
-    for (const [filepath, head, workdir, stage] of matrix) {
-      // git boundary (paths.ts): credentials/chat logs/runtime state are never
-      // staged — even if a tampered .gitignore would let statusMatrix see them.
-      if (!versioned(dir, filepath)) continue;
-      if (workdir === 0) {
-        // deleted from workdir (was tracked or staged)
-        if (head !== 0 || stage !== 0) {
-          await git.remove({ fs, dir, filepath });
-          changed++;
-        }
-        continue;
-      }
-      if (workdir === 2 || head === 0) {
-        // modified, or new/untracked (workdir 2), or present in workdir but not in HEAD
-        await git.add({ fs, dir, filepath });
-        changed++;
-      }
-    }
-    if (changed === 0) return null;
-    return commitWithReflog(dir, username, message, viaAgent);
+    // git boundary (paths.ts): credentials/chat logs/runtime state are never
+    // staged, even if a tampered .gitignore would let statusMatrix see them
+    const dirty = (await statusRows(dir)).filter(([filepath, head, workdir, stage]) =>
+      (workdir === 0 ? head !== 0 || stage !== 0 : workdir === 2 || head === 0) && versioned(dir, filepath));
+    if (dirty.length === 0) return null;
+    return commitKnownPaths(dir, username, message, dirty.map(([filepath]) => filepath), viaAgent);
   });
 }
 
@@ -236,24 +220,10 @@ export async function commitPaths(
 /** commitPaths against a status already read; caller holds the repo lock. */
 async function commitMatrixPaths(dir: string, username: string, message: string, paths: string[], matrix: StatusRow[], viaAgent = false): Promise<string | null> {
   const wanted = new Set(paths.filter((p) => versioned(dir, p)));
-  if (wanted.size === 0) return null;
-  let changed = 0;
-  for (const [filepath, head, workdir, stage] of matrix) {
-    if (!wanted.has(filepath)) continue;
-    if (workdir === 0) {
-      if (head !== 0 || stage !== 0) {
-        await git.remove({ fs, dir, filepath });
-        changed++;
-      }
-      continue;
-    }
-    if (workdir === 2 || head === 0) {
-      await git.add({ fs, dir, filepath });
-      changed++;
-    }
-  }
-  if (changed === 0) return null;
-  return commitWithReflog(dir, username, message, viaAgent);
+  const dirty = matrix.filter(([filepath, head, workdir, stage]) =>
+    wanted.has(filepath) && (workdir === 0 ? head !== 0 || stage !== 0 : workdir === 2 || head === 0));
+  if (dirty.length === 0) return null;
+  return commitKnownPaths(dir, username, message, dirty.map(([filepath]) => filepath), viaAgent);
 }
 
 /** Replace one tree entry without involving unrelated staged files. */
@@ -374,7 +344,14 @@ async function commitKnownPaths(dir: string, username: string, message: string, 
   const original = head === "0".repeat(40) ? undefined : (await git.readCommit({ fs, dir, oid: head })).commit.tree;
   const changes: TreeChange[] = [];
   const staged = new Map<string, { oid: string; stats: fs.Stats }>();
+  // hashing a whole library is seconds of work: requests get the thread back
+  // every few milliseconds instead of waiting for the last file
+  let slice = performance.now();
   for (const raw of new Set(paths)) {
+    if (performance.now() - slice > 8) {
+      await new Promise((resolve) => setImmediate(resolve));
+      slice = performance.now();
+    }
     const filepath = path.posix.normalize(raw.replaceAll("\\", "/"));
     const full = path.resolve(dir, filepath);
     if (!full.startsWith(path.resolve(dir) + path.sep) || gitBoundaryIgnored(filepath)) continue;

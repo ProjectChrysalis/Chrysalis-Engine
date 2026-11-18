@@ -3590,6 +3590,8 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const app = readApp(p.apps, id);
     if (!app) return c.json({ error: "app not found (invalid manifest?)" }, 404);
     const settings = JSON.parse(fs.readFileSync(p.settings, "utf8")) as { activeApp?: string | null };
+    // switching back to the app already active writes and commits nothing
+    if (settings.activeApp === id) return c.json({ ok: true, activeApp: id });
     settings.activeApp = id;
     fs.writeFileSync(p.settings, JSON.stringify(settings, null, 2) + "\n", "utf8");
     // only the settings file changed: walking the whole folder for a commit
