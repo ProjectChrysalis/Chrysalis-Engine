@@ -14,13 +14,13 @@ import themeCss from "tailwindcss/theme.css";
 import preflightCss from "tailwindcss/preflight.css";
 import utilitiesCss from "tailwindcss/utilities.css";
 import type { FsOp, FsResult } from "../fs.js";
-import { createContext, type BuildContext, type BuilderEnv } from "../context.js";
+import { createContext, type BuildContext, type BuilderEnv, type Mode } from "../context.js";
 import { DevSession, type DevMeta } from "../dev.js";
 import { buildProduction, failure, type BuildOutput } from "../prod.js";
 
 type Msg =
   | { t: "init"; wasm: ArrayBuffer; prior: DevMeta | null }
-  | { t: "build"; id: number; kind: "full" | "warm" | "update" | "production"; changed?: string[] }
+  | { t: "build"; id: number; kind: "full" | "fast" | "warm" | "update" | "production"; changed?: string[] }
   | { t: "fs-result"; rid: number; results: FsResult[] };
 
 const post = (m: unknown, transfer: Transferable[] = []) => parent.postMessage({ __chrysalisBuilder: 1, ...(m as object) }, "*", transfer);
@@ -70,9 +70,13 @@ let chain = Promise.resolve();
 async function build(kind: Extract<Msg, { t: "build" }>["kind"], changed: string[]) {
   env.onProgress?.("reading");
   if (kind === "production") return buildProduction(await createContext(transport, env, "production"));
-  if (kind === "full" || kind === "warm" || !devCtx || !dev) {
-    devCtx = await createContext(transport, env, "development");
-    dev = new DevSession(devCtx, dev?.meta ?? prior);
+  const held = dev?.meta ?? prior;
+  // "fast" serves production React through the dev module format; a warm
+  // session matches what dist holds; an edit always needs development
+  const mode: Mode = kind === "fast" || (kind === "warm" && held?.mode === "production") ? "production" : "development";
+  if (kind !== "update" || !devCtx || !dev || devCtx.mode !== mode) {
+    devCtx = await createContext(transport, env, mode);
+    dev = new DevSession(devCtx, held);
     if (kind === "update") {
       // a cold session: catch up with what dist holds first; if dist is not
       // from these sources, the full build IS the update

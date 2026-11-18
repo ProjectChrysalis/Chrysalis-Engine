@@ -33,8 +33,25 @@ interface ServerStatus {
   needsBuild: boolean;
   buildable: boolean;
   installing?: boolean;
-  status: { rev?: string; ok?: boolean; mode?: string; errors?: BuildMessage[] } | null;
-  dev: unknown;
+  status: { rev?: string; ok?: boolean; mode?: string; errors?: BuildMessage[]; at?: number } | null;
+  dev: { mode?: string } | null;
+}
+
+/** How long after the last build a development dist stays as it is. Apps
+ *  are served fast (production React) until someone edits them; an edit
+ *  switches to development with hot updates, and a page opened once the
+ *  edits have stopped this long gets the fast build back. */
+const LIVE_EDIT_MS = 30 * 60_000;
+
+/** Whether the app is being edited: dist is a development build made
+ *  recently. New builds then stay development so hot updates keep working. */
+function liveEditing(st: ServerStatus): boolean {
+  return !!st.dev && st.dev.mode !== "production" && Date.now() - (st.status?.at ?? 0) < LIVE_EDIT_MS;
+}
+
+/** A development dist nobody has edited for a while: rebuild it fast. */
+function staleDev(st: ServerStatus): boolean {
+  return !!st.dev && st.dev.mode !== "production" && st.status?.ok === true && !liveEditing(st);
 }
 
 const VERSION = typeof __BUILDER_VERSION__ === "string" ? __BUILDER_VERSION__ : "dev";
@@ -257,8 +274,11 @@ class AppBuild {
   async rebuild(): Promise<void> {
     if (this.disposed) return;
     let rev = "";
+    let kind: "full" | "fast" = "fast";
     try {
-      rev = ((await api(this.base())) as ServerStatus).rev;
+      const st = (await api(this.base())) as ServerStatus;
+      rev = st.rev;
+      if (liveEditing(st)) kind = "full";
     } catch {
       /* stamp whatever lands */
     }
@@ -267,7 +287,7 @@ class AppBuild {
       if (!this.disposed) this.status({ phase: "waiting", message: "Another open tab is building this app" });
       return;
     }
-    await this.kick("full", rev);
+    await this.kick(kind, rev);
   }
 
   private async start(): Promise<void> {
@@ -289,7 +309,7 @@ class AppBuild {
         this.releaseLease();
         return;
       }
-      if (st.needsBuild) await this.kick("full", st.rev);
+      if (st.needsBuild || staleDev(st)) await this.kick(liveEditing(st) ? "full" : "fast", st.rev);
       else {
         this.status(st.status?.errors?.length ? { phase: "error", errors: st.status.errors } : { phase: "ready" });
         if (this.running) return;
@@ -328,7 +348,7 @@ class AppBuild {
             this.releaseLease();
             return;
           }
-          await this.kick("full", st.rev);
+          await this.kick(liveEditing(st) ? "full" : "fast", st.rev);
           return;
         }
       } catch {
@@ -344,7 +364,7 @@ class AppBuild {
    *  serializes BUILDS, not tabs: an idle or broken tab that kept renewing
    *  left every other device showing "another open tab is building" while
    *  nothing was. */
-  private async kick(kind: "full" | "update" = "update", rev = ""): Promise<void> {
+  private async kick(kind: "full" | "fast" | "update" = "update", rev = ""): Promise<void> {
     if (this.disposed) return;
     if (!this.leased && !(await this.lease({ busy: true }))) return;
     if (this.disposed) {
@@ -401,7 +421,7 @@ class AppBuild {
     if (!this.disposed && this.running) this.status({ phase: "building", message });
   };
 
-  private async run(kind: "full" | "update", rev: string, changed: string[] = []): Promise<void> {
+  private async run(kind: "full" | "fast" | "update", rev: string, changed: string[] = []): Promise<void> {
     if (this.disposed) return;
     if (!this.frame || this.frame.dead) {
       // a new builder continues from what dist holds (its dev sequence)

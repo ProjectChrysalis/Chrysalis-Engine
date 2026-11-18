@@ -87,3 +87,29 @@ test("CSS asset checks share a batch and startup scripts defer in order", async 
   expect(html.indexOf("runtime.js")).toBeLessThan(html.indexOf("./dev/app-"));
   expect(html.indexOf("./dev/app-")).toBeLessThan(html.indexOf("./dev/boot.js"));
 });
+
+test("fast builds use production code, never hot-update, and an edit rebuilds them for development", async () => {
+  const fast = await context("production", []);
+  const app = path.join(dirs[0]!, "sample");
+  fs.writeFileSync(path.join(app, "main.js"), "document.body.textContent = process.env.NODE_ENV + import.meta.env.DEV;");
+  fast.fs.invalidate("all");
+  const first = await new DevSession(fast, null).full();
+  expect(first.errors).toEqual([]);
+  expect(first.meta.mode).toBe("production");
+  const snapshot = first.files.find((f) => f.path === first.meta.snapshot)!.contents;
+  expect(snapshot).toContain('"production"');
+  expect(snapshot).not.toContain('"development"');
+
+  const session = new DevSession(fast, first.meta);
+  await session.full({ adopt: true });
+  const edit = await session.update(["main.js"]);
+  expect(edit.full).toBe(true);
+  expect(edit.hot).toBeNull();
+
+  const dev = await createContext(async (ops) => appFsOps(dirs[0]!, "sample", ops), { esbuild, tailwindSheets: {} }, "development");
+  const switched = await new DevSession(dev, first.meta).full({ adopt: true });
+  expect(switched.unchanged).toBeUndefined();
+  expect(switched.full).toBe(true);
+  expect(switched.meta.mode).toBeUndefined();
+  expect(switched.files.some((f) => f.path === switched.meta.depsJs)).toBe(true);
+});

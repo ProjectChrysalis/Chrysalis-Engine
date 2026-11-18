@@ -11,7 +11,7 @@
  * dev/meta.json so a later builder session can continue the sequence.
  */
 import type * as esbuild from "esbuild";
-import type { BuildContext } from "./context.js";
+import type { BuildContext, Mode } from "./context.js";
 import { TARGET, defines } from "./context.js";
 import { Emitter, MIME, createPlugin, loaderFor, resolveImport, transformGlobs, transformNewUrl, walkFiles } from "./plugin.js";
 import { fillHtml, planHtml, type HtmlPlan } from "./html.js";
@@ -34,6 +34,10 @@ export interface DevMeta {
   seq: number;
   /** hot files kept past a snapshot for pages still catching up */
   retired: string[];
+  /** "production": modules and packages built for speed (production React,
+   *  no Refresh). Such a dist cannot take hot updates; an edit rebuilds it
+   *  for development first. Absent means development. */
+  mode?: Mode;
 }
 
 export interface DevOutput extends BuildOutput {
@@ -156,7 +160,7 @@ export class DevSession {
   }
 
   private refreshable(file: string, src: string): boolean {
-    if (!this.ctx.env.refresh || file.includes("node_modules/")) return false;
+    if (!this.ctx.env.refresh || this.ctx.mode === "production" || file.includes("node_modules/")) return false;
     const ext = extname(file);
     if (ext === ".tsx" || ext === ".jsx") return true;
     return /\.(?:[cm]?[jt]s)$/.test(file) && /\bfunction\s+[A-Z]|\b(?:const|let|var)\s+[A-Z]\w*\s*=|\buse[A-Z]\w*\(/.test(src);
@@ -179,7 +183,7 @@ export class DevSession {
           format: "esm",
           target: "es2022",
           ...this.ctx.jsxOptions,
-          define: { "process.env.NODE_ENV": '"development"' },
+          define: { "process.env.NODE_ENV": JSON.stringify(this.ctx.mode) },
         })
       ).code;
       if (this.refreshable(m.file, raw)) code = this.ctx.env.refresh!(code, m.file);
@@ -301,7 +305,7 @@ export class DevSession {
     // Every lockfile spelling: an install with any of them moves the hash
     const locks = ["package-lock.json", "bun.lock", "bun.lockb", "pnpm-lock.yaml", "yarn.lock"];
     const lockTexts = await Promise.all(locks.map((l) => read(l)));
-    return strHash([FORMAT, ...[...this.depIds].sort(), await read("package.json"), ...lockTexts].join("\n"));
+    return strHash([FORMAT, ...(this.ctx.mode === "production" ? ["production"] : []), ...[...this.depIds].sort(), await read("package.json"), ...lockTexts].join("\n"));
   }
 
   private async buildDeps(): Promise<{ js: string; css: string | null; files: BuildOutput["files"] }> {
@@ -449,7 +453,7 @@ export class DevSession {
     }
     const snap = this.snapshot();
     files.push(snap);
-    const meta: DevMeta = { format: FORMAT, depsKey: key, depsJs, depsCss, snapshot: snap.path, hot: [], seq: prior?.seq ?? 0, retired: [] };
+    const meta: DevMeta = { format: FORMAT, depsKey: key, depsJs, depsCss, snapshot: snap.path, hot: [], seq: prior?.seq ?? 0, retired: [], ...(this.ctx.mode === "production" ? { mode: "production" as const } : {}) };
     this.meta = meta;
     files.push(...this.metaFiles(meta));
     files.push(...this.newFiles());
@@ -462,7 +466,8 @@ export class DevSession {
     const { fs, tailwind, resolver } = this.ctx;
     fs.invalidate(changed);
     tailwind.invalidate(changed);
-    if (!this.meta || !this.plan || changed.some((p) => FULL_REBUILD.test(p))) {
+    // a production session has no hot path: every change is a full build
+    if (!this.meta || !this.plan || this.ctx.mode === "production" || changed.some((p) => FULL_REBUILD.test(p))) {
       resolver.reset();
       // package/lock changes move what the filesystem holds under us (an
       // install writes node_modules, invisible to the watcher): negative
