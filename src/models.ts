@@ -287,18 +287,100 @@ const BUDGET_KEY: Record<string, "minimal" | "low" | "medium" | "high"> = {
 };
 
 /** Split raw inline thinking (e.g. "<think>…</think>") out of a reply. Handles
- *  tags anywhere in the text and an unclosed tag (stream cut mid-think). */
-function splitThinkingTags(text: string, open: string, close: string): { reasoning: string; text: string } {
-  const i = text.indexOf(open);
-  if (i < 0) return { reasoning: "", text };
-  const j = text.indexOf(close, i + open.length);
-  if (j < 0) {
-    return { reasoning: text.slice(i + open.length).trim(), text: text.slice(0, i).trim() };
+ *  tags anywhere in the text, an unclosed tag (stream cut mid-think), and a
+ *  block opened before the reply began: `inside` when the prefill opened it,
+ *  or a close tag with no open before it (chat templates that open it). */
+export function splitThinkingTags(text: string, open: string, close: string, inside = false): { reasoning: string; text: string } {
+  let head = "";
+  let start = 0;
+  if (!inside) {
+    const i = text.indexOf(open);
+    const c = text.indexOf(close);
+    if (i < 0 && c < 0) return { reasoning: "", text };
+    if (i >= 0 && (c < 0 || i < c)) {
+      head = text.slice(0, i);
+      start = i + open.length;
+    }
   }
+  const j = text.indexOf(close, start);
+  const body = j < 0 ? text.slice(start) : text.slice(start, j);
   return {
-    reasoning: text.slice(i + open.length, j).trim(),
-    text: (text.slice(0, i) + text.slice(j + close.length)).trim(),
+    reasoning: body.split(open).join("").trim(),
+    text: (head + (j < 0 ? "" : text.slice(j + close.length))).trim(),
   };
+}
+
+/** Whether the text a reply continues (the prefill) leaves a think block open. */
+export function opensThinking(seed: string | undefined, open: string, close: string): boolean {
+  if (!seed) return false;
+  const i = seed.lastIndexOf(open);
+  return i >= 0 && i > seed.lastIndexOf(close);
+}
+
+/** Routes streamed text to thinking or answer as inline tags open and close.
+ *  A chunk may end partway through a tag, so a tail that could begin one
+ *  waits for the next chunk. A stray open tag inside the block and a stray
+ *  close tag outside it are dropped. */
+export class ThinkTagStream {
+  private carry = "";
+
+  constructor(
+    private open: string,
+    private close: string,
+    private inside: boolean,
+    private onText: (delta: string) => void,
+    private onThinking: (delta: string) => void,
+  ) {}
+
+  push(chunk: string): void {
+    let s = this.carry + chunk;
+    this.carry = "";
+    while (s) {
+      const toggle = this.inside ? this.close : this.open;
+      const stray = this.inside ? this.open : this.close;
+      const at = s.indexOf(toggle);
+      const strayAt = s.indexOf(stray);
+      if (strayAt >= 0 && (at < 0 || strayAt < at)) {
+        this.emit(s.slice(0, strayAt));
+        s = s.slice(strayAt + stray.length);
+        continue;
+      }
+      if (at < 0) {
+        const keep = Math.max(partialTagTail(s, toggle), partialTagTail(s, stray));
+        if (keep) { this.carry = s.slice(s.length - keep); s = s.slice(0, s.length - keep); }
+        this.emit(s);
+        return;
+      }
+      this.emit(s.slice(0, at));
+      this.inside = !this.inside;
+      s = s.slice(at + toggle.length);
+    }
+  }
+
+  flush(): void {
+    const rest = this.carry;
+    this.carry = "";
+    this.emit(rest);
+  }
+
+  private emit(s: string): void {
+    if (s) (this.inside ? this.onThinking : this.onText)(s);
+  }
+}
+
+/** Length of the longest tail of `s` that is a proper prefix of `tag`. */
+function partialTagTail(s: string, tag: string): number {
+  for (let k = Math.min(tag.length - 1, s.length); k > 0; k--) {
+    if (s.endsWith(tag.slice(0, k))) return k;
+  }
+  return 0;
+}
+
+/** The text the model continues. Chat transports send only a trailing
+ *  assistant turn; a text prompt opens with the prefill when there is none. */
+function replySeed(req: GenerateRequest, prefill: boolean): string | undefined {
+  const last = req.messages[req.messages.length - 1];
+  return last?.role === "assistant" ? last.content : prefill ? req.assistantPrefill : undefined;
 }
 
 /** How a text completion request's format was chosen: named by the request
@@ -818,34 +900,13 @@ export class UserModelService {
     });
     if (!res.ok || !res.body) throw new Error(`text completion endpoint ${res.status}: ${(await res.text().catch(() => "")).slice(0, 300)}`);
 
-    // incremental <think>-tag split over the stream: deltas route to
-    // onThinking while inside the tags, onDelta outside; a chunk boundary
-    // may split a tag, so a possible-tag-prefix tail carries over
     const open = req.reasoningTags?.open;
     const close = req.reasoningTags?.close;
-    let inThink = false;
-    let carry = "";
-    const feed = (chunk: string) => {
-      if (!open || !close) { onDelta?.(chunk); return; }
-      let s = carry + chunk;
-      carry = "";
-      while (s.length) {
-        const tag = inThink ? close : open;
-        const at = s.indexOf(tag);
-        if (at < 0) {
-          let keep = 0;
-          for (let k = Math.min(tag.length - 1, s.length); k > 0; k--) {
-            if (s.endsWith(tag.slice(0, k))) { keep = k; break; }
-          }
-          if (keep) { carry = s.slice(s.length - keep); s = s.slice(0, s.length - keep); }
-          if (s) (inThink ? onThinking : onDelta)?.(s);
-          return;
-        }
-        if (at > 0) (inThink ? onThinking : onDelta)?.(s.slice(0, at));
-        inThink = !inThink;
-        s = s.slice(at + tag.length);
-      }
-    };
+    const inside = !!open && !!close && opensThinking(replySeed(req, true), open, close);
+    const inline = open && close
+      ? new ThinkTagStream(open, close, inside, (d) => onDelta?.(d), (d) => onThinking?.(d))
+      : null;
+    const feed = (chunk: string) => { if (inline) inline.push(chunk); else onDelta?.(chunk); };
 
     let text = "";
     let usage = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, costTotal: 0, priced: false };
@@ -890,9 +951,9 @@ export class UserModelService {
       // abort mid-stream: salvage the partial like the chat transports do
       if (!(e instanceof Error && e.name === "AbortError")) throw e;
     }
-    if (carry) (inThink ? onThinking : onDelta)?.(carry);
+    inline?.flush();
 
-    const split = open && close ? splitThinkingTags(text, open, close) : { reasoning: "", text };
+    const split = open && close ? splitThinkingTags(text, open, close, inside) : { reasoning: "", text };
     // these endpoints (local serving stacks, proxies) are outside every price
     // catalog — only the user's own table can put a number on them
     const textCost = this.priceUsage(model, usage);
@@ -1094,8 +1155,16 @@ export class UserModelService {
     // round's first text (or the round's end for think-only rounds)
     let roundThinkStart = 0;
     let roundThinkEnd = 0;
-    const pushRoundParts = (msg: AssistantMessage) => {
-      const hasThinking = msg.content.some((c) => c.type === "thinking");
+    // inline think tags split live and in the result, whether or not the
+    // provider also reports thinking; only the first round continues the
+    // prefill, so only it can start inside a block
+    const tags = req.reasoningTags?.open && req.reasoningTags.close ? req.reasoningTags : null;
+    let startsInside = !!tags && opensThinking(replySeed(req, false), tags.open, tags.close);
+    let inlineStart = 0;
+    const endInline = () => {
+      if (inlineStart) { thinkMs += Date.now() - inlineStart; inlineStart = 0; }
+    };
+    const pushRoundParts = (msg: AssistantMessage, inside: boolean) => {
       const thinkMs = roundThinkStart && (roundThinkEnd || Date.now()) - roundThinkStart > 0
         ? (roundThinkEnd || Date.now()) - roundThinkStart
         : 0;
@@ -1105,8 +1174,8 @@ export class UserModelService {
         } else if (c.type === "text") {
           let text = c.text;
           let think = "";
-          if (!hasThinking && req.reasoningTags?.open && req.reasoningTags.close) {
-            const split = splitThinkingTags(text, req.reasoningTags.open, req.reasoningTags.close);
+          if (tags) {
+            const split = splitThinkingTags(text, tags.open, tags.close, inside);
             think = split.reasoning;
             text = split.text;
           }
@@ -1120,16 +1189,31 @@ export class UserModelService {
     // return the text it managed to write
     const consumeStream = async (s: AsyncIterable<AssistantMessageEvent> & { result(): Promise<AssistantMessage> }): Promise<AssistantMessage> => {
       let partial: AssistantMessage | null = null;
-      for await (const ev of s) {
-        if ((ev.type === "thinking_start" || ev.type === "thinking_delta") && !roundThinkStart) roundThinkStart = Date.now();
-        else if (ev.type === "text_start" && roundThinkStart && !roundThinkEnd) roundThinkEnd = Date.now();
-        trackThinking(ev);
-        if (ev.type === "text_delta") onDelta?.(ev.delta);
-        else if (ev.type === "thinking_delta") onThinking?.(ev.delta);
-        else if (ev.type === "error") {
-          const msg = (ev as { error?: AssistantMessage }).error;
-          if (msg) partial = msg;
+      const inline = tags ? new ThinkTagStream(tags.open, tags.close, startsInside, (d) => {
+        endInline();
+        if (roundThinkStart && !roundThinkEnd) roundThinkEnd = Date.now();
+        onDelta?.(d);
+      }, (d) => {
+        if (!inlineStart) inlineStart = Date.now();
+        if (!roundThinkStart) roundThinkStart = Date.now();
+        onThinking?.(d);
+      }) : null;
+      try {
+        for await (const ev of s) {
+          if ((ev.type === "thinking_start" || ev.type === "thinking_delta") && !roundThinkStart) roundThinkStart = Date.now();
+          else if (ev.type === "text_start" && roundThinkStart && !roundThinkEnd && !inlineStart) roundThinkEnd = Date.now();
+          trackThinking(ev);
+          if (ev.type === "text_delta") { if (inline) inline.push(ev.delta); else onDelta?.(ev.delta); }
+          else if (ev.type === "thinking_delta") onThinking?.(ev.delta);
+          else if (ev.type === "error") {
+            const msg = (ev as { error?: AssistantMessage }).error;
+            if (msg) partial = msg;
+          }
         }
+      } finally {
+        inline?.flush();
+        endInline();
+        startsInside = false;
       }
       // salvage anything with real content — text, tool calls, or the
       // thinking itself: a cancelled reply keeps exactly what was on
@@ -1184,6 +1268,7 @@ export class UserModelService {
         sessionId,
         ...(sessionHeaders ? { headers: sessionHeaders } : {}),
       }));
+      const inside = startsInside;
       const final = await consumeStream(stream);
       if (final.stopReason === "error") {
         throw generationError(final);
@@ -1193,11 +1278,11 @@ export class UserModelService {
         (c): c is Extract<typeof c, { type: "toolCall" }> => c.type === "toolCall",
       );
       if (req.refreshOnly || final.stopReason !== "toolUse" || toolCalls.length === 0 || !hasToolExec) {
-        const res = this.resultFrom(final, model, toolTrace, req, thinkMs, textBeforeTools);
+        const res = this.resultFrom(final, model, toolTrace, req, thinkMs, textBeforeTools, inside);
         // aborted replies render as segments even without tool calls — a
         // cancelled mid-thought reply keeps its thinking block inline
         if (parts.some((p) => p.type === "tool") || final.stopReason === "aborted") {
-          pushRoundParts(final);
+          pushRoundParts(final, inside);
           res.parts = parts;
         }
         if (final.stopReason !== "aborted") res.replay = { text: res.text, messages: [...replayMessages, final] };
@@ -1207,15 +1292,16 @@ export class UserModelService {
       replayMessages.push(final);
       // keep the round's text for the joined result text; parts get the
       // round's blocks in order, then the tool calls that ended it
-      const roundText = final.content
+      const rawRoundText = final.content
         .filter((c): c is Extract<typeof c, { type: "text" }> => c.type === "text")
         .map((c) => c.text)
         .join("");
+      const roundText = tags ? splitThinkingTags(rawRoundText, tags.open, tags.close, inside).text : rawRoundText;
       if (roundText) {
         if (textBeforeTools) textBeforeTools += "\n\n";
         textBeforeTools += roundText;
       }
-      pushRoundParts(final);
+      pushRoundParts(final, inside);
 
       // execute requested tools host-side, then feed results back
       messages.push({ ...final });
@@ -1260,7 +1346,7 @@ export class UserModelService {
     }
     const exhausted = this.resultFrom(final, model, toolTrace, req, thinkMs, textBeforeTools);
     if (parts.some((p) => p.type === "tool") || final.stopReason === "aborted") {
-      pushRoundParts(final);
+      pushRoundParts(final, false);
       exhausted.parts = parts;
     }
     if (final.stopReason !== "aborted") exhausted.replay = { text: exhausted.text, messages: [...replayMessages, final] };
@@ -1274,24 +1360,26 @@ export class UserModelService {
     req?: GenerateRequest,
     thinkMs = 0,
     textBeforeTools = "",
+    inside = false,
   ): GenerateResult {
     const text = final.content
       .filter((c): c is Extract<typeof c, { type: "text" }> => c.type === "text")
       .map((c) => c.text)
       .join("");
-    // reasoning: provider-reported ThinkingContent wins; otherwise split raw
-    // inline tags (<think>…</think> style proxies) when the caller asked
+    // reasoning: provider-reported ThinkingContent, then raw inline tags
+    // (<think>…</think> style proxies) split out when the caller asked
     let reasoning = final.content
       .filter((c): c is Extract<typeof c, { type: "thinking" }> => c.type === "thinking")
       .map((c) => c.thinking)
       .join("\n")
       .trim();
-    let answer = textBeforeTools ? textBeforeTools + "\n\n" + text : text;
-    if (!reasoning && req?.reasoningTags?.open && req.reasoningTags.close) {
-      const split = splitThinkingTags(text, req.reasoningTags.open, req.reasoningTags.close);
-      reasoning = split.reasoning;
-      answer = split.text;
+    let answerText = text;
+    if (req?.reasoningTags?.open && req.reasoningTags.close) {
+      const split = splitThinkingTags(text, req.reasoningTags.open, req.reasoningTags.close, inside);
+      if (split.reasoning) reasoning = reasoning ? reasoning + "\n" + split.reasoning : split.reasoning;
+      answerText = split.text;
     }
+    const answer = textBeforeTools ? textBeforeTools + "\n\n" + answerText : answerText;
     // structured output: prefer the last __structured_output tool args
     let json: unknown = undefined;
     const schemaCall = toolTrace?.filter((t) => t.name === STRUCTURED_TOOL).pop();
