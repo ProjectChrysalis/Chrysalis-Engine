@@ -128,9 +128,8 @@ it("Accept permissions apply to file, package and remote tools, with scoped pers
   await full.check("bash", { command: "ls" });
   await full.check("write_file", { path: "notes/outside.md" });
   await full.check("app_deps", { id: "other" });
-  expect(prompts).toBe(4);
   await full.check("mcp_server_write", { item: "one" });
-  expect(prompts).toBe(5);
+  expect(prompts).toBe(4);
 });
 
 it("Plan exposes only remote tools explicitly declaring read-only behavior and preserves remote errors", async () => {

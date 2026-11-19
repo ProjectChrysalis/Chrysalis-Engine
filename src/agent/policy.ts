@@ -21,8 +21,8 @@ export class AgentPolicy {
     if (tool === "skill_edit") return;
     // These tools already present the exact account or server change for approval.
     if (["admin_create_user", "server_settings"].includes(tool)) return;
-    // Full mode acts without asking. A remote tool sends data off this machine, so it still asks.
-    if (this.mode === "normal" && !tool.startsWith("mcp_")) return;
+    // Full mode acts without asking, remote tools included.
+    if (this.mode === "normal") return;
     const paths = tool === "undo_change" ? changeFiles(this.root, String(args.id)).map(change => change.path)
       : typeof args.path === "string" ? [args.path.replaceAll("\\", "/")]
       : tool.startsWith("app_") && typeof args.id === "string" ? [`apps/${args.id}/`] : [];
